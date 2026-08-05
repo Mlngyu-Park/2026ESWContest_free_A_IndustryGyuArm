@@ -1,0 +1,395 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="Industry_gyu_arm_20260728_1st_position">
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="0.240018522196288 -0.260381295292402 0.0457476778875501"
+        rpy="0 0 0" />
+      <mass
+        value="0.152718655712483" />
+      <inertia
+        ixx="0.000114073734453911"
+        ixy="3.06723030800343E-08"
+        ixz="-2.30712090300435E-09"
+        iyy="0.000133076179118511"
+        iyz="1.99775586214327E-05"
+        izz="0.00014220634256509" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260728_1st_position/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.964705882352941 0.964705882352941 0.952941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260728_1st_position/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="l1">
+    <inertial>
+      <origin
+        xyz="0.00200493547343794 0.0310781733397142 0.0025483454343232"
+        rpy="0 0 0" />
+      <mass
+        value="0.118342769302105" />
+      <inertia
+        ixx="5.99978036109078E-05"
+        ixy="-7.66166353546075E-10"
+        ixz="-7.23693382334423E-07"
+        iyy="5.86067248267002E-05"
+        iyz="-4.49198737125391E-06"
+        izz="3.27322843497395E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260728_1st_position/meshes/l1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.894117647058823 0.894117647058823 0.894117647058823 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260728_1st_position/meshes/l1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="j1"
+    type="revolute">
+    <origin
+      xyz="0.240050000000002 -0.2348 0.0924"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="l1" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="l2">
+    <inertial>
+      <origin
+        xyz="-0.0173045257242395 0.0166155296252751 0.0712269091909727"
+        rpy="0 0 0" />
+      <mass
+        value="0.153632397727893" />
+      <inertia
+        ixx="0.000152006344105552"
+        ixy="1.78694622355989E-06"
+        ixz="-2.5681691689046E-06"
+        iyy="0.000186370157006118"
+        iyz="-1.93590924205691E-05"
+        izz="6.35774805521533E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260728_1st_position/meshes/l2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.894117647058823 0.894117647058823 0.894117647058823 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260728_1st_position/meshes/l2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="j2"
+    type="revolute">
+    <origin
+      xyz="0.0200779224125422 0.0294019902658976 0.0491999999999996"
+      rpy="0 0 0" />
+    <parent
+      link="l1" />
+    <child
+      link="l2" />
+    <axis
+      xyz="0.998042829003419 -0.0625340825058795 0" />
+    <limit
+      lower="0"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="l3">
+    <inertial>
+      <origin
+        xyz="-0.0266360597632612 0.0550638911742019 -0.0523054673667779"
+        rpy="0 0 0" />
+      <mass
+        value="0.129181187085919" />
+      <inertia
+        ixx="9.81225871730414E-05"
+        ixy="-7.56452943303859E-08"
+        ixz="2.04633699826775E-06"
+        iyy="8.74763179197436E-05"
+        iyz="4.29453460638968E-05"
+        izz="8.30031235254923E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260728_1st_position/meshes/l3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.894117647058823 0.894117647058823 0.894117647058823 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260728_1st_position/meshes/l3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="j3"
+    type="revolute">
+    <origin
+      xyz="0.0147890610632275 0.04573692020794 0.106240424522687"
+      rpy="0 0 0" />
+    <parent
+      link="l2" />
+    <child
+      link="l3" />
+    <axis
+      xyz="0.998042829003419 -0.0625340825058775 0" />
+    <limit
+      lower="0"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="l4">
+    <inertial>
+      <origin
+        xyz="-0.0324353442731654 0.0372108100243216 0.00018328355336425"
+        rpy="0 0 0" />
+      <mass
+        value="0.0685302867354591" />
+      <inertia
+        ixx="1.95556628773914E-05"
+        ixy="2.28612835834444E-06"
+        ixz="1.48771208436985E-08"
+        iyy="2.43344506786251E-05"
+        iyz="-1.18487177712231E-07"
+        izz="3.44202541216646E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260728_1st_position/meshes/l4.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.894117647058823 0.894117647058823 0.894117647058823 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260728_1st_position/meshes/l4.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="j4"
+    type="revolute">
+    <origin
+      xyz="0.00326020536102012 0.098407529702962 -0.0924052983201313"
+      rpy="0 0 0" />
+    <parent
+      link="l3" />
+    <child
+      link="l4" />
+    <axis
+      xyz="0.998042829003419 -0.0625340825058787 0" />
+    <limit
+      lower="0"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="l5">
+    <inertial>
+      <origin
+        xyz="0.00580130374453741 0.0250543817126754 -0.000211156023619652"
+        rpy="0 0 0" />
+      <mass
+        value="0.0691681211392853" />
+      <inertia
+        ixx="2.3807666382648E-05"
+        ixy="7.27843591924286E-07"
+        ixz="1.81072522539367E-08"
+        iyy="1.99045608282819E-05"
+        iyz="2.46146099379573E-07"
+        izz="2.38171880699915E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260728_1st_position/meshes/l5.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.894117647058823 0.894117647058823 0.894117647058823 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260728_1st_position/meshes/l5.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="j5"
+    type="revolute">
+    <origin
+      xyz="-0.0233511963898951 0.0606790048300108 0"
+      rpy="0 0 0" />
+    <parent
+      link="l4" />
+    <child
+      link="l5" />
+    <axis
+      xyz="0.0625340825058827 0.998042829003419 0" />
+    <limit
+      lower="0"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="l6">
+    <inertial>
+      <origin
+        xyz="-0.0013637931762327 0.0241040392460376 0.0205873914696666"
+        rpy="0 0 0" />
+      <mass
+        value="0.0166777223069399" />
+      <inertia
+        ixx="6.88172676674817E-06"
+        ixy="1.17571216841709E-07"
+        ixz="2.62570766946773E-09"
+        iyy="3.51532489459236E-06"
+        iyz="-1.30765409669702E-07"
+        izz="3.9909525497105E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260728_1st_position/meshes/l6.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.894117647058823 0.894117647058823 0.894117647058823 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260728_1st_position/meshes/l6.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="j6"
+    type="revolute">
+    <origin
+      xyz="0.0216862967590123 0.0230890565610647 -0.0230999999995563"
+      rpy="0 0 0" />
+    <parent
+      link="l5" />
+    <child
+      link="l6" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="0"
+      effort="0"
+      velocity="0" />
+  </joint>
+</robot>
