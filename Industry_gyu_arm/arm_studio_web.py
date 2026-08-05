@@ -2296,6 +2296,15 @@ import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 import {STLLoader} from 'three/addons/loaders/STLLoader.js';
 const scene=new THREE.Scene(); scene.background=new THREE.Color(0x303030);
+// 부모(스튜디오)의 다크/라이트 토글을 따라간다
+const _THEMES={dark:{bg:0x303030,fg:'#ddd',pane:'rgba(0,0,0,.45)'},
+               light:{bg:0xe9ecf0,fg:'#222',pane:'rgba(255,255,255,.65)'}};
+window.addEventListener('message',e=>{
+  const t=e.data&&e.data.armTheme; if(!t||!_THEMES[t])return;
+  scene.background=new THREE.Color(_THEMES[t].bg);
+  const lg=document.getElementById('lg');
+  if(lg){lg.style.color=_THEMES[t].fg;lg.style.background=_THEMES[t].pane;}
+});
 const cam=new THREE.PerspectiveCamera(50,innerWidth/innerHeight,0.01,10);
 cam.position.set(0.55,0.45,0.75);
 const ren=new THREE.WebGLRenderer({antialias:true});
@@ -2904,9 +2913,151 @@ def h_ign_save(sel,checks):
     return (render_map2d(sel),
             f"'{name}' 무시 장애물: {', '.join(checks) if checks else '없음'}")
 
+# ================= 산업용 테마 (다크/라이트) =================
+# 색 규칙:
+#   안전 주황 = 실물 로봇이 움직이는 버튼 전용 (편집 버튼과 절대 혼용 금지)
+#   강철 파랑 = 편집/저장 등 소프트웨어만 건드리는 primary
+#   신호 빨강 = 정지
+try:
+    THEME=gr.themes.Base(primary_hue='blue',neutral_hue='slate')
+except Exception:
+    THEME=None
+
+THEME_CSS="""
+/* ---------- 라이트 (기본) ---------- */
+:root{
+  --as-accent:#e8720c; --as-accent-dim:#b85a0a;   /* 안전 주황 */
+  --as-stop:#d1322e; --as-blue:#3d6fa3;
+  --body-background-fill:#e8eaee;
+  --background-fill-primary:#f4f5f7;
+  --background-fill-secondary:#e8eaee;
+  --block-background-fill:#f4f5f7;
+  --block-border-color:#c3c8d2; --border-color-primary:#c3c8d2;
+  --input-background-fill:#ffffff;
+  --body-text-color:#20242c; --block-label-text-color:#5a6172;
+  --button-primary-background-fill:var(--as-blue);
+  --button-primary-background-fill-hover:#34608f;
+  --button-primary-text-color:#fff;
+  --button-cancel-background-fill:var(--as-stop);
+  --button-cancel-background-fill-hover:#b52824;
+  --button-cancel-text-color:#fff;
+  --color-accent:var(--as-blue); --color-accent-soft:#dbe5f0;
+}
+/* ---------- 다크 ---------- */
+.dark{
+  --body-background-fill:#14161a;
+  --background-fill-primary:#1c1f26;
+  --background-fill-secondary:#171a20;
+  --block-background-fill:#1c1f26;
+  --block-border-color:#343945; --border-color-primary:#343945;
+  --input-background-fill:#12151a;
+  --body-text-color:#d6dae2; --block-label-text-color:#8f97a8;
+  --color-accent-soft:#243447;
+}
+/* ---------- 헤더 ---------- */
+#hdr{align-items:center;border-bottom:2px solid var(--as-accent);
+     padding:2px 0 8px;margin-bottom:6px}
+#brand{font-family:ui-monospace,Consolas,monospace;font-size:1.3em;
+       font-weight:800;letter-spacing:.14em;display:flex;align-items:center;
+       gap:10px;color:var(--body-text-color)}
+#brand-mark{width:13px;height:13px;background:var(--as-accent);
+            display:inline-block}
+#brand-sub{font-size:.55em;font-weight:600;letter-spacing:.3em;
+           color:var(--block-label-text-color);margin-left:6px;margin-top:5px}
+/* ---------- 탭 ---------- */
+button[role="tab"]{font-weight:700;letter-spacing:.06em}
+button[role="tab"][aria-selected="true"]{
+  color:var(--as-accent)!important;border-color:var(--as-accent)!important}
+/* ---------- 버튼 위계 ---------- */
+/* 실물 동작 = 안전 주황 (하드웨어가 움직임을 한눈에) */
+button.act-robot{
+  background:linear-gradient(180deg,var(--as-accent),var(--as-accent-dim))!important;
+  color:#fff!important;border:1px solid #8a4407!important;
+  font-weight:800!important;letter-spacing:.03em}
+button.act-robot:hover{filter:brightness(1.1)}
+/* 실물 미세 동작(조그/그리퍼/토크) = 주황 외곽선 */
+button.act-jog{background:transparent!important;color:var(--as-accent)!important;
+  border:1.5px solid var(--as-accent)!important;font-weight:700!important}
+button.act-jog:hover{background:rgba(232,114,12,.12)!important}
+/* 정지 */
+button.act-stop{font-weight:800!important;letter-spacing:.1em}
+/* ---------- 파이프라인 = 블록 ---------- */
+#pipeline label{flex:1 1 100%;display:flex;align-items:center;margin:2px 0;
+  padding:9px 12px;border-radius:5px;cursor:pointer;
+  border:1px solid var(--block-border-color);border-left-width:5px;
+  background:var(--background-fill-primary);
+  font-weight:600;font-size:.92em;transition:box-shadow .12s}
+#pipeline input{position:absolute;opacity:0}
+#pipeline label.blk-pose{border-left-color:var(--as-blue)}
+#pipeline label.blk-move{border-left-color:#8b91a0;border-left-style:dashed;
+  flex-basis:calc(100% - 26px);margin-left:26px;padding:5px 10px;
+  font-weight:500;font-size:.85em;opacity:.92}
+#pipeline label.blk-grip{border-left-color:#d9a012;
+  flex-basis:calc(100% - 26px);margin-left:26px;padding:6px 10px;font-size:.88em}
+#pipeline label.selected{box-shadow:0 0 0 2px var(--color-accent)}
+/* ---------- 세그먼트 (조인트 선택 등) ---------- */
+.segmented label{border:1px solid var(--block-border-color);padding:6px 14px;
+  border-radius:4px;font-weight:600;cursor:pointer}
+.segmented label.selected{background:var(--color-accent);color:#fff;
+  border-color:var(--color-accent)}
+.segmented input{position:absolute;opacity:0}
+/* ---------- 상태 콘솔 (양쪽 테마 모두 어두운 HMI 콘솔) ---------- */
+#statusbox textarea{
+  font-family:ui-monospace,'Cascadia Mono',Consolas,monospace!important;
+  background:#101318!important;color:#c9d4e3!important;
+  border:1px solid #2c3340!important;
+  border-left:4px solid var(--as-accent)!important;
+  border-radius:4px!important;font-size:.85em!important}
+/* ---------- 3D 뷰어 / 2D 맵 ---------- */
+#viewer3d{width:100%;height:calc(100vh - 250px);min-height:470px;
+  border:1px solid var(--block-border-color);border-radius:6px;
+  background:#303030;display:block}
+#mapwrap{background:var(--background-fill-primary);
+  border:1px solid var(--block-border-color);border-radius:6px;padding:8px}
+"""
+
+# 페이지 로드 시 1회 실행: 테마 적용/토글 + 파이프라인 블록 분류
+THEME_JS="""
+() => {
+  const apply=(t)=>{
+    document.body.classList.toggle('dark',t==='dark');
+    try{localStorage.setItem('arm_theme',t);}catch(e){}
+    const f=document.getElementById('viewer3d');
+    if(f&&f.contentWindow) f.contentWindow.postMessage({armTheme:t},'*');
+  };
+  window._armSendTheme=()=>{
+    const t=document.body.classList.contains('dark')?'dark':'light';
+    const f=document.getElementById('viewer3d');
+    if(f&&f.contentWindow) f.contentWindow.postMessage({armTheme:t},'*');
+  };
+  window._armToggleTheme=()=>{
+    apply(document.body.classList.contains('dark')?'light':'dark');
+  };
+  let saved='dark';
+  try{saved=localStorage.getItem('arm_theme')||'dark';}catch(e){}
+  apply(saved);
+  /* 파이프라인 Radio 항목을 기호(■┃◆)로 분류해 블록처럼 칠한다 */
+  const classify=()=>{
+    document.querySelectorAll('#pipeline label').forEach(lb=>{
+      const t=(lb.textContent||'').trim();
+      const want=t.startsWith('\\u25a0')?'blk-pose'
+               :(t.startsWith('\\u2503')?'blk-move'
+               :(t.startsWith('\\u25c6')?'blk-grip':''));
+      if(want&&!lb.classList.contains(want)) lb.classList.add(want);
+    });
+  };
+  new MutationObserver(classify).observe(document.body,
+    {childList:true,subtree:true});
+  classify();
+}
+"""
+
 # ================= UI =================
 with gr.Blocks(title='ARM STUDIO') as demo:
-    gr.Markdown('## ARM STUDIO')
+    with gr.Row(elem_id='hdr'):
+        gr.HTML('<div id="brand"><span id="brand-mark"></span>ARM STUDIO'
+                '<span id="brand-sub">ROBOT ARM CONTROL</span></div>')
+        theme_btn=gr.Button('◐ 다크/라이트',size='sm',elem_id='themebtn',scale=0)
     with gr.Row():
         # ================= 왼쪽 사이드바 (자세 / 이동 / 환경) =================
         with gr.Column(scale=3):
@@ -2919,18 +3070,24 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                                           scale=4)
                         ft_refresh=gr.Button('↻',scale=1,size='sm')
                     ft_joint=gr.Radio(choices=['J1','J2','J3','J4','J5'],
-                                      value='J1',label='조인트 선택')
+                                      value='J1',label='조인트 선택',
+                                      elem_classes=['segmented'])
                     with gr.Accordion('미세조정 (실물만 보정, 3D는 정답 고정)',
                                       open=True):
-                        ft_go=gr.Button('로봇을 이 자세로',variant='primary')
+                        ft_go=gr.Button('로봇을 이 자세로',variant='primary',
+                                        elem_classes=['act-robot'])
                         with gr.Row():
                             ft_step=gr.Dropdown(choices=['0.5','1','2','5'],
                                                 value='1',label='스텝(도)',scale=2)
-                            ft_minus=gr.Button('−',variant='secondary',scale=1)
-                            ft_plus=gr.Button('+',variant='secondary',scale=1)
+                            ft_minus=gr.Button('−',variant='secondary',scale=1,
+                                               elem_classes=['act-jog'])
+                            ft_plus=gr.Button('+',variant='secondary',scale=1,
+                                              elem_classes=['act-jog'])
                         with gr.Row():
-                            ft_gopen=gr.Button('그리퍼 열기',size='sm')
-                            ft_gclose=gr.Button('그리퍼 닫기',size='sm')
+                            ft_gopen=gr.Button('그리퍼 열기',size='sm',
+                                               elem_classes=['act-jog'])
+                            ft_gclose=gr.Button('그리퍼 닫기',size='sm',
+                                                elem_classes=['act-jog'])
                         with gr.Row():
                             ft_apply=gr.Button('base 보정 가져오기',size='sm')
                             ft_reset=gr.Button('보정 초기화',size='sm')
@@ -2938,7 +3095,8 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                                                  size='sm')
                     with gr.Accordion('URDF / STL 불러오기',open=False):
                         up_kind=gr.Radio(['URDF (자세)','STL (환경)'],
-                                         value='URDF (자세)',show_label=False)
+                                         value='URDF (자세)',show_label=False,
+                                         elem_classes=['segmented'])
                         up_dir=gr.File(label='URDF 패키지 폴더 드롭',
                                        file_count='directory')
                         up=gr.File(label='STL 파일',
@@ -2978,7 +3136,8 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                         btn_gadd_close=gr.Button('◆ 그리퍼 닫기',size='sm')
                     gr.Markdown('**파이프라인** (■자세 / ┃이동 / ◆그리퍼)')
                     seq_sel=gr.Radio(choices=seq_labels(),
-                                     label='블록 선택',show_label=False)
+                                     label='블록 선택',show_label=False,
+                                     elem_id='pipeline')
                     with gr.Row():
                         btn_sdel=gr.Button('삭제',size='sm')
                         btn_sup=gr.Button('▲',size='sm')
@@ -2995,12 +3154,15 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                         loop=gr.Checkbox(label='반복',value=False)
                     with gr.Row():
                         btn_prev=gr.Button('미리보기',variant='secondary')
-                        btn_run=gr.Button('실물 실행',variant='primary')
-                        btn_stop=gr.Button('정지',variant='stop')
-                    btn_toff=gr.Button('토크 해제',size='sm')
+                        btn_run=gr.Button('실물 실행',variant='primary',
+                                          elem_classes=['act-robot'])
+                        btn_stop=gr.Button('정지',variant='stop',
+                                           elem_classes=['act-stop'])
+                    btn_toff=gr.Button('토크 해제',size='sm',
+                                       elem_classes=['act-jog'])
                     gr.Markdown('**위에서 본 맵** — ┃이동 블록 선택 후 클릭하면 '
                                 '경로 점이 직교로 추가됩니다')
-                    map_img=gr.HTML(value='')
+                    map_img=gr.HTML(value='',elem_id='mapwrap')
                     mapxy=gr.Textbox(visible=False,elem_id='mapxy')
                     with gr.Row():
                         btn_mundo=gr.Button('점 취소',size='sm')
@@ -3056,15 +3218,16 @@ with gr.Blocks(title='ARM STUDIO') as demo:
 
         # ================= 오른쪽: 3D 뷰 + 상태 =================
         with gr.Column(scale=5):
-            gr.HTML(f'<iframe src="http://localhost:{VIEWER_PORT}/" '
-                    'style="width:100%;height:560px;border:1px solid #bbb;'
-                    'border-radius:6px;background:#303030;"></iframe>')
-            status=gr.Textbox(label='상태',lines=3,
+            gr.HTML(f'<iframe id="viewer3d" src="http://localhost:{VIEWER_PORT}/" '
+                    'onload="window._armSendTheme&&window._armSendTheme()">'
+                    '</iframe>')
+            status=gr.Textbox(label='상태',lines=3,elem_id='statusbox',
                               value='준비됨. [자세]에서 미세조정, [이동]에서 실행.')
             with gr.Group(visible=False):        # (숨김) plotly 폴백 출력용
                 plot=gr.Plot(value=robot_fig([0.0]*6),label='plotly 3D')
 
     # 배선
+    theme_btn.click(None,None,None,js='() => window._armToggleTheme()')
     pose_sel.change(h_select,[pose_sel],[plot]+sliders)
     for sl in sliders:
         sl.release(h_slider,[pose_sel]+sliders,[plot,status])
@@ -3149,7 +3312,8 @@ if __name__=='__main__':
     for port in range(7860,7880):
         try:
             demo.launch(server_name='0.0.0.0',server_port=port,share=False,
-                        inbrowser=False,show_error=True)
+                        inbrowser=False,show_error=True,
+                        theme=THEME,css=THEME_CSS,js=THEME_JS)
             break
         except OSError:
             print(f"port {port} busy, trying {port+1}...")
