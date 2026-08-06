@@ -2984,20 +2984,30 @@ button.act-stop{background:#d1322e!important;color:#fff!important;
   border:1px solid #a02320!important;
   font-weight:800!important;letter-spacing:.1em}
 button.act-stop:hover{background:#b52824!important}
-/* ---------- 파이프라인 = 블록 ---------- */
-#pipeline label{flex:1 1 100%;display:flex;align-items:center;margin:2px 0;
-  padding:9px 12px;border-radius:5px;cursor:pointer;
-  border:1px solid var(--block-border-color);border-left-width:5px;
-  background:var(--background-fill-primary);
-  font-weight:600;font-size:.92em;transition:box-shadow .12s}
+/* ---------- 파이프라인 = 진짜 블록 (스크래치처럼 꽉 찬 색) ---------- */
+#pipeline label{flex:1 1 100%;display:flex;align-items:center;margin:3px 0;
+  padding:12px 14px;border-radius:7px;cursor:pointer;border:none;
+  position:relative;font-weight:700;font-size:.95em;transition:box-shadow .12s}
 #pipeline input{position:absolute;opacity:0}
-#pipeline label.blk-pose{border-left-color:var(--as-blue)}
-#pipeline label.blk-move{border-left-color:#8b91a0;border-left-style:dashed;
-  flex-basis:calc(100% - 26px);margin-left:26px;padding:5px 10px;
-  font-weight:500;font-size:.85em;opacity:.92}
-#pipeline label.blk-grip{border-left-color:#d9a012;
-  flex-basis:calc(100% - 26px);margin-left:26px;padding:6px 10px;font-size:.88em}
-#pipeline label.selected{box-shadow:0 0 0 2px var(--color-accent)}
+/* ■ 자세 = 강철 파랑 꽉 찬 블록 */
+#pipeline label.blk-pose{background:var(--as-blue);color:#fff}
+#pipeline label.blk-pose span{color:#fff!important}
+/* ┃ 이동 = 들여쓰기 + 점선 테두리 + 연결선 */
+#pipeline label.blk-move{background:transparent;
+  border:1.5px dashed #7c8798;color:var(--body-text-color);
+  flex-basis:calc(100% - 38px);margin-left:38px;padding:8px 12px;
+  font-weight:600;font-size:.86em}
+/* 이동/그리퍼 블록 왼쪽에 위아래 블록을 잇는 세로 연결선 */
+#pipeline label.blk-move::before, #pipeline label.blk-grip::before{
+  content:'';position:absolute;left:-21px;top:-12px;bottom:-12px;width:3px;
+  background:#7c8798;border-radius:2px}
+/* ◆ 그리퍼 = 호박색 꽉 찬 블록 */
+#pipeline label.blk-grip{background:#d9a012;color:#231a00;
+  flex-basis:calc(100% - 38px);margin-left:38px;padding:9px 12px;
+  font-size:.88em}
+#pipeline label.blk-grip span{color:#231a00!important}
+/* 선택 = 안전 주황 링 (채운 블록 위에서도 확실히 보이게) */
+#pipeline label.selected{box-shadow:0 0 0 3px var(--as-accent)!important}
 /* ---------- 세그먼트 (조인트 선택 등) ---------- */
 .segmented label{border:1px solid var(--block-border-color);padding:6px 14px;
   border-radius:4px;font-weight:600;cursor:pointer}
@@ -3018,16 +3028,17 @@ button.act-stop:hover{background:#b52824!important}
 #mapwrap{background:var(--background-fill-primary);
   border:1px solid var(--block-border-color);border-radius:6px;padding:8px}
 /* ---------- 정렬 수정 ---------- */
+/* 모든 gr.Button 높이/글자 통일 (lg/md/sm 크기 차이 제거) */
+button.lg, button.md, button.sm{min-height:44px!important;height:44px!important;
+  font-size:.92rem!important;padding-top:0!important;padding-bottom:0!important}
 /* 아이콘 버튼 (↻): 빈 회색 바 금지, 작은 정사각 */
 button.iconbtn{max-width:44px!important;min-width:44px!important;
-  width:44px!important;height:42px;padding:0!important;font-size:1.05em;
-  align-self:flex-end;flex-grow:0!important}
+  width:44px!important;height:44px!important;padding:0!important;
+  font-size:1.05em;align-self:flex-end;flex-grow:0!important}
 /* 라벨 있는 입력과 버튼이 한 행일 때: 아래 기준선 정렬 */
 .row-end{align-items:flex-end!important}
-.row-end button{height:44px}
 /* 같은 행 버튼 높이 통일 */
 .btnrow{align-items:stretch!important}
-.btnrow button{height:46px}
 /* 칩 라디오 (자세 목록): 동그라미 숨기고 칩으로 */
 .chips label{border:1px solid var(--block-border-color);border-radius:5px;
   padding:7px 14px;font-weight:600;cursor:pointer;
