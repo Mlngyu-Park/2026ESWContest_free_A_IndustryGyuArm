@@ -1,0 +1,41 @@
+/* 시안 C — MISSION CONSOLE: 관제탑 흑색 + 모노스페이스 + 앰버 */
+html.dark, html.dark body{
+  --body-background-fill:#0b0d0f!important;
+  --background-fill-primary:#141719!important;
+  --background-fill-secondary:#101214!important;
+  --block-background-fill:#141719!important;
+  --block-border-color:#2c3136!important;
+  --border-color-primary:#2c3136!important;
+  --input-background-fill:#0e1012!important;
+  --body-text-color:#d8d3c5!important;
+  --block-label-text-color:#8f8a7c!important;
+  --color-accent:#ffb000!important;
+  --button-primary-background-fill:#6b5310!important;
+}
+body, button, input, select, textarea, label{
+  font-family:ui-monospace,'Cascadia Mono',Consolas,monospace!important}
+.block{border-radius:4px!important}
+#hdr{border-bottom:2px solid #ffb000}
+#brand-mark{background:#ffb000}
+#brand-sub{color:#8f8a7c}
+button[role="tab"][aria-selected="true"]{color:#ffb000!important;
+  border-color:#ffb000!important}
+button.act-robot{background:linear-gradient(180deg,#e8720c,#b85a0a)!important;
+  box-shadow:0 0 12px rgba(232,114,12,.35)}
+#pipeline label{background:#121416;border-color:#2c3136}
+#pipeline label.blk-pose{border-left-color:#ffb000;background:#1a1810}
+#pipeline label.blk-move{border-left-color:#5a6068}
+#pipeline label.blk-grip{border-left-color:#3adb76}
+#pipeline label.selected{box-shadow:0 0 0 1px #ffb000,0 0 14px rgba(255,176,0,.35)}
+.chips label.selected{background:#6b5310!important;border-color:#ffb000!important;
+  color:#ffd97a!important}
+.segmented label.selected{background:#6b5310!important;border-color:#ffb000!important;
+  color:#ffd97a!important}
+#statusbox textarea{background:#080a0b!important;color:#7ee08c!important;
+  border-left-color:#3adb76!important}
+#themebtn-html:hover{border-color:#ffb000;color:#ffb000}
+button.act-stop{background:#d1322e!important;color:#fff!important;border:1px solid #a02320!important;font-weight:800!important;letter-spacing:.1em}
+/* C 보강: 앰버 아웃라인 프라이머리 (탁한 금색 채움 제거) */
+button.primary{background:#241d0b!important;color:#ffd97a!important;border:1px solid #b98a10!important}
+button.primary:hover{background:#332a10!important;border-color:#ffb000!important}
+#brand{color:#ffb000}

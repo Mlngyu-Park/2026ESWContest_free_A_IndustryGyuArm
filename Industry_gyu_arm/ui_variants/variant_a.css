@@ -1,0 +1,25 @@
+/* 시안 A — STEEL HMI: 그래파이트 + 안전주황, 각진 산업장비 패널 */
+html.dark, html.dark body{
+  --body-background-fill:#17191d!important;
+  --background-fill-primary:#1e2126!important;
+  --background-fill-secondary:#191c20!important;
+  --block-background-fill:#1e2126!important;
+  --block-border-color:#3a4048!important;
+  --border-color-primary:#3a4048!important;
+  --input-background-fill:#13151a!important;
+  --body-text-color:#d8dce3!important;
+  --block-label-text-color:#9aa1ad!important;
+  --color-accent:#3d6fa3!important;
+  --button-primary-background-fill:#3d6fa3!important;
+}
+.block, .form, button, input, select, textarea{border-radius:3px!important}
+button[role="tab"]{text-transform:uppercase;letter-spacing:.12em!important;
+  font-size:.92em!important}
+#hdr{border-bottom:3px solid #e8720c}
+#brand-mark{background:#e8720c;box-shadow:0 0 0 3px rgba(232,114,12,.25)}
+#pipeline label{border-radius:2px;background:#22252b}
+#pipeline label.blk-pose{background:#1f2733;border-left-color:#3d6fa3}
+#pipeline label.blk-grip{background:#2a2517;border-left-color:#d9a012}
+.chips label.selected{background:#3d6fa3!important;border-color:#3d6fa3!important}
+.segmented label.selected{background:#3d6fa3!important}
+button.act-stop{background:#d1322e!important;color:#fff!important;border:1px solid #a02320!important;font-weight:800!important;letter-spacing:.1em}

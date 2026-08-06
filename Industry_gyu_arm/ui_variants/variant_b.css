@@ -1,0 +1,32 @@
+/* 시안 B — BLUEPRINT: 도면 네이비 + 시안, 설계도 느낌의 가는 선 */
+html.dark, html.dark body{
+  --body-background-fill:#0c1626!important;
+  --background-fill-primary:#11203a!important;
+  --background-fill-secondary:#0e1a2e!important;
+  --block-background-fill:#11203a!important;
+  --block-border-color:#24466e!important;
+  --border-color-primary:#24466e!important;
+  --input-background-fill:#0a1322!important;
+  --body-text-color:#cfe2f5!important;
+  --block-label-text-color:#7fa3c9!important;
+  --color-accent:#38b6e0!important;
+  --button-primary-background-fill:#1e6d94!important;
+}
+.block{border-width:1px!important}
+#hdr{border-bottom:1px solid #38b6e0}
+#brand{color:#cfe2f5}
+#brand-mark{background:#38b6e0}
+#brand-sub{color:#7fa3c9}
+button[role="tab"][aria-selected="true"]{color:#38b6e0!important;
+  border-color:#38b6e0!important}
+#pipeline label{background:#0f1c33;border-color:#24466e}
+#pipeline label.blk-pose{border-left-color:#38b6e0;background:#132b47}
+#pipeline label.blk-move{border-left-color:#41608a}
+#pipeline label.blk-grip{border-left-color:#d9a012}
+#pipeline label.selected{box-shadow:0 0 0 2px #38b6e0}
+.chips label.selected{background:#1e6d94!important;border-color:#38b6e0!important}
+.segmented label.selected{background:#1e6d94!important;border-color:#38b6e0!important}
+#statusbox textarea{background:#081019!important;border-left-color:#38b6e0!important;
+  color:#a8d4f0!important}
+#themebtn-html:hover{border-color:#38b6e0;color:#38b6e0}
+button.act-stop{background:#d1322e!important;color:#fff!important;border:1px solid #a02320!important;font-weight:800!important;letter-spacing:.1em}

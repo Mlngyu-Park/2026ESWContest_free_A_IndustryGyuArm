@@ -2943,8 +2943,8 @@ THEME_CSS="""
   --button-cancel-text-color:#fff;
   --color-accent:var(--as-blue); --color-accent-soft:#dbe5f0;
 }
-/* ---------- 다크 ---------- */
-.dark{
+/* ---------- 다크 (html.dark = gradio 기본 .dark 보다 우선) ---------- */
+html.dark, html.dark body{
   --body-background-fill:#14161a;
   --background-fill-primary:#1c1f26;
   --background-fill-secondary:#171a20;
@@ -2979,8 +2979,11 @@ button.act-robot:hover{filter:brightness(1.1)}
 button.act-jog{background:transparent!important;color:var(--as-accent)!important;
   border:1.5px solid var(--as-accent)!important;font-weight:700!important}
 button.act-jog:hover{background:rgba(232,114,12,.12)!important}
-/* 정지 */
-button.act-stop{font-weight:800!important;letter-spacing:.1em}
+/* 정지 (gradio 6 은 cancel 변수를 안 쓰므로 직접 칠한다) */
+button.act-stop{background:#d1322e!important;color:#fff!important;
+  border:1px solid #a02320!important;
+  font-weight:800!important;letter-spacing:.1em}
+button.act-stop:hover{background:#b52824!important}
 /* ---------- 파이프라인 = 블록 ---------- */
 #pipeline label{flex:1 1 100%;display:flex;align-items:center;margin:2px 0;
   padding:9px 12px;border-radius:5px;cursor:pointer;
@@ -3014,50 +3017,86 @@ button.act-stop{font-weight:800!important;letter-spacing:.1em}
   background:#303030;display:block}
 #mapwrap{background:var(--background-fill-primary);
   border:1px solid var(--block-border-color);border-radius:6px;padding:8px}
+/* ---------- 정렬 수정 ---------- */
+/* 아이콘 버튼 (↻): 빈 회색 바 금지, 작은 정사각 */
+button.iconbtn{max-width:44px!important;min-width:44px!important;
+  width:44px!important;height:42px;padding:0!important;font-size:1.05em;
+  align-self:flex-end;flex-grow:0!important}
+/* 라벨 있는 입력과 버튼이 한 행일 때: 아래 기준선 정렬 */
+.row-end{align-items:flex-end!important}
+.row-end button{height:44px}
+/* 같은 행 버튼 높이 통일 */
+.btnrow{align-items:stretch!important}
+.btnrow button{height:46px}
+/* 칩 라디오 (자세 목록): 동그라미 숨기고 칩으로 */
+.chips label{border:1px solid var(--block-border-color);border-radius:5px;
+  padding:7px 14px;font-weight:600;cursor:pointer;
+  background:var(--background-fill-primary)}
+.chips label.selected{background:var(--color-accent);color:#fff;
+  border-color:var(--color-accent)}
+.chips input{position:absolute;opacity:0}
+/* 헤더 토글 (순수 HTML 버튼) */
+#themebtn-html{margin-left:auto;background:transparent;cursor:pointer;
+  border:1px solid var(--block-border-color);border-radius:5px;
+  color:var(--body-text-color);padding:7px 14px;font-weight:600;
+  font-size:.85em;letter-spacing:.05em}
+#themebtn-html:hover{border-color:var(--as-accent);color:var(--as-accent)}
 """
 
-# 페이지 로드 시 1회 실행: 테마 적용/토글 + 파이프라인 블록 분류
-THEME_JS="""
-() => {
-  const apply=(t)=>{
-    document.body.classList.toggle('dark',t==='dark');
-    try{localStorage.setItem('arm_theme',t);}catch(e){}
-    const f=document.getElementById('viewer3d');
-    if(f&&f.contentWindow) f.contentWindow.postMessage({armTheme:t},'*');
-  };
-  window._armSendTheme=()=>{
-    const t=document.body.classList.contains('dark')?'dark':'light';
-    const f=document.getElementById('viewer3d');
-    if(f&&f.contentWindow) f.contentWindow.postMessage({armTheme:t},'*');
-  };
-  window._armToggleTheme=()=>{
-    apply(document.body.classList.contains('dark')?'light':'dark');
-  };
-  let saved='dark';
-  try{saved=localStorage.getItem('arm_theme')||'dark';}catch(e){}
-  apply(saved);
-  /* 파이프라인 Radio 항목을 기호(■┃◆)로 분류해 블록처럼 칠한다 */
-  const classify=()=>{
-    document.querySelectorAll('#pipeline label').forEach(lb=>{
-      const t=(lb.textContent||'').trim();
-      const want=t.startsWith('\\u25a0')?'blk-pose'
-               :(t.startsWith('\\u2503')?'blk-move'
-               :(t.startsWith('\\u25c6')?'blk-grip':''));
-      if(want&&!lb.classList.contains(want)) lb.classList.add(want);
-    });
-  };
-  new MutationObserver(classify).observe(document.body,
-    {childList:true,subtree:true});
-  classify();
-}
+# 테마 적용/토글 + 파이프라인 블록 분류.
+# 주의: gradio 6 은 launch(js=...) 를 실행하지 않으므로 head= 로 주입한다.
+HEAD_HTML="""
+<script>
+(function(){
+  function ready(fn){
+    if(document.readyState!=='loading') fn();
+    else document.addEventListener('DOMContentLoaded',fn);
+  }
+  ready(function(){
+    var apply=function(t){
+      document.documentElement.classList.toggle('dark',t==='dark');
+      document.body.classList.toggle('dark',t==='dark');
+      try{localStorage.setItem('arm_theme',t);}catch(e){}
+      var f=document.getElementById('viewer3d');
+      if(f&&f.contentWindow) f.contentWindow.postMessage({armTheme:t},'*');
+    };
+    window._armSendTheme=function(){
+      var t=document.documentElement.classList.contains('dark')?'dark':'light';
+      var f=document.getElementById('viewer3d');
+      if(f&&f.contentWindow) f.contentWindow.postMessage({armTheme:t},'*');
+    };
+    window._armToggleTheme=function(){
+      apply(document.documentElement.classList.contains('dark')?'light':'dark');
+    };
+    var saved='dark';
+    try{saved=localStorage.getItem('arm_theme')||'dark';}catch(e){}
+    apply(saved);
+    /* 파이프라인 Radio 항목을 기호(■┃◆)로 분류해 블록처럼 칠한다 */
+    var classify=function(){
+      document.querySelectorAll('#pipeline label').forEach(function(lb){
+        var t=(lb.textContent||'').trim();
+        var want=t.indexOf('\\u25a0')===0?'blk-pose'
+               :(t.indexOf('\\u2503')===0?'blk-move'
+               :(t.indexOf('\\u25c6')===0?'blk-grip':''));
+        if(want&&!lb.classList.contains(want)) lb.classList.add(want);
+      });
+    };
+    new MutationObserver(classify).observe(document.body,
+      {childList:true,subtree:true});
+    classify();
+  });
+})();
+</script>
 """
 
 # ================= UI =================
 with gr.Blocks(title='ARM STUDIO') as demo:
     with gr.Row(elem_id='hdr'):
         gr.HTML('<div id="brand"><span id="brand-mark"></span>ARM STUDIO'
-                '<span id="brand-sub">ROBOT ARM CONTROL</span></div>')
-        theme_btn=gr.Button('◐ 다크/라이트',size='sm',elem_id='themebtn',scale=0)
+                '<span id="brand-sub">ROBOT ARM CONTROL</span>'
+                '<button id="themebtn-html" '
+                'onclick="window._armToggleTheme&&window._armToggleTheme()">'
+                '◐ 다크/라이트</button></div>')
     with gr.Row():
         # ================= 왼쪽 사이드바 (자세 / 이동 / 환경) =================
         with gr.Column(scale=3):
@@ -3067,8 +3106,9 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                     with gr.Row():
                         pose_sel=gr.Radio(choices=pose_names(),value='base',
                                           label='자세 목록 (클릭 = 3D 미리보기)',
-                                          scale=4)
-                        ft_refresh=gr.Button('↻',scale=1,size='sm')
+                                          scale=4,elem_classes=['chips'])
+                        ft_refresh=gr.Button('↻',scale=0,size='sm',
+                                             elem_classes=['iconbtn'])
                     ft_joint=gr.Radio(choices=['J1','J2','J3','J4','J5'],
                                       value='J1',label='조인트 선택',
                                       elem_classes=['segmented'])
@@ -3076,7 +3116,7 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                                       open=True):
                         ft_go=gr.Button('로봇을 이 자세로',variant='primary',
                                         elem_classes=['act-robot'])
-                        with gr.Row():
+                        with gr.Row(elem_classes=['row-end']):
                             ft_step=gr.Dropdown(choices=['0.5','1','2','5'],
                                                 value='1',label='스텝(도)',scale=2)
                             ft_minus=gr.Button('−',variant='secondary',scale=1,
@@ -3129,8 +3169,9 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                     with gr.Row():
                         mv_pose=gr.Dropdown(choices=pose_names(),value='base',
                                             label='추가할 자세',scale=3)
-                        mv_refresh=gr.Button('↻',scale=1,size='sm')
-                    with gr.Row():
+                        mv_refresh=gr.Button('↻',scale=0,size='sm',
+                                             elem_classes=['iconbtn'])
+                    with gr.Row(elem_classes=['btnrow']):
                         btn_sadd=gr.Button('■ 자세 추가',variant='primary')
                         btn_gadd_open=gr.Button('◆ 그리퍼 열기',size='sm')
                         btn_gadd_close=gr.Button('◆ 그리퍼 닫기',size='sm')
@@ -3152,7 +3193,7 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                         speed=gr.Dropdown(choices=['0.5x','1.0x','1.5x','2.0x','3.0x','4.0x'],
                                           value='1.5x',label='속도')
                         loop=gr.Checkbox(label='반복',value=False)
-                    with gr.Row():
+                    with gr.Row(elem_classes=['btnrow']):
                         btn_prev=gr.Button('미리보기',variant='secondary')
                         btn_run=gr.Button('실물 실행',variant='primary',
                                           elem_classes=['act-robot'])
@@ -3227,7 +3268,6 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                 plot=gr.Plot(value=robot_fig([0.0]*6),label='plotly 3D')
 
     # 배선
-    theme_btn.click(None,None,None,js='() => window._armToggleTheme()')
     pose_sel.change(h_select,[pose_sel],[plot]+sliders)
     for sl in sliders:
         sl.release(h_slider,[pose_sel]+sliders,[plot,status])
@@ -3313,7 +3353,7 @@ if __name__=='__main__':
         try:
             demo.launch(server_name='0.0.0.0',server_port=port,share=False,
                         inbrowser=False,show_error=True,
-                        theme=THEME,css=THEME_CSS,js=THEME_JS)
+                        theme=THEME,css=THEME_CSS,head=HEAD_HTML)
             break
         except OSError:
             print(f"port {port} busy, trying {port+1}...")
