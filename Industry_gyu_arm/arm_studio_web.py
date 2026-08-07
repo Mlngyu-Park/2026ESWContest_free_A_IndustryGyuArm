@@ -474,6 +474,146 @@ def _seed_list(extra=None):
     for p in S['poses']: seeds.append(list(p['angles']))
     return seeds or [[0.0]*6]
 
+# ===== Dynamixel(옛 로봇) 체인 + STS<->DXL EE 매핑 =====
+# 원리: 두 로봇이 공유하는 것은 관절각이 아니라 "EE 경로"다.
+#   - 각 로봇의 base 자세(q=0)를 기준으로 한 EE 변위를 (앞,위) 축 정렬로 옮긴다
+#   - 자세(수평)는 각 로봇이 자기 base 자세의 기울기를 그대로 유지
+#   주의: DXL URDF 는 SolidWorks 특성상 y-up (j1 축이 ±Y), STS 는 z-up
+DXL_OK=False
+try:
+    import glob as _g
+    from dxl_profile import (PORT as DXL_PORT, BAUD as DXL_BAUD,
+        J2ID as DXL_J2ID, DIR as DXL_DIR, ZERO_RAW as DXL_ZERO,
+        LIMIT_RAW as DXL_LIMIT, ZERO_VERIFIED as DXL_ZERO_VERIFIED)
+    _c=_g.glob(os.path.join(URDF_ROOT,'dynamixel','*base*','urdf','*.urdf'))
+    if _c:
+        DXL_URDF=_c[0]; DXL_DEF=_parse_urdf(DXL_URDF); DXL_OK=True
+        print(f"Dynamixel URDF: {DXL_URDF}")
+        if not DXL_ZERO_VERIFIED:
+            print("  !! DXL 영점 미검증 - 실행 전 dxl_capture_zero.py 필수 !!")
+except Exception as _e:
+    print(f"Dynamixel 프로필 로드 실패 (기능 비활성): {_e}")
+
+def dxl_jr_limits(jidx):
+    i=DXL_J2ID[jidx]; lo,hi=DXL_LIMIT[i]; z=DXL_ZERO[i]; d=DXL_DIR[i]
+    a=d*(lo-z)*math.pi/2048.0; b=d*(hi-z)*math.pi/2048.0
+    return (min(a,b),max(a,b))
+def dxl_rad_to_raw(jidx,rad):
+    i=DXL_J2ID[jidx]
+    raw=int(DXL_ZERO[i]+DXL_DIR[i]*rad*2048.0/math.pi)
+    lo,hi=DXL_LIMIT[i]; return max(lo,min(hi,raw)), i
+
+def _world_axes(defs):
+    """q=0 에서 각 조인트 회전축의 베이스(월드) 좌표계 방향."""
+    R=np.eye(3); out=[]
+    for jn in JOINTS:
+        b=defs[jn]
+        R=R@_R(b['rpy'])
+        a=R@b['axis']; out.append(a/np.linalg.norm(a))
+    return out
+
+def _level_mask(defs):
+    """수평 유지 4축 선택을 로봇 구조에서 자동 판별.
+    yaw(수직축과 평행) 1개 + 서로 평행한 pitch(수직에 직교) 최대 그룹.
+    (STS: j1+j2j3j4 / DXL: j1+j2j3j5 - SolidWorks 네이밍이 꼬여 있어도 동작)"""
+    ax=_world_axes(defs)
+    up=np.abs(ax[0])                       # j1 = 베이스 요 축이 수직
+    yaw=[k for k in range(5) if abs(np.dot(ax[k],up))>0.99]
+    pitch=[k for k in range(5) if abs(np.dot(ax[k],up))<0.1]
+    best=[]
+    for k in pitch:
+        grp=[g for g in pitch if abs(np.dot(ax[k],ax[g]))>0.99]
+        if len(grp)>len(best): best=grp
+    mask=[False]*6
+    for k in yaw[:1]+best: mask[k]=True
+    return mask
+
+_DXL_CHAINS={}
+def _dxl_chain(level=True):
+    if not DXL_OK: return None
+    key='L' if level else 'F'
+    if key not in _DXL_CHAINS:
+        lvl=_level_mask(DXL_DEF)
+        links=[OriginLink()]; active=[False]
+        for k,jn in enumerate(JOINTS):
+            b=DXL_DEF[jn]
+            links.append(URDFLink(name=jn,origin_translation=list(b['xyz']),
+                                  origin_orientation=list(b['rpy']),
+                                  rotation=list(b['axis']),
+                                  bounds=dxl_jr_limits(k),joint_type='revolute'))
+            active.append(lvl[k] if level else True)
+        _DXL_CHAINS[key]=Chain(name='dxl'+key,links=links,active_links_mask=active)
+        if level: print(f"DXL 수평 체인 활성 관절: "
+                        f"{[JOINTS[k] for k in range(6) if lvl[k]]}")
+    return _DXL_CHAINS[key]
+
+def _chain_ee(chain,q):
+    T=chain.forward_kinematics([0]+list(q)); return T[:3,3].copy(),T[:3,:3].copy()
+
+# 로봇별 프레임 파라미터: base 자세(q=0)에서 자동 산출
+#   up   : 수직축 (j1 회전축 방향, EE 가 위에 있는 쪽)
+#   p0   : base 자세의 EE 위치 (로컬)
+#   emode: EE 프레임에서 수직과 정렬된 축 ('X'/'Y'/'Z') -> ikpy orientation_mode
+#   evec : 그 축이 향해야 하는 방향 (base 자세 그대로 유지)
+#   M    : (앞,옆,위) -> 로컬 좌표 회전행렬 (변위 변환용)
+def _frame_params(chain,j1_axis):
+    p0,R0=_chain_ee(chain,[0.0]*6)
+    up=np.abs(np.asarray(j1_axis,float)); up=up/np.linalg.norm(up)
+    if np.dot(p0,up)<0: up=-up                    # EE 가 있는 쪽 = 위
+    k=int(np.argmax([abs(np.dot(R0[:,c],up)) for c in range(3)]))
+    emode='XYZ'[k]
+    evec=R0[:,k].copy()                           # base 자세의 방향 그대로 유지
+    h=p0-np.dot(p0,up)*up
+    n=np.linalg.norm(h)
+    fwd=h/n if n>1e-6 else np.array([1.,0.,0.])
+    side=np.cross(up,fwd)
+    M=np.column_stack([fwd,side,up])              # (앞,옆,위) -> 로컬
+    return {'p0':p0,'up':up,'emode':emode,'evec':evec,'M':M}
+
+_FRM={'sts':None,'dxl':None}
+def _frames_init():
+    if _FRM['sts'] is None:
+        _FRM['sts']=_frame_params(CHAIN,BASE_DEF['j1']['axis'])
+    if DXL_OK and _FRM['dxl'] is None:
+        _FRM['dxl']=_frame_params(_dxl_chain(False),DXL_DEF['j1']['axis'])
+
+_MAP_LAST={'s2d':None,'d2s':None}
+def _map_pair(q_src,src):
+    """src 로봇 관절 -> 같은 'base 기준 EE 변위'를 만드는 상대 로봇 관절.
+    실패 시 None (해당 웨이포인트는 상대 로봇 유지)."""
+    if not DXL_OK: return None
+    _frames_init()
+    dst='dxl' if src=='sts' else 'sts'
+    key='s2d' if src=='sts' else 'd2s'
+    cs=CHAIN if src=='sts' else _dxl_chain(False)
+    cd=_dxl_chain(True) if dst=='dxl' else _chain_level()
+    fs,fd=_FRM[src],_FRM[dst]
+    p,_=_chain_ee(cs,q_src)
+    d_local=fs['M'].T@(p-fs['p0'])               # (앞,옆,위) 변위
+    pt=fd['p0']+fd['M']@d_local                  # 상대 로봇 로컬 목표
+    seeds=[]
+    if _MAP_LAST[key] is not None: seeds.append(list(_MAP_LAST[key]))
+    seeds.append([0.0]*6)
+    for s in seeds:
+        try:
+            sol=cd.inverse_kinematics(target_position=pt,
+                target_orientation=fd['evec'],
+                orientation_mode=fd['emode'],
+                initial_position=[0.0]+list(s))
+        except Exception:
+            continue
+        qd=list(sol[1:7])
+        pc,Rc=_chain_ee(cd,qd)
+        kc='XYZ'.index(fd['emode'])
+        if (np.linalg.norm(pc-pt)<0.004
+                and np.dot(Rc[:,kc],fd['evec'])>0.999):
+            _MAP_LAST[key]=qd
+            return qd
+    return None
+
+def map_sts_to_dxl(q): return _map_pair(q,'sts')
+def map_dxl_to_sts(q): return _map_pair(q,'dxl')
+
 def ik_level(pt,seeds,j5,j6):
     """수평 유지 IK (j5/j6 잠금). 초기값 여러 개 시도 -> 관절6개 or None.
     (초기값이 나쁘면 도달 가능한 점도 실패 판정이 나므로 다중 시도 필수)"""
@@ -1006,7 +1146,126 @@ class Robot:
     def estop(self):
         try: self.torque(False)
         except Exception: pass
-ROBOT=Robot()
+ROBOT_STS=Robot()
+
+class DXLRobot:
+    """옛 Dynamixel 로봇 (XC/XM430, Protocol 2.0, U2D2).
+    j4<->j5 배선 교차/방향/영점은 dxl_profile 에서. 관절값은 DXL 로컬 rad."""
+    A_TORQUE=64; A_GOAL=116; A_PRESENT=132
+    A_PVEL=112; A_PACC=108; A_DRIVE=10
+    def __init__(self):
+        self.port=None; self.packet=None; self.lock=threading.RLock()
+    def connect(self):
+        if not DXL_OK: return False
+        if self.port: return True
+        try:
+            from dynamixel_sdk import PortHandler,PacketHandler
+            p=PortHandler(DXL_PORT)
+            if not p.openPort(): return False
+            p.setBaudRate(DXL_BAUD)
+            pk=PacketHandler(2.0)
+            _,r,_=pk.ping(p,DXL_J2ID[0])
+            if r!=0:
+                p.closePort(); return False
+            self.port=p; self.packet=pk; return True
+        except Exception:
+            return False
+    def _w1(self,i,a,v):
+        with self.lock:
+            try: return self.packet.write1ByteTxRx(self.port,i,a,int(v))[0]==0
+            except Exception: return False
+    def _w4(self,i,a,v):
+        with self.lock:
+            try:
+                return self.packet.write4ByteTxRx(
+                    self.port,i,a,int(v)&0xFFFFFFFF)[0]==0
+            except Exception: return False
+    def _r4(self,i,a):
+        with self.lock:
+            try:
+                v,r,_=self.packet.read4ByteTxRx(self.port,i,a)
+                return s32(v) if r==0 else None
+            except Exception: return None
+    def time_profile(self,on,sp=1.0):
+        """Drive Mode bit2=1 시간기반 프로파일 (덜덜거림 방지, 이전 실측)."""
+        for i in set(DXL_J2ID):
+            self._w1(i,self.A_TORQUE,0)
+            self._w1(i,self.A_DRIVE,4 if on else 0)
+        ms=int(600/max(sp,0.1))
+        for i in set(DXL_J2ID):
+            self._w4(i,self.A_PVEL,ms if on else 0)
+            self._w4(i,self.A_PACC,ms//3 if on else 0)
+    def torque(self,on):
+        for i in set(DXL_J2ID): self._w1(i,self.A_TORQUE,1 if on else 0)
+    def send(self,q_dxl,log=False,tag=''):
+        raws={}
+        for jidx in range(5):                  # 그리퍼(j6) 자동제어 안 함(값 미측정)
+            raw,i=dxl_rad_to_raw(jidx,q_dxl[jidx])
+            self._w4(i,self.A_GOAL,raw); raws[f'D{i}']=raw
+        if log: LOG_TARGET(raws,tag)
+        return raws
+    def read(self):
+        q=[0.0]*6
+        for jidx in range(6):
+            i=DXL_J2ID[jidx]
+            p=self._r4(i,self.A_PRESENT)
+            if p is not None: q[jidx]=DXL_DIR[i]*(p-DXL_ZERO[i])*math.pi/2048.0
+        return q
+    def estop(self):
+        try: self.torque(False)
+        except Exception: pass
+ROBOT_DXL=DXLRobot()
+
+# ===== 실행 로봇 선택 파사드 =====
+# 기존 핸들러들은 전부 ROBOT.* 를 부른다. q 는 항상 STS 관절 공간이고,
+# DXL 쪽은 send 순간에 EE 매핑(map_sts_to_dxl)으로 변환된다.
+EXEC={'mode':'sts','miss':0}
+class RobotMux:
+    def _sts(self): return EXEC['mode'] in ('sts','both')
+    def _dxl(self): return EXEC['mode'] in ('dxl','both') and DXL_OK
+    def connect(self):
+        ok=True
+        if self._sts(): ok=ROBOT_STS.connect() and ok
+        if self._dxl(): ok=ROBOT_DXL.connect() and ok
+        return ok
+    def time_profile(self,on,sp=1.0):
+        if self._sts(): ROBOT_STS.time_profile(on,sp)
+        if self._dxl(): ROBOT_DXL.time_profile(on,sp)
+    def torque(self,on):
+        if self._sts(): ROBOT_STS.torque(on)
+        if self._dxl(): ROBOT_DXL.torque(on)
+    def send(self,q,log=False,tag='',with_grip=False):
+        if self._dxl():
+            qd=map_sts_to_dxl(q)
+            if qd is not None: ROBOT_DXL.send(qd,log=log,tag=tag)
+            else:
+                EXEC['miss']+=1                # 도달 불가: DXL 은 그 자리 유지
+                if EXEC['miss']%25==1:
+                    print(f"[DXL] 도달 불가 웨이포인트 스킵 (누적 {EXEC['miss']})"
+                          " - 영점 재캡처/한계 재측정 후 다시 평가 필요")
+        if self._sts():
+            return ROBOT_STS.send(q,log=log,tag=tag,with_grip=with_grip)
+        return {}
+    def read(self):
+        if self._sts(): return ROBOT_STS.read()
+        m=map_dxl_to_sts(ROBOT_DXL.read())
+        return m if m is not None else list(CURRENT_Q)
+    def wait_reach(self,q,tol=25,timeout=6.0,ids=None):
+        if self._sts(): return ROBOT_STS.wait_reach(q,tol,timeout,ids)
+        time.sleep(0.05); return True,0        # DXL 단독: 시간 페이싱
+    def settle(self,q,tol=END_TOL,timeout=END_TIMEOUT,retry=4):
+        if self._sts(): return ROBOT_STS.settle(q,tol,timeout,retry)
+        time.sleep(END_SETTLE); return True,0
+    def gripper(self,open_,tq=None):
+        if self._sts(): return ROBOT_STS.gripper(open_,tq)
+        return None                            # DXL 그리퍼 값 미측정
+    def estop(self):
+        ROBOT_STS.estop()
+        if DXL_OK: ROBOT_DXL.estop()           # 정지는 모드 무관 전체
+    def _w1(self,*a): return ROBOT_STS._w1(*a)
+    def _w2(self,*a): return ROBOT_STS._w2(*a)
+    def _r2(self,*a): return ROBOT_STS._r2(*a)
+ROBOT=RobotMux()
 STOP=threading.Event()
 RUNNING=threading.Event()
 
@@ -2173,6 +2432,31 @@ def h_torque_off():
     if ROBOT.connect(): ROBOT.estop(); return "torque off"
     return "robot not connected"
 
+# ===== 실행 로봇 선택 / 연결 상태 =====
+def _robot_status_str():
+    s='● 연결됨' if ROBOT_STS.connect() else '○ 미연결'
+    out=f"SO-ARM ({PORT}): {s}"
+    if DXL_OK:
+        d='● 연결됨' if ROBOT_DXL.connect() else '○ 미연결'
+        out+=f"\nDynamixel ({DXL_PORT}): {d}"
+        if not DXL_ZERO_VERIFIED:
+            out+="  [경고: 영점 미검증 - dxl_capture_zero.py 먼저!]"
+    else:
+        out+="\nDynamixel: 프로필/URDF 없음"
+    return out
+
+_EXEC_LABELS={'SO-ARM (STS)':'sts','Dynamixel':'dxl','둘 다 (동시)':'both'}
+def h_exec_robot(sel):
+    BTN(f'실행로봇 {sel}')
+    EXEC['mode']=_EXEC_LABELS.get(sel,'sts'); EXEC['miss']=0
+    warn=''
+    if EXEC['mode'] in ('dxl','both') and DXL_OK and not DXL_ZERO_VERIFIED:
+        warn='\n!! DXL 영점 미검증 상태 - 실물 실행 전 dxl_capture_zero.py 필수 !!'
+    return f"실행 로봇: {sel}{warn}\n{_robot_status_str()}"
+def h_robot_status():
+    BTN('연결 확인')
+    return _robot_status_str()
+
 # ===== 매크로 버튼 1·2·3 (좌표 기록 -> 원버튼 재생) =====
 # 웹 버전 먼저. 나중에 물리 버튼(아두이노/RP2040/조이스틱)이 생겨도
 # 같은 h_macro_go(slot) 를 부르면 되도록 입력과 동작을 분리해 둔다.
@@ -3130,6 +3414,12 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                         ign_chk=gr.CheckboxGroup(choices=obstacle_ids(),
                                                  label='체크 = 무시')
                         btn_ign=gr.Button('무시 목록 저장',size='sm')
+                    exec_robot=gr.Radio(['SO-ARM (STS)','Dynamixel','둘 다 (동시)'],
+                                        value='SO-ARM (STS)',label='실행 로봇')
+                    with gr.Row():
+                        robot_stat=gr.Textbox(label='연결 상태',value='(확인 전)',
+                                              interactive=False,scale=4,lines=2)
+                        btn_rstat=gr.Button('확인',scale=1,size='sm')
                     with gr.Row():
                         speed=gr.Dropdown(choices=['0.5x','1.0x','1.5x','2.0x','3.0x','4.0x'],
                                           value='1.5x',label='속도')
@@ -3303,6 +3593,8 @@ with gr.Blocks(title='ARM STUDIO') as demo:
     demo.load(render_map2d,None,[map_img])
     btn_stop.click(h_stop,None,[status])
     btn_toff.click(h_torque_off,None,[status])
+    exec_robot.change(h_exec_robot,[exec_robot],[status])
+    btn_rstat.click(h_robot_status,None,[robot_stat])
     for _s,_b in zip(MACRO_SLOTS,macro_btns):
         _b.click(lambda s=_s: h_macro_go(s),None,[status])
     btn_mrec.click(h_macro_rec,[macro_slot],macro_btns+[status])
