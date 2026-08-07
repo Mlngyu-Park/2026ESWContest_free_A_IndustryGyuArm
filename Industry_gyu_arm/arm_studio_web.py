@@ -186,11 +186,20 @@ def build_chain():
         active.append(True)
     return Chain(name='arm',links=links,active_links_mask=active)
 CHAIN=build_chain()
+# ===== 로봇 베이스 위치 (플레이트 홈 스냅) =====
+# 로봇을 플레이트 위 원하는 타일에 재배치할 수 있다.
+#   - 내부 기구학(CHAIN)은 항상 로봇 로컬 좌표로 푼다
+#   - fk 결과는 월드로 (+BASE_OFF), IK 목표는 로컬로 (-BASE_OFF) 변환
+#   -> 나머지 코드(맵/충돌/간편이동)는 전부 월드 좌표라 수정 불필요
+BASE_OFF=np.zeros(3)          # 월드 기준 로봇 base 오프셋 (z 는 항상 0)
+def _base_T():
+    T=np.eye(4); T[:3,3]=BASE_OFF; return T
 def fk(q):
-    T=CHAIN.forward_kinematics([0]+list(q)); return T[:3,3].copy(), T[:3,:3].copy()
+    T=CHAIN.forward_kinematics([0]+list(q))
+    return T[:3,3]+BASE_OFF, T[:3,:3].copy()
 def fk_points(q):
     frames=CHAIN.forward_kinematics([0]+list(q),full_kinematics=True)
-    return np.array([f[:3,3] for f in frames])
+    return np.array([f[:3,3] for f in frames])+BASE_OFF
 
 def _read_stl(path,maxtri=20000):
     with open(path,'rb') as f:
@@ -298,7 +307,7 @@ def plan_ee_line(qa,qb,dens=1,rotmode='blend'):
         elif rotmode=='after':  frac=0.0
         else:                   frac=te
         zt=_rot(axz,angz*frac)@z0
-        sol=CHAIN.inverse_kinematics(target_position=pt,target_orientation=zt,
+        sol=CHAIN.inverse_kinematics(target_position=pt-BASE_OFF,target_orientation=zt,
                                      orientation_mode='Z',initial_position=[0]+q)
         qn=list(sol[1:]); pchk,_=fk(qn)
         if np.linalg.norm(pchk-pt)>0.004: return None
@@ -320,7 +329,7 @@ def _rot_only(way,q,pos,z0,axz,angz,f0,f1,dens):
     for k in range(1,n+1):
         t=k/n; te=t*t*(3-2*t)
         zt=_rot(axz,angz*(f0+(f1-f0)*te))@z0
-        sol=CHAIN.inverse_kinematics(target_position=pos,target_orientation=zt,
+        sol=CHAIN.inverse_kinematics(target_position=pos-BASE_OFF,target_orientation=zt,
                                      orientation_mode='Z',initial_position=[0]+q)
         qn=list(sol[1:]); pchk,_=fk(qn)
         if np.linalg.norm(pchk-pos)>0.004: return None
@@ -353,7 +362,7 @@ def plan_ee_axis(qa,qb,order,dens=1,rotmode='blend'):
             elif rotmode=='after':  frac=0.0      # 아직 회전 안 함 -> 유지
             else:                   frac=(traveled+abs(dist)*te)/total
             zt=_rot(axz,angz*frac)@z0
-            sol=CHAIN.inverse_kinematics(target_position=pt,target_orientation=zt,
+            sol=CHAIN.inverse_kinematics(target_position=pt-BASE_OFF,target_orientation=zt,
                                          orientation_mode='Z',initial_position=[0]+q)
             qn=list(sol[1:]); pchk,_=fk(qn)
             if np.linalg.norm(pchk-pt)>0.004: return None
@@ -415,7 +424,7 @@ def plan_ee_level(qa,qb,order,dens=1,down=None):
         for k in range(1,n+1):
             t=k/n; te=t*t*(3-2*t)
             pt=cur.copy(); pt[ai]+=dist*te
-            sol=CHAIN.inverse_kinematics(target_position=pt,
+            sol=CHAIN.inverse_kinematics(target_position=pt-BASE_OFF,
                                          target_orientation=z_target,
                                          orientation_mode='Z',
                                          initial_position=[0]+q)
@@ -472,7 +481,7 @@ def ik_level(pt,seeds,j5,j6):
     for s in seeds:
         init=[0.0]+list(s); init[5]=j5; init[6]=j6
         try:
-            sol=ch.inverse_kinematics(target_position=tgt,
+            sol=ch.inverse_kinematics(target_position=tgt-BASE_OFF,
                                       target_orientation=_UPV,
                                       orientation_mode='Z',
                                       initial_position=init)
@@ -540,11 +549,12 @@ def _pt_in_tri(p,tri):
     return not(neg and pos)
 
 _OBS={'grid':None,'dist':None,'base':None,'ids':{}}
-def _fill_mesh2d(g,path,scale):
-    """메시를 위에서 본 모양으로 격자 g 에 채운다."""
+def _fill_mesh2d(g,path,scale,off=(0.0,0.0)):
+    """메시를 위에서 본 모양으로 격자 g 에 채운다. off=월드 평행이동(x,y)."""
     try: mm=trimesh.load(path)
     except Exception: return
     v=np.asarray(mm.vertices,float)*scale
+    v[:,0]+=off[0]; v[:,1]+=off[1]
     f=np.asarray(mm.faces,int)
     for tri in f:
         pts=v[tri][:,:2]
@@ -570,7 +580,7 @@ def build_obs_grid(force=False):
     # 로봇 base 발자국 (m 단위 링크 메시, base_link 프레임 그대로)
     gb=np.zeros((G2_N,G2_N),bool)
     bp=os.path.join(MESH_DIR,'base_link.STL')
-    if os.path.exists(bp): _fill_mesh2d(gb,bp,1.0)
+    if os.path.exists(bp): _fill_mesh2d(gb,bp,1.0,off=(BASE_OFF[0],BASE_OFF[1]))
     _OBS['base']=gb
     # 거리장 (BFS, 칸 단위) - "장애물에서 먼 칸" 선호에 사용. base 도 포함
     import collections
@@ -1156,7 +1166,10 @@ _RANGES=[[_mid[k]-_span/2,_mid[k]+_span/2] for k in range(3)]
 _RANGES[2][0]=min(0.0,lo[2])   # 바닥은 0부터
 
 def link_frames(q):
-    return CHAIN.forward_kinematics([0]+list(q),full_kinematics=True)
+    fr=[f.copy() for f in
+        CHAIN.forward_kinematics([0]+list(q),full_kinematics=True)]
+    for f in fr: f[:3,3]+=BASE_OFF
+    return fr
 
 def robot_fig(q):
     fig=go.Figure()
@@ -1164,7 +1177,7 @@ def robot_fig(q):
     frames=link_frames(q)
     # frames[0]=base_link(원점), frames[k]=조인트k 이후 = l_k 프레임
     for k,(v,f) in enumerate(_LINK_MESH):
-        T=np.eye(4) if k==0 else frames[k]
+        T=_base_T() if k==0 else frames[k]
         R=T[:3,:3]; p=T[:3,3]
         w=v@R.T+p
         fig.add_trace(go.Mesh3d(x=w[:,0],y=w[:,1],z=w[:,2],
@@ -1311,6 +1324,7 @@ def h_add_path(pathtext):
 
 def h_plate_edit(on):
     PLATE_EDIT['on']=bool(on)
+    if on: ROBOT_MOVE['on']=False          # 두 클릭 모드 동시 금지
     if on:
         g=ghost_tiles()
         return (f"바닥 확장 모드 ON — 3D 뷰의 반투명 초록 타일을 클릭하면 그 자리에 "
@@ -2253,6 +2267,7 @@ try:
     S['axorders']=_d.get('axorders',{})
     S['rotmodes']=_d.get('rotmodes',{})
     S['macros']=_d.get('macros',{})
+    if _d.get('robot_xy'): S['robot_xy']=_d['robot_xy']
     if not any(p['name']=='base' for p in S['poses']):
         S['poses'].insert(0,{'name':'base','angles':[0.0]*6,'offset':[0.0]*6})
     print(f"  자세 {len(S['poses'])}개, 녹화 {len(S['moves'])}건 불러옴")
@@ -2318,6 +2333,47 @@ def _register_existing_plates():
 _register_existing_plates()
 
 PLATE_EDIT={'on':False,'sel':None}    # 편집 모드 / 선택 타일
+
+# ===== 로봇 위치 이동 (플레이트 타일에 스냅) =====
+ROBOT_MOVE={'on':False}
+
+def _robot_pos_str():
+    return f"x={BASE_OFF[0]*1000:+.0f}mm  y={BASE_OFF[1]*1000:+.0f}mm"
+
+def set_robot_xy(x,y,save=True):
+    """로봇 base 를 월드 (x,y) 로 이동. 캐시/격자 전부 무효화."""
+    BASE_OFF[0]=float(x); BASE_OFF[1]=float(y)
+    _MAXZ_R.clear(); _clear_plan_cache()
+    _OBS['grid']=None                      # 다음 사용 때 재구축
+    if save:
+        with LOCK: S['robot_xy']=[float(x),float(y)]
+        _macro_save()
+
+def robot_to_tile(t):
+    """타일 중앙으로 로봇 이동. 플레이트가 있는 타일만 허용."""
+    if t not in PLATES: return False
+    if RUNNING.is_set(): return False      # 동작 중 이동 금지
+    ox,oy=tile_origin(t)
+    set_robot_xy(ox+PLATE_SIZE/2, oy+PLATE_SIZE/2)
+    print(f"[로봇 위치] 타일 {t} 중앙으로 -> {_robot_pos_str()}")
+    return True
+
+# 시작 시 저장된 로봇 위치 복원
+if S.get('robot_xy'):
+    set_robot_xy(S['robot_xy'][0],S['robot_xy'][1],save=False)
+    print(f"로봇 위치 복원: {_robot_pos_str()}")
+
+def h_robot_move_mode(on):
+    ROBOT_MOVE['on']=bool(on)
+    if on: PLATE_EDIT['on']=False          # 두 클릭 모드 동시 금지
+    msg=('로봇 이동 모드 ON - 3D에서 초록 타일을 클릭하면 로봇이 그 타일 '
+         '중앙으로 이동합니다' if on else '로봇 이동 모드 OFF')
+    return _robot_pos_str(), msg
+
+def h_robot_home():
+    if RUNNING.is_set(): return _robot_pos_str(),"동작 실행 중 - [정지] 후 다시"
+    set_robot_xy(0.0,0.0)
+    return _robot_pos_str(), "로봇 위치 원점 복귀"
 def plate_tiles(): return sorted(PLATES.keys())
 def ghost_tiles():
     """기존 플레이트 4방위 중 비어있는 자리."""
@@ -2537,7 +2593,7 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                 frames=link_frames(CURRENT_Q)
                 links=[]
                 for k,ln in enumerate(ROBOT_LINKS):
-                    T=np.eye(4) if k==0 else frames[k]
+                    T=_base_T() if k==0 else frames[k]
                     links.append({'id':ln,'color':ROBOT_COLOR_MAP[ln],
                                   'm':[float(x) for x in T[:3,:].flatten()]+[0,0,0,1]})
                 p,_=fk(CURRENT_Q)
@@ -2549,9 +2605,17 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                                 'off':list(e.get('offset',(0,0,0))),
                                 'tile':list(e['tile']) if e.get('tile') else None,
                                 'plate':'plate' in e['id'].lower()})
-                ghosts=[{'tile':list(t),
-                         'x':tile_origin(t)[0],'y':tile_origin(t)[1]}
-                        for t in ghost_tiles()] if PLATE_EDIT['on'] else []
+                if PLATE_EDIT['on']:
+                    ghosts=[{'tile':list(t),
+                             'x':tile_origin(t)[0],'y':tile_origin(t)[1]}
+                            for t in ghost_tiles()]
+                elif ROBOT_MOVE['on']:
+                    # 로봇 이동 모드: 실존 플레이트 타일이 클릭 대상
+                    ghosts=[{'tile':list(t),
+                             'x':tile_origin(t)[0],'y':tile_origin(t)[1]}
+                            for t in plate_tiles()]
+                else:
+                    ghosts=[]
                 body=json.dumps({'links':links,'env':env,'ghosts':ghosts,
                     'psize':PLATE_SIZE,'sel':PLATE_EDIT.get('sel'),
                     'ee':f"x={p[0]*1000:.0f} y={p[1]*1000:.0f} z={p[2]*1000:.0f}mm",
@@ -2561,7 +2625,8 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                 # 뷰어에서 고스트 클릭 -> 플레이트 추가
                 try:
                     ix,iy=self.path[len('/click/'):].split(',')
-                    ok=add_plate((int(ix),int(iy)))
+                    t=(int(ix),int(iy))
+                    ok=robot_to_tile(t) if ROBOT_MOVE['on'] else add_plate(t)
                     self._send(200,'application/json',
                                json.dumps({'ok':ok}).encode())
                 except Exception:
@@ -3140,6 +3205,14 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                     env_chk=gr.CheckboxGroup(choices=env_ids(),
                                              value=env_visible_ids(),
                                              label='체크 = 표시')
+                    gr.Markdown('**로봇 위치** — 플레이트 타일에 스냅')
+                    robot_move_chk=gr.Checkbox(
+                        label='로봇 이동 모드 (3D에서 초록 타일 클릭 = 그 타일 중앙으로)',
+                        value=False)
+                    robot_pos_txt=gr.Textbox(label='현재 로봇 위치',
+                                             value=_robot_pos_str(),
+                                             interactive=False)
+                    btn_robot_home=gr.Button('원점 복귀',size='sm')
 
         # ================= 오른쪽: 3D 뷰 + 상태 =================
         with gr.Column(scale=5):
@@ -3162,6 +3235,9 @@ with gr.Blocks(title='ARM STUDIO') as demo:
     btn_path.click(h_add_path,[path_in],[pose_sel,pose_for_seq,status])
     env_chk.change(h_env,[env_chk],[status])
     plate_edit.change(h_plate_edit,[plate_edit],[plate_info])
+    robot_move_chk.change(h_robot_move_mode,[robot_move_chk],
+                          [robot_pos_txt,status])
+    btn_robot_home.click(h_robot_home,None,[robot_pos_txt,status])
     plate_del.click(h_plate_remove,[plate_sel],[plate_info,plate_sel])
     plate_ref.click(h_plate_refresh,None,[plate_info,plate_sel])
     demo.load(h_plate_refresh,None,[plate_info,plate_sel])
