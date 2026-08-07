@@ -81,6 +81,11 @@ PER_ID_VEL={6:300}; PER_ID_TQ={6:250}                 # 그리퍼는 저속에�
 # 우선순위: 1) 환경변수 ARM_BASE_URDF  2) base_urdf.txt 에 적힌 경로
 #           3) urdf/ 아래에서 이름에 'base' 가 들어간 최신 패키지
 URDF_ROOT='/home/drboom/2026_project/urdf'
+# 로봇 패밀리별 URDF 디렉토리 분할 (2026-08-07):
+#   urdf/sts3215/    SO-ARM101 (Feetech STS3215) - 현재 사용
+#   urdf/dynamixel/  옛 Dynamixel 로봇 (XC430/XM430)
+# base 탐색은 활성 패밀리 폴더 안에서만 한다 (양쪽에 base 가 있어 섞이면 위험)
+ROBOT_FAMILY=os.environ.get('ARM_ROBOT_FAMILY','sts3215')
 BASE_URDF_CFG=os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            'base_urdf.txt')
 def _find_base_urdf():
@@ -90,8 +95,11 @@ def _find_base_urdf():
         p=open(BASE_URDF_CFG).read().strip()
         if p and os.path.exists(p): return p
     import glob as _g
-    cands=[u for u in _g.glob(os.path.join(URDF_ROOT,'*','urdf','*.urdf'))
-           if not u.endswith('_limits.urdf')]
+    # 1순위: urdf/<패밀리>/<패키지>/urdf/*.urdf   2순위(구버전 호환): urdf/<패키지>/urdf/*.urdf
+    for pat in (os.path.join(URDF_ROOT,ROBOT_FAMILY,'*','urdf','*.urdf'),
+                os.path.join(URDF_ROOT,'*','urdf','*.urdf')):
+        cands=[u for u in _g.glob(pat) if not u.endswith('_limits.urdf')]
+        if cands: break
     if not cands: return None
     # '패키지 폴더명' 또는 파일명에 base 가 들어간 것을 우선 (자세 URDF 오선택 방지)
     def _is_base(u):
@@ -111,7 +119,7 @@ BASE_URDF=_find_base_urdf()
 if BASE_URDF is None:
     print("="*60)
     print(" base URDF 를 찾지 못했습니다.")
-    print(f" {URDF_ROOT}/<패키지>/urdf/*.urdf 를 넣거나,")
+    print(f" {URDF_ROOT}/{ROBOT_FAMILY}/<패키지>/urdf/*.urdf 를 넣거나,")
     print(f" {BASE_URDF_CFG} 에 경로를 적어주세요.")
     print("="*60)
     raise SystemExit(1)
