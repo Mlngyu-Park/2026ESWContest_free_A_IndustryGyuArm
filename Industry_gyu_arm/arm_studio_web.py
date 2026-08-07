@@ -2159,6 +2159,73 @@ def h_torque_off():
     if ROBOT.connect(): ROBOT.estop(); return "torque off"
     return "robot not connected"
 
+# ===== 매크로 버튼 1·2·3 (좌표 기록 -> 원버튼 재생) =====
+# 웹 버전 먼저. 나중에 물리 버튼(아두이노/RP2040/조이스틱)이 생겨도
+# 같은 h_macro_go(slot) 를 부르면 되도록 입력과 동작을 분리해 둔다.
+MACRO_SLOTS=['1','2','3']
+
+def _macro_btn_label(slot):
+    m=S.get('macros',{}).get(slot)
+    return f"▶ M{slot} · {m['name']}" if m else f"▶ M{slot} (빈)"
+
+def _macro_btn_updates():
+    return [gr.update(value=_macro_btn_label(s)) for s in MACRO_SLOTS]
+
+def _macro_save():
+    with open(PROJECT_FILE,'w') as f: json.dump(S,f,indent=1)
+
+def h_macro_rec(slot):
+    """현재 위치를 슬롯에 기록. 실물 연결 시 실물 좌표, 아니면 3D 자세."""
+    BTN(f'매크로{slot} 기록')
+    slot=str(slot)
+    if ROBOT.connect():
+        q=ROBOT.read(); src='실물'
+    else:
+        q=list(CURRENT_Q); src='3D(시뮬)'
+    name=time.strftime('%H:%M')
+    with LOCK:
+        S.setdefault('macros',{})[slot]={'name':name,'angles':list(q),'src':src}
+    _macro_save()
+    deg=', '.join(f'{math.degrees(a):+.0f}' for a in q[:5])
+    return _macro_btn_updates()+[f"M{slot} 기록됨 ({src}, {name}) [{deg}]"]
+
+def h_macro_clear(slot):
+    BTN(f'매크로{slot} 비움')
+    slot=str(slot)
+    with LOCK: S.get('macros',{}).pop(slot,None)
+    _macro_save()
+    return _macro_btn_updates()+[f"M{slot} 비움"]
+
+def h_macro_go(slot):
+    """기록된 좌표로 이동. 수평 유지(j5 고정)·그리퍼 상태 보존 = 물컵 규칙."""
+    BTN(f'매크로{slot} 실행')
+    slot=str(slot)
+    m=S.get('macros',{}).get(slot)
+    if not m: return f"M{slot} 이 비어있습니다 - 먼저 [현재 위치 기록]을 하세요"
+    if RUNNING.is_set(): return "다른 동작 실행 중 - [정지] 후 다시"
+    if not ROBOT.connect():
+        return (f"로봇 연결 실패 ({PORT}) — 확인: "
+                "1) USB/전원 연결  2) 다른 프로그램이 포트를 쓰는 중인지")
+    STOP.clear(); RUNNING.set()
+    try:
+        ROBOT.time_profile(True); ROBOT.torque(True)
+        q0=ROBOT.read()
+        tgt=list(m['angles'])
+        tgt[5]=q0[5]                           # 그리퍼는 이동 중 상태 불변
+        if LEVEL_ALWAYS: tgt[J5_IDX]=q0[J5_IDX]   # j5 고정 = 수평 유지
+        way,dt=plan_joint_seq(q0,tgt)
+        for f in way: f[5]=q0[5]
+        if LEVEL_ALWAYS: lock_j5(way,q0)
+        ros_publish(tgt)
+        for q in way:
+            if STOP.is_set(): break
+            ROBOT.send(q,log=True,tag=f'M{slot}'); time.sleep(dt)
+        return f"M{slot} ({m['name']}) 도착"
+    except Exception as e:
+        ROBOT.estop(); return f"오류: {e} - 토크 해제됨"
+    finally:
+        RUNNING.clear()
+
 def h_save():
     BTN('저장')
     with open(PROJECT_FILE,'w') as f: json.dump(S,f,indent=1)
@@ -2185,6 +2252,7 @@ try:
     S['moves']=_d.get('moves',{})
     S['axorders']=_d.get('axorders',{})
     S['rotmodes']=_d.get('rotmodes',{})
+    S['macros']=_d.get('macros',{})
     if not any(p['name']=='base' for p in S['poses']):
         S['poses'].insert(0,{'name':'base','angles':[0.0]*6,'offset':[0.0]*6})
     print(f"  자세 {len(S['poses'])}개, 녹화 {len(S['moves'])}건 불러옴")
@@ -3220,6 +3288,17 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                                            elem_classes=['act-stop'])
                     btn_toff=gr.Button('토크 해제',size='sm',
                                        elem_classes=['act-jog'])
+                    gr.Markdown('**매크로** — 로봇을 손/조그로 옮겨놓고 기록 → '
+                                '버튼 하나로 그 위치로 이동 (수평 유지)')
+                    with gr.Row(elem_classes=['btnrow']):
+                        macro_btns=[gr.Button(_macro_btn_label(s),
+                                              elem_classes=['act-robot'])
+                                    for s in MACRO_SLOTS]
+                    with gr.Row(elem_classes=['row-end']):
+                        macro_slot=gr.Dropdown(choices=MACRO_SLOTS,value='1',
+                                               label='슬롯',scale=1)
+                        btn_mrec=gr.Button('현재 위치 기록',scale=2)
+                        btn_mclr=gr.Button('비우기',scale=1)
                     gr.Markdown('**위에서 본 맵** — ┃이동 블록 선택 후 클릭하면 '
                                 '경로 점이 직교로 추가됩니다')
                     map_img=gr.HTML(value='',elem_id='mapwrap')
@@ -3362,6 +3441,10 @@ with gr.Blocks(title='ARM STUDIO') as demo:
     demo.load(render_map2d,None,[map_img])
     btn_stop.click(h_stop,None,[status])
     btn_toff.click(h_torque_off,None,[status])
+    for _s,_b in zip(MACRO_SLOTS,macro_btns):
+        _b.click(lambda s=_s: h_macro_go(s),None,[status])
+    btn_mrec.click(h_macro_rec,[macro_slot],macro_btns+[status])
+    btn_mclr.click(h_macro_clear,[macro_slot],macro_btns+[status])
     btn_save.click(h_save,None,[status])
     btn_load.click(h_load,None,[pose_sel,pose_for_seq,seq_sel,status])
 
