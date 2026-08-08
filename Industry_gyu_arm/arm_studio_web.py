@@ -1221,9 +1221,13 @@ ROBOT_DXL=DXLRobot()
 # DXL 쪽은 send 순간에 EE 매핑(map_sts_to_dxl)으로 변환된다.
 EXEC={'mode':'sts','miss':0}
 class RobotMux:
+    # mode='sim' = 시뮬레이션. 실물 통신을 전부 건너뛰고 3D/RViz 만 움직인다.
+    #   -> _sts()/_dxl() 이 모두 False 가 되므로 아래 메서드들이 자동으로 무동작
+    def _sim(self): return EXEC['mode']=='sim'
     def _sts(self): return EXEC['mode'] in ('sts','both')
     def _dxl(self): return EXEC['mode'] in ('dxl','both') and DXL_OK
     def connect(self):
+        if self._sim(): return True          # 시뮬은 항상 '연결됨'
         ok=True
         if self._sts(): ok=ROBOT_STS.connect() and ok
         if self._dxl(): ok=ROBOT_DXL.connect() and ok
@@ -1247,6 +1251,7 @@ class RobotMux:
             return ROBOT_STS.send(q,log=log,tag=tag,with_grip=with_grip)
         return {}
     def read(self):
+        if self._sim(): return list(CURRENT_Q)   # 시뮬: 3D 뷰의 현재 자세
         if self._sts(): return ROBOT_STS.read()
         m=map_dxl_to_sts(ROBOT_DXL.read())
         return m if m is not None else list(CURRENT_Q)
@@ -1257,9 +1262,11 @@ class RobotMux:
         if self._sts(): return ROBOT_STS.settle(q,tol,timeout,retry)
         time.sleep(END_SETTLE); return True,0
     def gripper(self,open_,tq=None):
+        if self._sim(): time.sleep(0.3); return None
         if self._sts(): return ROBOT_STS.gripper(open_,tq)
         return None                            # DXL 그리퍼 값 미측정
     def estop(self):
+        if self._sim(): return
         ROBOT_STS.estop()
         if DXL_OK: ROBOT_DXL.estop()           # 정지는 모드 무관 전체
     def _w1(self,*a): return ROBOT_STS._w1(*a)
@@ -2434,6 +2441,8 @@ def h_torque_off():
 
 # ===== 실행 로봇 선택 / 연결 상태 =====
 def _robot_status_str():
+    if EXEC['mode']=='sim':
+        return "시뮬레이션 모드 — 실물은 움직이지 않고 3D/RViz 만 재생됩니다"
     s='● 연결됨' if ROBOT_STS.connect() else '○ 미연결'
     out=f"SO-ARM ({PORT}): {s}"
     if DXL_OK:
@@ -2445,7 +2454,8 @@ def _robot_status_str():
         out+="\nDynamixel: 프로필/URDF 없음"
     return out
 
-_EXEC_LABELS={'SO-ARM (STS)':'sts','Dynamixel':'dxl','둘 다 (동시)':'both'}
+_EXEC_LABELS={'시뮬레이션 (로봇 없이)':'sim','SO-ARM (STS)':'sts',
+              'Dynamixel':'dxl','둘 다 (동시)':'both'}
 def h_exec_robot(sel):
     BTN(f'실행로봇 {sel}')
     EXEC['mode']=_EXEC_LABELS.get(sel,'sts'); EXEC['miss']=0
@@ -3414,7 +3424,8 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                         ign_chk=gr.CheckboxGroup(choices=obstacle_ids(),
                                                  label='체크 = 무시')
                         btn_ign=gr.Button('무시 목록 저장',size='sm')
-                    exec_robot=gr.Radio(['SO-ARM (STS)','Dynamixel','둘 다 (동시)'],
+                    exec_robot=gr.Radio(['시뮬레이션 (로봇 없이)','SO-ARM (STS)',
+                                         'Dynamixel','둘 다 (동시)'],
                                         value='SO-ARM (STS)',label='실행 로봇')
                     with gr.Row():
                         robot_stat=gr.Textbox(label='연결 상태',value='(확인 전)',
