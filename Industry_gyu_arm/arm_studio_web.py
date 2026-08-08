@@ -1269,6 +1269,16 @@ class RobotMux:
         if self._sim(): return
         ROBOT_STS.estop()
         if DXL_OK: ROBOT_DXL.estop()           # 정지는 모드 무관 전체
+    # 추종 비교 로그(LOG_COMPARE)가 읽는 값. STS 가 wait_reach 에서 채운다.
+    # 시뮬/DXL 단독일 때는 비어 있어 로그가 그냥 생략된다.
+    @property
+    def last_want(self): return ROBOT_STS.last_want
+    @property
+    def last_got(self): return ROBOT_STS.last_got
+    @property
+    def port(self):
+        """열려 있는 포트가 하나라도 있으면 참 (종료 시 안전정지 판단용)."""
+        return ROBOT_STS.port or (ROBOT_DXL.port if DXL_OK else None)
     def _w1(self,*a): return ROBOT_STS._w1(*a)
     def _w2(self,*a): return ROBOT_STS._w2(*a)
     def _r2(self,*a): return ROBOT_STS._r2(*a)
