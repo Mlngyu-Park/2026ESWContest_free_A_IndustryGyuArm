@@ -73,12 +73,15 @@
   "20260728_two=>base": "lock",
   "base=>20260728_two": "lock"
  },
+ "macros": {},
+ "robot_xy": [
+  0.0,
+  0.0
+ ],
  "modes": {},
  "simple": {
   "prefer": "x",
   "clear_cm": 5.0,
   "extra_cm": 5.0
- },
- "paths2d": {},
- "ignore_obs": {}
+ }
 }

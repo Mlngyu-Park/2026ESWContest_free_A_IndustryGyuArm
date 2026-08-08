@@ -1683,9 +1683,14 @@ def h_delete(name):
            gr.update(choices=seq_labels(),value=None), f"deleted '{name}'"
 
 def h_seq_add(name):
+    """파이프라인에 자세 블록 추가. 추가한 자세를 3D 로 바로 보여준다."""
     if not name: return gr.update(),"자세를 선택하세요"
     with LOCK: S['seq'].append(name)
-    return gr.update(choices=seq_labels(),value=None), f"시퀀스: {' -> '.join(S['seq'])}"
+    if not RUNNING.is_set():
+        _peg_sim_stop()                  # 목심 미리보기가 돌고 있으면 양보
+        ros_publish(get_angles(name))    # 방금 추가한 자세 미리보기
+    return (gr.update(choices=seq_labels(),value=None),
+            f"'{name}' 추가 (3D 미리보기) — 시퀀스: {' -> '.join(S['seq'])}")
 
 def h_seq_grip(open_):
     """파이프라인에 그리퍼 블록 추가."""
@@ -2667,6 +2672,234 @@ if S.get('robot_xy'):
     set_robot_xy(S['robot_xy'][0],S['robot_xy'][1],save=False)
     print(f"로봇 위치 복원: {_robot_pos_str()}")
 
+# ===== 공간 좌표 (목심 격자) =====
+# 바닥 플레이트의 목심(구멍) 중심을 격자 좌표로 삼는다.
+#   열=A,B,C... (x)  행=1,2,3... (y)  높이=mm
+# STL 자기상관으로 측정한 실제 간격 = 20mm, 플레이트(200mm)당 10x10
+PEG_PITCH=0.020
+# 높이 입력의 기준면 = 바닥 플레이트 윗면.
+#   사용자가 말하는 "높이 80mm" = 플레이트 윗면에서 j6 축 원점까지 80mm
+#   (IK 가 푸는 점이 j6 축 원점이므로 그 점이 기준. 그리퍼 손가락 끝이 아님)
+PLATE_TOP=0.020        # 플레이트 두께 = 윗면의 절대 z (STL 실측)
+def peg_z(height_mm): return PLATE_TOP+float(height_mm)/1000.0
+def peg_cols(): return [chr(65+i) for i in range(10)]   # A~J (타일 1장 기준)
+def peg_names():
+    """현재 배치된 플레이트 전체의 목심 이름 목록. 타일마다 A1~J10."""
+    out=[]
+    for t in sorted(PLATES.keys()):
+        for i in range(10):
+            for j in range(10):
+                out.append(f"{t[0]},{t[1]}:{chr(65+i)}{j+1}")
+    return out
+def peg_xy(name):
+    """'0,0:C4' -> 월드 (x,y). 형식이 틀리면 None."""
+    try:
+        tp,cell=name.split(':')
+        ix,iy=(int(v) for v in tp.split(','))
+        col=ord(cell[0].upper())-65; row=int(cell[1:])-1
+        ox,oy=tile_origin((ix,iy))
+        return ox+PEG_PITCH/2+col*PEG_PITCH, oy+PEG_PITCH/2+row*PEG_PITCH
+    except Exception:
+        return None
+
+# --- 도달성 계산 가속 ---
+# IK 는 수치 최적화라 GPU 가 못 돕는다. 대신 세 가지로 줄인다:
+#   1) 팔이 닿을 수 없는 거리는 IK 없이 즉시 탈락 (도달 불가가 IK 2배로 느림)
+#   2) 남은 것만 코어 수만큼 병렬 (코어 수는 실행 시점에 자동 감지)
+#   3) (높이, 로봇위치) 캐시
+def _worker_count():
+    """가용 CPU 로 워커 수 결정. PC 를 바꿔도 자동 적응.
+    ARM_IK_WORKERS 로 수동 지정 가능(0=자동)."""
+    env=int(os.environ.get('ARM_IK_WORKERS','0') or 0)
+    if env>0: return env
+    try: n=len(os.sched_getaffinity(0))      # 실제 할당된 코어
+    except AttributeError: n=os.cpu_count() or 4
+    return max(1,min(32,n-1))                # 1개는 UI 응답용으로 남김
+
+_ARM_REACH=None
+def _arm_reach():
+    """base 원점에서 EE 까지 최대 도달 반경(대략). 링크 길이 합."""
+    global _ARM_REACH
+    if _ARM_REACH is None:
+        s=0.0
+        for jn in JOINTS: s+=float(np.linalg.norm(BASE_DEF[jn]['xyz']))
+        _ARM_REACH=s
+    return _ARM_REACH
+
+def _peg_ik_ok(args):
+    nm,x,y,z,seeds,j5,j6=args
+    return nm if ik_level((x,y,z),seeds,j5,j6) is not None else None
+
+# 프로세스 워커용 - fork 로 모듈 상태를 물려받아 그대로 계산한다
+# (spawn 방식 OS 라면 ProcessPool 이 실패하고 순차로 폴백됨)
+def _peg_ik_worker(a):
+    nm,x,y,z=a
+    q0=list(CURRENT_Q)
+    return nm if ik_level((x,y,z),_seed_list(q0),q0[4],q0[5]) is not None else None
+
+_PEG_CACHE={}
+def peg_reachable(height_mm,use_cache=True):
+    """그 높이에서 IK 가 풀리는 목심 이름 목록."""
+    z=peg_z(height_mm)
+    key=(round(z,4),round(BASE_OFF[0],4),round(BASE_OFF[1],4))
+    if use_cache and key in _PEG_CACHE: return _PEG_CACHE[key]
+    q0=list(CURRENT_Q); seeds=_seed_list(q0)
+    R=_arm_reach()
+    jobs=[]
+    for nm in peg_names():
+        xy=peg_xy(nm)
+        if not xy: continue
+        d=math.dist((xy[0],xy[1],z),(BASE_OFF[0],BASE_OFF[1],0.0))
+        if d>R: continue                     # 팔 길이 밖 - IK 생략
+        jobs.append((nm,xy[0],xy[1],z,seeds,q0[4],q0[5]))
+    # ikpy(scipy)는 GIL 을 놓지 않아 스레드로는 오히려 느려진다 -> 프로세스 병렬.
+    # 프로세스가 안 되는 환경(피클 실패 등)이면 순차로 안전하게 폴백.
+    out=[]
+    if jobs:
+        try:
+            import multiprocessing as _mp
+            ctx=_mp.get_context('fork')      # fork = 모듈 상태를 그대로 물려받음
+            with ctx.Pool(_worker_count()) as pool:
+                res=pool.map(_peg_ik_worker,
+                             [(j[0],j[1],j[2],z) for j in jobs],chunksize=8)
+            out=[r for r in res if r]
+        except Exception as e:
+            print(f"[목심] 병렬 실패({type(e).__name__}) - 순차 계산")
+            out=[r for r in map(_peg_ik_ok,jobs) if r]
+    out.sort()
+    _PEG_CACHE[key]=out
+    return out
+
+# --- 3D 목심 표시/선택 상태 + 이동 시뮬레이션(반복 재생) ---
+PEG_VIEW={'on':False,'ok':[],'sel':None,'h':80}
+_PEG_SIM={'th':None,'stop':threading.Event(),'name':None}
+
+def _peg_sim_loop(name,height_mm,stop):
+    """선택한 목심으로 가는 경로를 3D 에서 반복 재생 (실물은 안 움직임).
+    실제 실행 중이거나 다른 목심이 선택되면 즉시 멈춘다."""
+    xy=peg_xy(name)
+    if xy is None: return
+    q0=list(CURRENT_Q)
+    tgt=ik_level((xy[0],xy[1],peg_z(height_mm)),_seed_list(q0),q0[4],q0[5])
+    if tgt is None: return
+    tgt[5]=q0[5]
+    if LEVEL_ALWAYS: tgt[J5_IDX]=q0[J5_IDX]
+    way,_=plan_joint_seq(q0,tgt)
+    if LEVEL_ALWAYS: lock_j5(way,q0)
+    frames=way[::max(1,len(way)//40)]+[way[-1]]      # 40 프레임으로 축약
+    while not stop.is_set():
+        for seq in (frames,frames[::-1]):            # 갔다가 되돌아오기(왕복)
+            for q in seq:
+                if stop.is_set() or RUNNING.is_set(): return
+                ros_publish(q); time.sleep(0.05)
+            if stop.is_set(): return
+            time.sleep(0.4)
+
+def _peg_sim_stop():
+    if _PEG_SIM['th'] and _PEG_SIM['th'].is_alive():
+        _PEG_SIM['stop'].set(); _PEG_SIM['th'].join(timeout=1.0)
+    _PEG_SIM['th']=None; _PEG_SIM['name']=None
+
+def _peg_sim_start(name):
+    """목심 선택 시 미리보기 반복 재생 시작 (이전 재생은 중단)."""
+    _peg_sim_stop()
+    if not name or name not in PEG_VIEW['ok']: return   # 도달 불가는 재생 안 함
+    ev=threading.Event(); _PEG_SIM['stop']=ev; _PEG_SIM['name']=name
+    th=threading.Thread(target=_peg_sim_loop,
+                        args=(name,PEG_VIEW['h'],ev),daemon=True)
+    _PEG_SIM['th']=th; th.start()
+
+def h_peg_view(on,height_mm):
+    """3D 목심 표시 on/off. 켤 때 그 높이의 도달성을 계산해 둔다."""
+    BTN('목심 표시',str(bool(on)))
+    PEG_VIEW['on']=bool(on); PEG_VIEW['h']=float(height_mm)
+    if not on:
+        _peg_sim_stop(); PEG_VIEW['sel']=None
+        return gr.update(),'목심 표시 끔'
+    t0=time.time(); lst=peg_reachable(height_mm); PEG_VIEW['ok']=lst
+    return (gr.update(choices=lst,value=(lst[0] if lst else None)),
+            f"목심 표시 ON — 높이 {height_mm}mm 기준 도달 가능 {len(lst)}개 "
+            f"({time.time()-t0:.1f}초). 3D에서 구멍 위에 마우스를 올리면 "
+            "노랑(가능)/빨강(불가), 클릭하면 파랑(선택)+이동 미리보기가 반복됩니다")
+
+def h_peg_height(height_mm):
+    """높이 변경 -> 도달성 자동 재계산 (표시 중일 때만)."""
+    PEG_VIEW['h']=float(height_mm)
+    if not PEG_VIEW['on']:
+        return gr.update(), f"높이 {height_mm}mm (목심 표시를 켜면 계산합니다)"
+    t0=time.time(); lst=peg_reachable(height_mm); PEG_VIEW['ok']=lst
+    sel=PEG_VIEW.get('sel')
+    if sel not in lst: sel=(lst[0] if lst else None); PEG_VIEW['sel']=sel
+    _peg_sim_start(sel)
+    return (gr.update(choices=lst,value=sel),
+            f"높이 {height_mm}mm — 도달 가능 {len(lst)}개 "
+            f"({time.time()-t0:.1f}초)")
+
+def h_peg_pick(name):
+    """드롭다운에서 고른 경우도 3D 선택/미리보기와 동기화."""
+    PEG_VIEW['sel']=name
+    _peg_sim_start(name)
+    return f"선택: {name} (3D에서 파란색, 이동 미리보기 반복 중)" if name else ""
+
+def h_peg_goto(name,height_mm):
+    """목심 위 특정 높이로 이동. URDF 자세 없이 좌표만으로."""
+    BTN('목심 이동',f'{name} {height_mm}mm')
+    if not name: return "먼저 [도달 가능 목심 찾기] 를 눌러 목심을 고르세요"
+    xy=peg_xy(name)
+    if xy is None: return f"목심 이름 형식 오류: {name}"
+    if RUNNING.is_set(): return "다른 동작 실행 중 - [정지] 후 다시"
+    _peg_sim_stop()                       # 미리보기 반복 재생 중단
+    z=peg_z(height_mm)
+    q0=ROBOT.read() if ROBOT.connect() else list(CURRENT_Q)
+    tgt=ik_level((xy[0],xy[1],z),_seed_list(q0),q0[4],q0[5])
+    if tgt is None:
+        return (f"{name} 의 {height_mm}mm 높이는 도달 불가 - "
+                "높이를 올리거나 다른 목심을 고르세요")
+    if not ROBOT.connect():
+        return f"로봇 연결 실패 - [이동] 탭에서 '시뮬레이션' 을 고르면 3D로 볼 수 있습니다"
+    STOP.clear(); RUNNING.set()
+    try:
+        ROBOT.time_profile(True); ROBOT.torque(True)
+        tgt[5]=q0[5]                          # 그리퍼 상태 유지
+        if LEVEL_ALWAYS: tgt[J5_IDX]=q0[J5_IDX]
+        way,dt=plan_joint_seq(q0,tgt)
+        for f in way: f[5]=q0[5]
+        if LEVEL_ALWAYS: lock_j5(way,q0)
+        ros_publish(tgt)
+        for q in way:
+            if STOP.is_set(): break
+            ROBOT.send(q,log=True,tag=name); time.sleep(dt)
+        p,_=fk(tgt)
+        return (f"{name} 위 {height_mm}mm 도착  "
+                f"(x={p[0]*1000:.0f} y={p[1]*1000:.0f} z={p[2]*1000:.0f}mm)")
+    except Exception as e:
+        ROBOT.estop(); return f"오류: {e} - 토크 해제됨"
+    finally:
+        RUNNING.clear()
+
+def h_peg_save_pose(name,height_mm,newname):
+    """목심 위치를 자세로 등록 -> [이동] 탭 파이프라인에서 블록으로 쓸 수 있다."""
+    BTN('목심 자세 등록',f'{name} {height_mm}mm')
+    if not name: return gr.update(),gr.update(),"먼저 목심을 선택하세요"
+    xy=peg_xy(name)
+    if xy is None: return gr.update(),gr.update(),f"목심 이름 오류: {name}"
+    q0=list(CURRENT_Q)
+    q=ik_level((xy[0],xy[1],peg_z(height_mm)),_seed_list(q0),q0[4],q0[5])
+    if q is None:
+        return gr.update(),gr.update(),f"{name} 의 {height_mm}mm 는 도달 불가"
+    q[5]=q0[5]
+    if LEVEL_ALWAYS: q[J5_IDX]=q0[J5_IDX]
+    nm=(newname or '').strip() or f"{name}@{int(height_mm)}mm"
+    base=nm; k=2
+    while nm in pose_names(): nm=f"{base}_{k}"; k+=1
+    with LOCK:
+        S['poses'].append({'name':nm,'angles':list(q),'offset':[0.0]*6})
+    _macro_save()
+    ros_publish(q)                      # 등록한 자세를 바로 3D 로 보여줌
+    return (gr.update(choices=pose_names(),value=nm),
+            gr.update(choices=pose_names(),value=nm),
+            f"자세 '{nm}' 등록 — [이동] 탭에서 파이프라인 블록으로 쓸 수 있습니다")
+
 def h_robot_move_mode(on):
     ROBOT_MOVE['on']=bool(on)
     if on: PLATE_EDIT['on']=False          # 두 클릭 모드 동시 금지
@@ -2818,6 +3051,34 @@ function buildGhosts(list,psize){
     eg.position.copy(m.position); ghostGroup.add(eg);
   }
 }
+// ---- 목심(구멍) 레이어 ----
+// 평소엔 안 보이고, 마우스를 올린 그 구멍만 색이 뜬다.
+//   호버: 도달 가능=노랑 / 불가=빨강    클릭: 파랑(선택)
+const pegGroup=new THREE.Group(); world.add(pegGroup);
+const PEG_INVIS=new THREE.MeshBasicMaterial({visible:false});
+const PEG_OK  =new THREE.MeshBasicMaterial({color:0xffdd00,transparent:true,opacity:0.85});
+const PEG_NG  =new THREE.MeshBasicMaterial({color:0xff3333,transparent:true,opacity:0.75});
+const PEG_SEL =new THREE.MeshBasicMaterial({color:0x2299ff,transparent:true,opacity:0.95});
+let pegMeshes=[], pegHover=null, pegSelName=null;
+function buildPegs(list,ptop){
+  const key=JSON.stringify([list.length,list[0]&&list[0].n,ptop]);
+  if(pegGroup.userData.key===key) return;
+  pegGroup.userData.key=key;
+  pegGroup.clear(); pegMeshes=[];
+  const geo=new THREE.CylinderGeometry(0.008,0.008,0.004,16);
+  geo.rotateX(Math.PI/2);                 // z 축을 위로
+  for(const p of list){
+    const m=new THREE.Mesh(geo,PEG_INVIS);
+    m.position.set(p.x,p.y,ptop+0.003);
+    m.userData={name:p.n,ok:p.ok};
+    pegGroup.add(m); pegMeshes.push(m);
+  }
+}
+function pegPaint(m){
+  if(!m) return;
+  m.material = (m.userData.name===pegSelName) ? PEG_SEL
+             : (m===pegHover ? (m.userData.ok?PEG_OK:PEG_NG) : PEG_INVIS);
+}
 const ray=new THREE.Raycaster(), mouse=new THREE.Vector2();
 let hover=null;
 ren.domElement.addEventListener('pointermove',ev=>{
@@ -2825,13 +3086,25 @@ ren.domElement.addEventListener('pointermove',ev=>{
   mouse.x=((ev.clientX-r.left)/r.width)*2-1;
   mouse.y=-((ev.clientY-r.top)/r.height)*2+1;
   ray.setFromCamera(mouse,cam);
-  const hits=ray.intersectObjects(ghostMeshes,false);
+  // 목심이 타일보다 우선 (목심 위에 있으면 타일 호버는 끔)
+  const ph=ray.intersectObjects(pegMeshes,false);
+  const prev=pegHover;
+  pegHover=ph.length?ph[0].object:null;
+  if(prev!==pegHover){ pegPaint(prev); pegPaint(pegHover); }
+  const hits=pegHover?[]:ray.intersectObjects(ghostMeshes,false);
   if(hover) hover.material=ghostMat;
   hover=hits.length?hits[0].object:null;
-  if(hover){ hover.material=ghostMatHi; ren.domElement.style.cursor='pointer'; }
-  else ren.domElement.style.cursor='';
+  if(hover) hover.material=ghostMatHi;
+  ren.domElement.style.cursor=(hover||pegHover)?'pointer':'';
 });
 ren.domElement.addEventListener('click',async ev=>{
+  if(pegHover){                            // 목심 선택
+    const prev=pegMeshes.find(m=>m.userData.name===pegSelName);
+    pegSelName=pegHover.userData.name;
+    pegPaint(prev); pegPaint(pegHover);
+    await fetch('/peg/'+encodeURIComponent(pegSelName));
+    return;
+  }
   if(!hover) return;
   const t=hover.userData.tile;
   await fetch('/click/'+t[0]+','+t[1]);
@@ -2854,6 +3127,12 @@ async function poll(){
       }
     }
     buildGhosts(st.ghosts||[],st.psize||0.2);
+    buildPegs(st.pegs||[],st.ptop||0.02);
+    if(st.pegsel!==pegSelName){          // 서버(드롭다운)에서 바뀐 선택 반영
+      const a=pegMeshes.find(m=>m.userData.name===pegSelName);
+      pegSelName=st.pegsel; pegPaint(a);
+      pegPaint(pegMeshes.find(m=>m.userData.name===pegSelName));
+    }
     if(st.eexyz) eeAxes.position.set(st.eexyz[0],st.eexyz[1],st.eexyz[2]);
     document.title='EE '+st.ee;
   }catch(err){}
@@ -2920,11 +3199,27 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                             for t in plate_tiles()]
                 else:
                     ghosts=[]
-                body=json.dumps({'links':links,'env':env,'ghosts':ghosts,
+                pegs=[]
+                if PEG_VIEW['on']:
+                    ok=set(PEG_VIEW['ok'])
+                    for nm in peg_names():
+                        xy=peg_xy(nm)
+                        if xy: pegs.append({'n':nm,'x':xy[0],'y':xy[1],
+                                            'ok':nm in ok})
+                body=json.dumps({'pegs':pegs,'ptop':PLATE_TOP,
+                    'pegsel':PEG_VIEW.get('sel'),
+                    'links':links,'env':env,'ghosts':ghosts,
                     'psize':PLATE_SIZE,'sel':PLATE_EDIT.get('sel'),
                     'ee':f"x={p[0]*1000:.0f} y={p[1]*1000:.0f} z={p[2]*1000:.0f}mm",
                     'eexyz':[float(v) for v in p]}).encode()
                 self._send(200,'application/json',body)
+            elif self.path.startswith('/peg/'):
+                # 3D 에서 목심 클릭 -> 선택 + 이동 시뮬 예약
+                from urllib.parse import unquote
+                nm=unquote(self.path[len('/peg/'):])
+                PEG_VIEW['sel']=nm
+                _peg_sim_start(nm)
+                self._send(200,'application/json',b'{"ok":true}')
             elif self.path.startswith('/click/'):
                 # 뷰어에서 고스트 클릭 -> 플레이트 추가
                 try:
@@ -3525,6 +3820,31 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                                              interactive=False)
                     btn_robot_home=gr.Button('원점 복귀',size='sm')
 
+                # ---- 4. 공간 선택 (목심 좌표로 직접 이동) ----
+                with gr.Tab('공간 선택'):
+                    gr.Markdown(
+                        '**목심 좌표로 이동** — URDF 자세 없이 바닥 목심 위치와 '
+                        '높이만으로 이동합니다.\n\n'
+                        f'목심 간격 {PEG_PITCH*1000:.0f}mm · 플레이트당 10×10 · '
+                        '이름은 `타일:열행` (예: `0,0:C4`)')
+                    peg_view=gr.Checkbox(
+                        label='3D 목심 선택 모드 (구멍에 마우스를 올리면 '
+                              '노랑=가능 / 빨강=불가, 클릭=파랑 선택)',
+                        value=False)
+                    peg_h=gr.Slider(0,250,value=80,step=5,
+                        label='높이 (mm) — 플레이트 윗면에서 그리퍼 축까지')
+                    peg_sel=gr.Dropdown(choices=[],label='선택한 목심',
+                                        info='도달 가능한 것만 표시됩니다')
+                    btn_peggo=gr.Button('이 목심 위로 이동 (실물)',
+                                        variant='primary')
+                    gr.Markdown('---\n**이 위치를 자세로 등록** — 등록하면 '
+                                '[이동] 탭 파이프라인에서 블록으로 쓸 수 있습니다')
+                    peg_pname=gr.Textbox(label='자세 이름 (비우면 자동)',
+                                         placeholder='예: 픽업위치')
+                    btn_pegpose=gr.Button('자세로 등록')
+                    gr.Markdown('로봇이 없으면 [이동] 탭에서 **시뮬레이션** 을 '
+                                '고르면 3D로 확인할 수 있습니다.')
+
         # ================= 오른쪽: 3D 뷰 + 상태 =================
         with gr.Column(scale=5):
             gr.HTML(f'<iframe src="http://localhost:{VIEWER_PORT}/" '
@@ -3549,6 +3869,12 @@ with gr.Blocks(title='ARM STUDIO') as demo:
     robot_move_chk.change(h_robot_move_mode,[robot_move_chk],
                           [robot_pos_txt,status])
     btn_robot_home.click(h_robot_home,None,[robot_pos_txt,status])
+    peg_view.change(h_peg_view,[peg_view,peg_h],[peg_sel,status])
+    peg_h.release(h_peg_height,[peg_h],[peg_sel,status])
+    peg_sel.change(h_peg_pick,[peg_sel],[status])
+    btn_peggo.click(h_peg_goto,[peg_sel,peg_h],[status])
+    btn_pegpose.click(h_peg_save_pose,[peg_sel,peg_h,peg_pname],
+                      [pose_sel,pose_for_seq,status])
     plate_del.click(h_plate_remove,[plate_sel],[plate_info,plate_sel])
     plate_ref.click(h_plate_refresh,None,[plate_info,plate_sel])
     demo.load(h_plate_refresh,None,[plate_info,plate_sel])
