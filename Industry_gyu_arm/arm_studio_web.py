@@ -3065,6 +3065,13 @@ def h_peg_goto(name,height_mm):
     xy=peg_xy(name)
     if xy is None: return f"목심 이름 형식 오류: {name}"
     if RUNNING.is_set(): return "다른 동작 실행 중 - [정지] 후 다시"
+    # 표(호버 색)가 불가라고 한 곳은 실행도 막는다.
+    # 표는 현재 CURRENT_Q 기준, 실행은 실물 자세 기준이라 미세하게 다를 수 있는데
+    # 그 차이로 '빨간데 움직이는' 일이 생기면 안 된다 -> 표를 기준으로 통일.
+    _ok=peg_reachable_fast(height_mm)     # 그 높이 기준으로 다시 판정
+    if _ok is not None and name not in _ok:
+        return (f"{name} 은(는) 높이 {height_mm}mm 에서 도달 불가입니다 "
+                "(3D에서 빨간색). 높이를 바꾸거나 다른 목심을 고르세요")
     _peg_sim_stop()                       # 미리보기 반복 재생 중단
     z=peg_z(height_mm)
     q0=ROBOT.read() if ROBOT.connect() else list(CURRENT_Q)
@@ -3324,7 +3331,8 @@ ren.domElement.addEventListener('pointermove',ev=>{
   ren.domElement.style.cursor=(hover||pegHover)?'pointer':'';
 });
 ren.domElement.addEventListener('click',async ev=>{
-  if(pegHover){                            // 목심 선택
+  if(pegHover){                            // 목심 선택 (도달 가능한 것만)
+    if(!pegHover.userData.ok) return;      // 빨강은 클릭 무시
     const prev=pegMeshes.find(m=>m.userData.name===pegSelName);
     pegSelName=pegHover.userData.name;
     pegPaint(prev); pegPaint(pegHover);
@@ -3431,7 +3439,11 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                     ghosts=[]
                 pegs=[]
                 if PEG_VIEW['on']:
-                    ok=set(PEG_VIEW['ok'])
+                    # 표가 있으면 '현재 슬라이더 높이' 로 그때그때 판정한다.
+                    # (드래그 중에는 gradio 핸들러가 아직 안 도는데, 뷰어는 계속
+                    #  폴링하므로 옛 높이의 색이 남아 실제와 어긋났었다)
+                    live=peg_reachable_fast(PEG_VIEW['h'])
+                    ok=set(live if live is not None else PEG_VIEW['ok'])
                     for nm in peg_names():
                         xy=peg_xy(nm)
                         if xy: pegs.append({'n':nm,'x':xy[0],'y':xy[1],
@@ -3451,9 +3463,14 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                 # 3D 에서 목심 클릭 -> 선택 + 이동 시뮬 예약
                 from urllib.parse import unquote
                 nm=unquote(self.path[len('/peg/'):])
-                PEG_VIEW['sel']=nm
-                _peg_sim_start(nm)
-                self._send(200,'application/json',b'{"ok":true}')
+                _live=peg_reachable_fast(PEG_VIEW['h'])
+                _okset=set(_live if _live is not None else PEG_VIEW['ok'])
+                if nm in _okset:                  # 빨강(도달 불가)은 선택 불가
+                    PEG_VIEW['sel']=nm
+                    _peg_sim_start(nm)
+                    self._send(200,'application/json',b'{"ok":true}')
+                else:
+                    self._send(200,'application/json',b'{"ok":false}')
             elif self.path.startswith('/click/'):
                 # 뷰어에서 고스트 클릭 -> 플레이트 추가
                 try:
@@ -4104,7 +4121,7 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                           [robot_pos_txt,status])
     btn_robot_home.click(h_robot_home,None,[robot_pos_txt,status])
     peg_view.change(h_peg_view,[peg_view,peg_h],[peg_sel,status])
-    peg_h.release(h_peg_height,[peg_h],[peg_sel,status])
+    peg_h.change(h_peg_height,[peg_h],[peg_sel,status])
     peg_sel.change(h_peg_pick,[peg_sel],[status])
     btn_peggo.click(h_peg_goto,[peg_sel,peg_h],[status])
     btn_pegpose.click(h_peg_save_pose,[peg_sel,peg_h,peg_pname],
