@@ -2877,9 +2877,76 @@ def _peg_ik_worker(a):
     q0=list(CURRENT_Q)
     return nm if ik_tool((x,y,z),_seed_list(q0),q0[4],q0[5]) is not None else None
 
+# ===== 목심 도달 구간 표 (한 번 만들고 계속 조회) =====
+# 각 목심의 도달 가능 높이가 '연속 구간' 임을 실측으로 확인했다(중간 끊김 0).
+# 그래서 목심마다 [zmin,zmax] 두 값만 저장하면 어떤 높이든 즉시 판정된다.
+#   -> 1mm 는 물론 소수점 높이까지 조회 가능(해상도 제한 없음)
+# 표는 (로봇위치, URDF) 가 바뀌면 무효화된다.
+PEG_TABLE={'key':None,'span':{}}
+_PEG_SCAN={'busy':False,'msg':''}
+
+def _peg_span_one(args):
+    """한 목심의 도달 높이 구간 [zmin,zmax] (mm). 이분 탐색."""
+    nm,x,y=args
+    q0=list(CURRENT_Q); seeds=_seed_list(q0)
+    def ok(h):
+        return ik_tool((x,y,peg_z(h)),seeds,q0[4],q0[5]) is not None
+    # 대략적인 성공 지점부터 찾는다 (없으면 도달 불가 목심)
+    probe=[h for h in range(0,255,15) if ok(h)]
+    if not probe: return (nm,None)
+    lo_ok,hi_ok=probe[0],probe[-1]
+    # 아래쪽 경계
+    a,b=max(lo_ok-15,0),lo_ok
+    while b-a>1:
+        mid=(a+b)//2
+        if ok(mid): b=mid
+        else: a=mid
+    zmin=b
+    # 위쪽 경계
+    a,b=hi_ok,min(hi_ok+15,260)
+    while b-a>1:
+        mid=(a+b)//2
+        if ok(mid): a=mid
+        else: b=mid
+    return (nm,(zmin,a))
+
+def peg_table_key():
+    return (round(BASE_OFF[0],4),round(BASE_OFF[1],4),BASE_URDF,
+            tuple(sorted(PLATES.keys())))
+
+def build_peg_table():
+    """모든 목심의 도달 높이 구간을 계산해 표로 만든다 (약 7~15초)."""
+    key=peg_table_key()
+    jobs=[(nm,*peg_xy(nm)) for nm in peg_names() if peg_xy(nm)]
+    t0=time.time()
+    try:
+        import multiprocessing as _mp
+        ctx=_mp.get_context('fork')
+        with ctx.Pool(_worker_count()) as pool:
+            res=pool.map(_peg_span_one,jobs,chunksize=4)
+    except Exception as e:
+        print(f"[목심표] 병렬 실패({type(e).__name__}) - 순차")
+        res=[_peg_span_one(j) for j in jobs]
+    span={nm:v for nm,v in res if v}
+    PEG_TABLE['key']=key; PEG_TABLE['span']=span
+    el=time.time()-t0
+    print(f"[목심표] {len(span)}/{len(jobs)}개 도달 가능, {el:.1f}초")
+    return span,el
+
+def peg_table_ready():
+    return PEG_TABLE['key']==peg_table_key() and PEG_TABLE['span']
+
+def peg_reachable_fast(height_mm):
+    """표에서 즉시 조회 (IK 없음). 표가 없으면 None."""
+    if not peg_table_ready(): return None
+    h=float(height_mm)
+    return sorted(nm for nm,(a,b) in PEG_TABLE['span'].items() if a<=h<=b)
+
 _PEG_CACHE={}
 def peg_reachable(height_mm,use_cache=True):
     """그 높이에서 IK 가 풀리는 목심 이름 목록."""
+    fast=peg_reachable_fast(height_mm)      # 표가 있으면 즉시
+    if fast is not None: return fast
     z=peg_z(height_mm)
     key=(round(z,4),round(BASE_OFF[0],4),round(BASE_OFF[1],4))
     if use_cache and key in _PEG_CACHE: return _PEG_CACHE[key]
@@ -2962,10 +3029,14 @@ def h_peg_view(on,height_mm):
     if not on:
         _peg_sim_stop(); PEG_VIEW['sel']=None
         return gr.update(),'목심 표시 끔'
+    note=''
+    if not peg_table_ready():               # 최초 1회만 표를 만든다
+        _,el=build_peg_table()
+        note=f" (도달 구간표 생성 {el:.0f}초 — 이후 높이 변경은 즉시)"
     t0=time.time(); lst=peg_reachable(height_mm); PEG_VIEW['ok']=lst
     return (gr.update(choices=lst,value=(lst[0] if lst else None)),
-            f"목심 표시 ON — 높이 {height_mm}mm 기준 도달 가능 {len(lst)}개 "
-            f"({time.time()-t0:.1f}초). 3D에서 구멍 위에 마우스를 올리면 "
+            f"목심 표시 ON — 높이 {height_mm}mm 기준 도달 가능 {len(lst)}개"
+            f"{note}. 3D에서 구멍 위에 마우스를 올리면 "
             "노랑(가능)/빨강(불가), 클릭하면 파랑(선택)+이동 미리보기가 반복됩니다")
 
 def h_peg_height(height_mm):
@@ -3992,7 +4063,7 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                         label='3D 목심 선택 모드 (구멍에 마우스를 올리면 '
                               '노랑=가능 / 빨강=불가, 클릭=파랑 선택)',
                         value=False)
-                    peg_h=gr.Slider(0,250,value=80,step=5,
+                    peg_h=gr.Slider(0,250,value=80,step=1,
                         label='높이 (mm) — 플레이트 윗면에서 그리퍼 축까지')
                     peg_sel=gr.Dropdown(choices=[],label='선택한 목심',
                                         info='도달 가능한 것만 표시됩니다')
