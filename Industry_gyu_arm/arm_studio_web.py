@@ -639,6 +639,78 @@ def _map_pair(q_src,src):
 def map_sts_to_dxl(q): return _map_pair(q,'sts')
 def map_dxl_to_sts(q): return _map_pair(q,'dxl')
 
+# ===== 해석적 IK (닫힌 해) =====
+# 수치 솔버는 "각도를 조금씩 바꿔보며 목표에 다가가는" 반복이라 느리다.
+# 이 로봇은 구조가 정해져 있으므로 공식으로 한 번에 풀 수 있다:
+#   j1(Z축) = 방위만 결정  /  j2,j3,j4(X축 평행) = 그 평면 안의 (거리,높이)
+#   수평 유지 -> j2+j3+j4 합이 고정 -> 미지수 2개, 식 2개 = 2링크 역기구학
+# 준비: q=0 에서 평면 팔의 링크 길이와 오프셋을 실측해 둔다.
+_AN={'ok':False}
+def _analytic_setup():
+    if _AN.get('done'): return _AN['ok']
+    _AN['done']=True
+    try:
+        ax=_world_axes(BASE_DEF)
+        up=np.array([0.,0.,1.])
+        if abs(np.dot(ax[0],up))<0.99: return False      # j1 이 Z 축이 아님
+        pl=[k for k in (1,2,3) if abs(np.dot(ax[k],up))<0.01]
+        if len(pl)!=3: return False                      # j2,j3,j4 평면 아님
+        if not (abs(np.dot(ax[1],ax[2]))>0.99 and abs(np.dot(ax[1],ax[3]))>0.99):
+            return False                                 # 세 축이 평행해야 함
+        fr=CHAIN.forward_kinematics([0]*7,full_kinematics=True)
+        p=[f[:3,3] for f in fr]
+        # j1 축 위치(월드 xy) 와 각 조인트의 상대 위치
+        _AN['o1']=p[1][:2].copy()                        # j1 회전축의 xy
+        _AN['z1']=float(p[2][2])                         # 어깨(j2) 높이
+        # j2->j3, j3->j4 링크 길이 (평면 팔 2링크)
+        _AN['L1']=float(np.linalg.norm(p[3]-p[2]))
+        _AN['L2']=float(np.linalg.norm(p[4]-p[3]))
+        # j4 이후 손목~툴까지는 수평 유지 상태에서 고정 벡터가 된다.
+        # q=0 기준 j4 원점 -> 툴 중심
+        T6=fr[6]
+        tool0=T6[:3,3]+T6[:3,:3]@TOOL_OFF
+        _AN['w']=tool0-p[4]                              # j4 -> 툴 (q=0)
+        # 어깨 기준 평면 좌표 정의를 위한 전방 방향(q=0 에서 j2->j4 투영)
+        _AN['ok']=True
+        return True
+    except Exception:
+        return False
+
+def ik_tool_fast(pt,j5,j6):
+    """해석적 IK. 수평유지 + 툴 중심 기준. 실패하면 None (호출측이 수치로 폴백).
+    반복 없음 - 공식 한 번."""
+    if not _analytic_setup(): return None
+    tgt=np.asarray(pt,float)-BASE_OFF
+    o1=_AN['o1']; d=tgt[:2]-o1
+    r=float(np.linalg.norm(d))
+    if r<1e-6: return None
+    # ① j1: 툴이 j1 축에서 벗어나 있으므로 그만큼 보정한 방위각
+    #    수평 유지 상태에서 j4->툴 벡터의 '옆(측면)' 성분이 곧 오프셋
+    w=_AN['w']; side=float(w[0])                # q=0 에서 x 가 측면 방향
+    if abs(side)>=r: return None                # 축에 너무 가까움 - 해 없음
+    j1=math.atan2(d[1],d[0])-math.atan2(side,math.sqrt(r*r-side*side))
+    j1-=math.atan2(1.0,0.0)                     # q=0 기준(+y 전방) 보정
+    # ② 평면 2링크: 어깨에서 (수평거리 R, 높이 H) 인 손목점 구하기
+    fwd=math.sqrt(max(r*r-side*side,0.0))       # 전방 성분
+    R=fwd-float(w[1]); H=tgt[2]-_AN['z1']-float(w[2])
+    L1,L2=_AN['L1'],_AN['L2']
+    D=math.hypot(R,H)
+    if D>L1+L2 or D<abs(L1-L2): return None     # 도달 불가
+    c=(L1*L1+L2*L2-D*D)/(2*L1*L2)
+    c=max(-1.0,min(1.0,c))
+    beta=math.acos(c)                           # 팔꿈치 내각
+    a=math.atan2(H,R)+math.acos(
+        max(-1.0,min(1.0,(L1*L1+D*D-L2*L2)/(2*L1*D))))
+    j2=a; j3=beta-math.pi
+    j4=-(j2+j3)                                 # 합=0 -> 수평 유지
+    q=[j1,j2,j3,j4,j5,j6]
+    # 검산: 공식이 맞았는지 실제 FK 로 확인 (틀리면 폴백)
+    if np.linalg.norm(tool_pos(q)-np.asarray(pt,float))>0.001: return None
+    for k in range(5):
+        lo,hi=jr_limits(k)
+        if not (lo-1e-6<=q[k]<=hi+1e-6): return None
+    return q
+
 def ik_tool(pt,seeds,j5,j6,iters=6):
     """툴 중심(axis_7)이 pt 에 오도록 푸는 수평유지 IK.
 
@@ -2774,6 +2846,26 @@ def _arm_reach():
         _ARM_REACH=s
     return _ARM_REACH
 
+def reach_ring(z):
+    """그 높이에서 툴이 닿을 수 있는 수평거리 구간 (min,max). 없으면 None.
+
+    평면 팔(j2,j3,j4) 구조라 어깨에서 손목까지는 L1+L2 안이어야 한다.
+    -> 3D IK 를 돌리기 전에 (x,y) 만으로 대부분을 걸러낼 수 있다.
+    (링크 길이 단순 합은 765mm 지만 실제 도달은 190~360mm 수준)
+    """
+    if not _analytic_setup(): return None
+    L1,L2,w,z1=_AN['L1'],_AN['L2'],_AN['w'],_AN['z1']
+    H=z-z1-float(w[2])                      # 어깨 기준 손목 높이
+    lo=abs(L1-L2); hi=L1+L2
+    if abs(H)>hi: return None               # 그 높이 자체가 팔 밖
+    # 손목의 수평거리 R 이 sqrt(D^2-H^2) 형태로 가능한 범위
+    Rmax=math.sqrt(max(hi*hi-H*H,0.0))
+    Rmin=math.sqrt(max(lo*lo-H*H,0.0)) if abs(H)<lo else 0.0
+    fwd=float(w[1]); side=float(w[0])       # 손목->툴 (전방, 측면)
+    # 툴까지의 수평거리 = sqrt((R+fwd)^2 + side^2)
+    def tot(R): return math.hypot(R+fwd,side)
+    return (tot(Rmin),tot(Rmax))
+
 def _peg_ik_ok(args):
     nm,x,y,z,seeds,j5,j6=args
     return nm if ik_tool((x,y,z),seeds,j5,j6) is not None else None
@@ -2792,13 +2884,19 @@ def peg_reachable(height_mm,use_cache=True):
     key=(round(z,4),round(BASE_OFF[0],4),round(BASE_OFF[1],4))
     if use_cache and key in _PEG_CACHE: return _PEG_CACHE[key]
     q0=list(CURRENT_Q); seeds=_seed_list(q0)
-    R=_arm_reach()
+    # ① xy 선별: 그 높이에서 가능한 수평거리 링 밖은 IK 없이 탈락
+    ring=reach_ring(z)
+    if ring is not None:
+        o1=CHAIN.forward_kinematics([0]*7,full_kinematics=True)[1][:3,3][:2]
+        cx,cy=o1[0]+BASE_OFF[0],o1[1]+BASE_OFF[1]
+        rlo,rhi=ring[0]-0.02,ring[1]+0.02    # 여유 2cm (경계 손실 방지)
     jobs=[]
     for nm in peg_names():
         xy=peg_xy(nm)
         if not xy: continue
-        d=math.dist((xy[0],xy[1],z),(BASE_OFF[0],BASE_OFF[1],0.0))
-        if d>R: continue                     # 팔 길이 밖 - IK 생략
+        if ring is not None:
+            d=math.hypot(xy[0]-cx,xy[1]-cy)
+            if d<rlo or d>rhi: continue      # ② 링 밖 - IK 생략
         jobs.append((nm,xy[0],xy[1],z,seeds,q0[4],q0[5]))
     # ikpy(scipy)는 GIL 을 놓지 않아 스레드로는 오히려 느려진다 -> 프로세스 병렬.
     # 프로세스가 안 되는 환경(피클 실패 등)이면 순차로 안전하게 폴백.
