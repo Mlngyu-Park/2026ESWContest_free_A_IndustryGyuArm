@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="Industry_gyu_arm_20260809_ppap">
+  <link
+    name="ppap_base">
+    <inertial>
+      <origin
+        xyz="-5.88521597651437E-05 3.40112024654893E-09 0.011290767815234"
+        rpy="0 0 0" />
+      <mass
+        value="0.0194056860552669" />
+      <inertia
+        ixx="2.17982855746356E-05"
+        ixy="-1.30515978849965E-13"
+        ixz="1.16563658974287E-08"
+        iyy="2.17980346778239E-05"
+        iyz="3.03029544486757E-12"
+        izz="1.75478969240021E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260809_ppap/meshes/ppap_base.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.894117647058823 0.894117647058823 0.894117647058823 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260809_ppap/meshes/ppap_base.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="ppap_l1">
+    <inertial>
+      <origin
+        xyz="-5.88521597651437E-05 3.40112024654893E-09 0.011290767815234"
+        rpy="0 0 0" />
+      <mass
+        value="0.0194056860552669" />
+      <inertia
+        ixx="2.17982855746356E-05"
+        ixy="-1.30515978849965E-13"
+        ixz="1.16563658974287E-08"
+        iyy="2.17980346778239E-05"
+        iyz="3.03029544486674E-12"
+        izz="1.75478969240021E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260809_ppap/meshes/ppap_l1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.894117647058823 0.894117647058823 0.894117647058823 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://Industry_gyu_arm_20260809_ppap/meshes/ppap_l1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="ppap_j1"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="0 0 0" />
+    <parent
+      link="ppap_base" />
+    <child
+      link="ppap_l1" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+</robot>

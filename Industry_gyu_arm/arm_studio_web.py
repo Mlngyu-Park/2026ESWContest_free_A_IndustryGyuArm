@@ -3217,6 +3217,95 @@ def ghost_tiles():
     return sorted(g)
 def tile_label(t):
     return f"({t[0]},{t[1]})"
+# ===== 잡을 수 있는 물체 (bricks) =====
+# 잡기 조건은 두 가지뿐이다:
+#   ① 물체 중심축(axis_ppap)과 툴 중심축(axis_7)이 x-y 에서 일치
+#   ② 두 축의 z 방향 수직 거리 = 물체마다 정해진 값 (PPAP 는 36.37mm)
+# 원통이라 회전 방향은 무관하고, 수평 유지는 기존 IK 가 이미 보장한다.
+BRICK_DIR='/home/drboom/2026_project/urdf/bricks'
+GRASP_DZ_DEFAULT=0.03637          # PPAP: 바닥에서 36.37mm
+
+BRICKS={}                         # id -> {mesh, dia, height, grasp_dz, pos}
+def _load_bricks():
+    import glob as _g
+    for pkg in sorted(_g.glob(os.path.join(BRICK_DIR,'*'))):
+        if not os.path.isdir(pkg): continue
+        name=os.path.basename(pkg).split('_')[-1]     # ..._ppap -> ppap
+        cands=sorted(_g.glob(os.path.join(pkg,'meshes','*l1*.STL'))) \
+              or sorted(_g.glob(os.path.join(pkg,'meshes','*.STL')))
+        if not cands: continue
+        try:
+            mm=trimesh.load(cands[0])
+            v=np.asarray(mm.vertices)                 # 이 패키지는 m 단위
+            b=np.array([v.min(0),v.max(0)])
+            rad=float(np.median(np.linalg.norm(v[:,:2],axis=1)))
+            BRICKS[name]={'mesh':cands[0],'scale':1.0,
+                          'dia':rad*2,'h':float(b[1][2]-b[0][2]),
+                          'z_bottom':float(b[0][2]),
+                          'grasp_dz':GRASP_DZ_DEFAULT,
+                          'pos':None}                  # 아직 배치 안 됨
+            print(f"물체 등록: {name}  지름 {rad*2*1000:.1f}mm "
+                  f"높이 {(b[1][2]-b[0][2])*1000:.1f}mm  "
+                  f"잡는 높이 {GRASP_DZ_DEFAULT*1000:.2f}mm")
+        except Exception as e:
+            print(f"물체 로드 실패 {pkg}: {e}")
+_load_bricks()
+
+def brick_grasp_point(bid):
+    """그 물체를 잡을 때 axis_7(툴 중심)이 놓여야 할 월드 좌표.
+    = 물체 중심축 위, 바닥에서 grasp_dz 만큼 올라간 점."""
+    b=BRICKS.get(bid)
+    if not b or b.get('pos') is None: return None
+    x,y,z_bottom=b['pos']
+    return np.array([x,y,z_bottom+b['grasp_dz']])
+
+def place_brick(bid,x,y,z_bottom):
+    """물체를 (x,y) 에 세우고 바닥 높이를 z_bottom 으로 둔다."""
+    if bid not in BRICKS: return False
+    BRICKS[bid]['pos']=(float(x),float(y),float(z_bottom))
+    return True
+
+def docking_ids():
+    """환경 STL 중 도킹 스테이션 목록."""
+    return [e['id'] for e in ENV_SHOW if 'docking' in e['id'].lower()]
+
+def docking_top(did):
+    """도킹 스테이션의 (중심 x, 중심 y, 윗면 z). 물체를 세울 자리."""
+    if did not in MESH_REG: return None
+    path,scale=MESH_REG[did]
+    try: mm=trimesh.load(path)
+    except Exception: return None
+    v=np.asarray(mm.vertices)*scale
+    off=np.zeros(3)
+    for e in ENV_SHOW:
+        if e['id']==did: off=np.asarray(e.get('offset',(0,0,0)),float)
+    return (float(v[:,0].mean()+off[0]), float(v[:,1].mean()+off[1]),
+            float(v[:,2].max()+off[2]))
+
+def place_brick_on_docking(bid,did):
+    """물체를 도킹 스테이션 위에 세운다 (중심축 일치, 바닥=도킹 윗면)."""
+    t=docking_top(did)
+    if t is None: return False,f'도킹 스테이션을 찾을 수 없습니다: {did}'
+    if not place_brick(bid,t[0],t[1],t[2]):
+        return False,f'물체를 찾을 수 없습니다: {bid}'
+    p=brick_grasp_point(bid)
+    return True,(f"{bid} 를 {did} 위에 세움 "
+                 f"(중심 {t[0]*1000:.0f},{t[1]*1000:.0f}mm, 바닥 z={t[2]*1000:.0f}mm)\n"
+                 f"  잡는 점: z={p[2]*1000:.1f}mm "
+                 f"(바닥 +{BRICKS[bid]['grasp_dz']*1000:.2f}mm)")
+
+def brick_graspable(bid):
+    """지금 그 물체를 잡을 수 있는지 (수평 유지 IK 로 그 점에 도달 가능한지).
+    반환: (가능여부, 관절해 또는 사유)"""
+    p=brick_grasp_point(bid)
+    if p is None: return False,'물체가 배치되지 않았습니다'
+    q0=list(CURRENT_Q)
+    q=ik_tool(p,_seed_list(q0),q0[4],q0[5])
+    if q is None:
+        return False,(f'그 지점({p[0]*1000:.0f},{p[1]*1000:.0f},'
+                      f'{p[2]*1000:.0f}mm)은 수평 유지로 도달 불가')
+    return True,q
+
 def _peg_layout_changed():
     """플레이트 배치가 바뀌면 목심 구성도 바뀐다 -> 도달표/캐시 무효화.
     (안 하면 새로 생긴 목심이 옛 목록에 없어 전부 빨강으로 표시된다)"""
