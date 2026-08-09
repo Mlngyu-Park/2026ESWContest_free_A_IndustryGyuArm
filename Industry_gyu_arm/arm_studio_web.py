@@ -639,6 +639,27 @@ def _map_pair(q_src,src):
 def map_sts_to_dxl(q): return _map_pair(q,'sts')
 def map_dxl_to_sts(q): return _map_pair(q,'dxl')
 
+def ik_tool(pt,seeds,j5,j6,iters=6):
+    """툴 중심(axis_7)이 pt 에 오도록 푸는 수평유지 IK.
+
+    IK 는 j6 원점을 푸므로 목표에서 툴 오프셋을 빼야 하는데, 그 오프셋의
+    월드 방향이 j1 회전에 따라 달라진다(z 성분만 일정). 그래서 한 번에
+    못 빼고, '풀고 -> 실제 툴 위치 오차만큼 목표를 밀어주고' 를 반복해
+    수렴시킨다. 보통 2~3회면 0.1mm 이내.
+    """
+    tgt=np.asarray(pt,float)
+    if not TOOL_HAS: return ik_level(tgt,seeds,j5,j6)
+    aim=tgt.copy(); best=None
+    for _ in range(iters):
+        q=ik_level(aim,seeds,j5,j6)
+        if q is None: return None
+        err=tgt-tool_pos(q)
+        best=q
+        if np.linalg.norm(err)<0.0005: break     # 0.5mm 이내면 충분
+        aim=aim+err
+        seeds=[q]+list(seeds)                    # 다음 반복은 이 해에서 출발
+    return best
+
 def ik_level(pt,seeds,j5,j6):
     """수평 유지 IK (j5/j6 잠금). 초기값 여러 개 시도 -> 관절6개 or None.
     (초기값이 나쁘면 도달 가능한 점도 실패 판정이 나므로 다중 시도 필수)"""
@@ -2753,14 +2774,14 @@ def _arm_reach():
 
 def _peg_ik_ok(args):
     nm,x,y,z,seeds,j5,j6=args
-    return nm if ik_level((x,y,z),seeds,j5,j6) is not None else None
+    return nm if ik_tool((x,y,z),seeds,j5,j6) is not None else None
 
 # 프로세스 워커용 - fork 로 모듈 상태를 물려받아 그대로 계산한다
 # (spawn 방식 OS 라면 ProcessPool 이 실패하고 순차로 폴백됨)
 def _peg_ik_worker(a):
     nm,x,y,z=a
     q0=list(CURRENT_Q)
-    return nm if ik_level((x,y,z),_seed_list(q0),q0[4],q0[5]) is not None else None
+    return nm if ik_tool((x,y,z),_seed_list(q0),q0[4],q0[5]) is not None else None
 
 _PEG_CACHE={}
 def peg_reachable(height_mm,use_cache=True):
@@ -2805,7 +2826,7 @@ def _peg_sim_loop(name,height_mm,stop):
     xy=peg_xy(name)
     if xy is None: return
     q0=list(CURRENT_Q)
-    tgt=ik_level((xy[0],xy[1],peg_z(height_mm)),_seed_list(q0),q0[4],q0[5])
+    tgt=ik_tool((xy[0],xy[1],peg_z(height_mm)),_seed_list(q0),q0[4],q0[5])
     if tgt is None: return
     tgt[5]=q0[5]
     if LEVEL_ALWAYS: tgt[J5_IDX]=q0[J5_IDX]
@@ -2876,7 +2897,7 @@ def h_peg_goto(name,height_mm):
     _peg_sim_stop()                       # 미리보기 반복 재생 중단
     z=peg_z(height_mm)
     q0=ROBOT.read() if ROBOT.connect() else list(CURRENT_Q)
-    tgt=ik_level((xy[0],xy[1],z),_seed_list(q0),q0[4],q0[5])
+    tgt=ik_tool((xy[0],xy[1],z),_seed_list(q0),q0[4],q0[5])
     if tgt is None:
         return (f"{name} 의 {height_mm}mm 높이는 도달 불가 - "
                 "높이를 올리거나 다른 목심을 고르세요")
@@ -2894,9 +2915,9 @@ def h_peg_goto(name,height_mm):
         for q in way:
             if STOP.is_set(): break
             ROBOT.send(q,log=True,tag=name); time.sleep(dt)
-        p,_=fk(tgt)
+        p=tool_pos(tgt) if TOOL_HAS else fk(tgt)[0]
         return (f"{name} 위 {height_mm}mm 도착  "
-                f"(x={p[0]*1000:.0f} y={p[1]*1000:.0f} z={p[2]*1000:.0f}mm)")
+                f"툴중심(x={p[0]*1000:.0f} y={p[1]*1000:.0f} z={p[2]*1000:.0f}mm)")
     except Exception as e:
         ROBOT.estop(); return f"오류: {e} - 토크 해제됨"
     finally:
@@ -2909,7 +2930,7 @@ def h_peg_save_pose(name,height_mm,newname):
     xy=peg_xy(name)
     if xy is None: return gr.update(),gr.update(),f"목심 이름 오류: {name}"
     q0=list(CURRENT_Q)
-    q=ik_level((xy[0],xy[1],peg_z(height_mm)),_seed_list(q0),q0[4],q0[5])
+    q=ik_tool((xy[0],xy[1],peg_z(height_mm)),_seed_list(q0),q0[4],q0[5])
     if q is None:
         return gr.update(),gr.update(),f"{name} 의 {height_mm}mm 는 도달 불가"
     q[5]=q0[5]
