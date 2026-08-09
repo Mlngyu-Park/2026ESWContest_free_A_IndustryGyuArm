@@ -3306,6 +3306,97 @@ def brick_graspable(bid):
                       f'{p[2]*1000:.0f}mm)은 수평 유지로 도달 불가')
     return True,q
 
+GRASP_LIFT=0.06        # 원하는 접근/상승 여유 높이 (m)
+HELD={'brick':None}    # 지금 그리퍼가 들고 있는 물체
+
+def _lift_point(p,want=GRASP_LIFT):
+    """p 바로 위의 '실제로 도달 가능한' 접근점을 찾는다.
+    팔 한계 때문에 원하는 여유(6cm)가 항상 되는 건 아니므로
+    위에서부터 내려오며 가능한 높이를 고른다. 없으면 p 자신."""
+    q0=list(CURRENT_Q); seeds=_seed_list(q0)
+    h=want
+    while h>0.005:
+        t=np.asarray(p,float)+np.array([0,0,h])
+        if ik_tool(t,seeds,q0[4],q0[5]) is not None: return t,h
+        h-=0.01
+    return np.asarray(p,float),0.0
+
+def _brick_move_to(p,tag):
+    """툴 중심을 월드 좌표 p 로 (수평 유지). 실패 시 사유 문자열 반환."""
+    q0=ROBOT.read() if ROBOT.connect() else list(CURRENT_Q)
+    q=ik_tool(np.asarray(p,float),_seed_list(q0),q0[4],q0[5])
+    if q is None:
+        return f"{tag}: 그 지점에 도달할 수 없습니다"
+    q[5]=q0[5]
+    if LEVEL_ALWAYS: q[J5_IDX]=q0[J5_IDX]
+    way,dt=plan_joint_seq(q0,q)
+    for f in way: f[5]=q0[5]
+    if LEVEL_ALWAYS: lock_j5(way,q0)
+    ros_publish(q)
+    for f in way:
+        if STOP.is_set(): return f"{tag}: 정지됨"
+        ROBOT.send(f,log=True,tag=tag); time.sleep(dt)
+    return None
+
+def do_grasp(bid):
+    """잡기: 물체 위로 접근 -> 그리퍼 열기 -> 하강(잡는 점) -> 닫기 -> 상승.
+    조건은 단 하나 - 툴 중심축이 물체 중심축과 겹치고 z 거리가 grasp_dz."""
+    BTN('잡기',bid)
+    p=brick_grasp_point(bid)
+    if p is None: return f"{bid} 가 배치되지 않았습니다"
+    if RUNNING.is_set(): return "다른 동작 실행 중 - [정지] 후 다시"
+    if not ROBOT.connect():
+        return "로봇 연결 실패 — [이동] 탭에서 '시뮬레이션' 을 고르면 3D로 볼 수 있습니다"
+    above,lift=_lift_point(p)
+    STOP.clear(); RUNNING.set()
+    try:
+        ROBOT.time_profile(True); ROBOT.torque(True)
+        e=_brick_move_to(above,'잡기① 접근')
+        if e: return e
+        ROBOT.gripper(True); time.sleep(0.3)          # ② 열기
+        e=_brick_move_to(p,'잡기③ 하강')
+        if e: return e
+        ROBOT.gripper(False); time.sleep(0.5)         # ④ 닫기 = 잡힘
+        HELD['brick']=bid
+        e=_brick_move_to(above,'잡기⑤ 상승')
+        if e: return e
+        return (f"{bid} 잡음 (툴 중심 z={p[2]*1000:.1f}mm = "
+                f"물체 바닥 +{BRICKS[bid]['grasp_dz']*1000:.2f}mm, "
+                f"접근 여유 {lift*1000:.0f}mm)")
+    except Exception as ex:
+        ROBOT.estop(); return f"오류: {ex} - 토크 해제됨"
+    finally:
+        RUNNING.clear()
+
+def do_release(did):
+    """놓기: 목표 도킹 위로 이동 -> 하강 -> 열기 -> 상승. 잡기의 역순."""
+    BTN('놓기',did)
+    bid=HELD['brick']
+    if bid is None: return "들고 있는 물체가 없습니다 (먼저 [잡기])"
+    t=docking_top(did)
+    if t is None: return f"도킹을 찾을 수 없습니다: {did}"
+    if RUNNING.is_set(): return "다른 동작 실행 중 - [정지] 후 다시"
+    if not ROBOT.connect(): return "로봇 연결 실패"
+    p=np.array([t[0],t[1],t[2]+BRICKS[bid]['grasp_dz']])   # 놓을 자리의 잡는 점
+    above,_=_lift_point(p)
+    STOP.clear(); RUNNING.set()
+    try:
+        ROBOT.time_profile(True); ROBOT.torque(True)
+        e=_brick_move_to(above,'놓기① 접근')
+        if e: return e
+        e=_brick_move_to(p,'놓기② 하강')
+        if e: return e
+        ROBOT.gripper(True); time.sleep(0.5)          # ③ 열기 = 놓임
+        place_brick(bid,t[0],t[1],t[2])               # 물체 위치 갱신
+        HELD['brick']=None
+        e=_brick_move_to(above,'놓기④ 상승')
+        if e: return e
+        return f"{bid} 를 {did} 위에 놓음"
+    except Exception as ex:
+        ROBOT.estop(); return f"오류: {ex} - 토크 해제됨"
+    finally:
+        RUNNING.clear()
+
 def _peg_layout_changed():
     """플레이트 배치가 바뀌면 목심 구성도 바뀐다 -> 도달표/캐시 무효화.
     (안 하면 새로 생긴 목심이 옛 목록에 없어 전부 빨강으로 표시된다)"""
@@ -4267,6 +4358,20 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                     peg_pname=gr.Textbox(label='자세 이름 (비우면 자동)',
                                          placeholder='예: 픽업위치')
                     btn_pegpose=gr.Button('자세로 등록')
+                    gr.Markdown('---\n**물체 잡기/놓기** — 물체 중심축과 '
+                                '그리퍼 축(axis_7)을 맞추고 정해진 높이에서 '
+                                '닫으면 잡힙니다')
+                    with gr.Row():
+                        brick_sel=gr.Dropdown(choices=list(BRICKS),
+                                              value=(list(BRICKS)[0] if BRICKS else None),
+                                              label='물체')
+                        dock_sel=gr.Dropdown(choices=docking_ids(),
+                                             value=(docking_ids()[0] if docking_ids() else None),
+                                             label='도킹 스테이션')
+                    btn_place=gr.Button('여기에 세우기 (시뮬)')
+                    with gr.Row():
+                        btn_grasp=gr.Button('잡기',variant='primary')
+                        btn_release=gr.Button('놓기',variant='primary')
                     gr.Markdown('로봇이 없으면 [이동] 탭에서 **시뮬레이션** 을 '
                                 '고르면 3D로 확인할 수 있습니다.')
 
@@ -4300,6 +4405,10 @@ with gr.Blocks(title='ARM STUDIO') as demo:
     btn_peggo.click(h_peg_goto,[peg_sel,peg_h],[status])
     btn_pegpose.click(h_peg_save_pose,[peg_sel,peg_h,peg_pname],
                       [pose_sel,pose_for_seq,status])
+    btn_place.click(lambda b,d:place_brick_on_docking(b,d)[1],
+                    [brick_sel,dock_sel],[status])
+    btn_grasp.click(do_grasp,[brick_sel],[status])
+    btn_release.click(do_release,[dock_sel],[status])
     plate_del.click(h_plate_remove,[plate_sel],[plate_info,plate_sel])
     plate_ref.click(h_plate_refresh,None,[plate_info,plate_sel])
     demo.load(h_plate_refresh,None,[plate_info,plate_sel])
