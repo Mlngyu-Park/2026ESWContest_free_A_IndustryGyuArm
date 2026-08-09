@@ -1446,10 +1446,20 @@ def seg_rotmode(a,b,default='blend'):
 
 # 시퀀스 항목: 자세는 문자열("base"), 그리퍼는 "@open" / "@close"
 GRIP_OPEN_ITEM='@open'; GRIP_CLOSE_ITEM='@close'
-def is_grip_item(x): return isinstance(x,str) and x.startswith('@')
+# 물체 잡기/놓기 블록. '@grasp:<물체>' / '@release:<도킹>'
+GRASP_PREFIX='@grasp:'; RELEASE_PREFIX='@release:'
+def is_grasp_item(n): return isinstance(n,str) and n.startswith(GRASP_PREFIX)
+def is_release_item(n): return isinstance(n,str) and n.startswith(RELEASE_PREFIX)
+def is_brick_item(n): return is_grasp_item(n) or is_release_item(n)
+def is_grip_item(x):
+    # '@' 로 시작하는 다른 블록(@grasp:/@release:)도 생겼으므로
+    # 그리퍼 블록은 정확히 이 두 값일 때만이다.
+    return x in (GRIP_OPEN_ITEM,GRIP_CLOSE_ITEM)
 def pose_seq():
-    """시퀀스에서 자세 항목만 (경로 계획용)."""
-    return [x for x in S['seq'] if not is_grip_item(x)]
+    """시퀀스에서 자세 항목만 (경로 계획용).
+    그리퍼·물체 블록은 자세가 아니므로 제외한다."""
+    return [x for x in S['seq']
+            if not is_grip_item(x) and not is_brick_item(x)]
 
 def seq_labels(mode_name=None):
     """파이프라인 블록: ■자세 / ┃이동 / ◆그리퍼"""
@@ -1459,6 +1469,13 @@ def seq_labels(mode_name=None):
         if is_grip_item(n):
             act='열기 ✋' if n==GRIP_OPEN_ITEM else '닫기 ✊'
             out.append(f"◆ {idx}. 그리퍼 {act}")
+            continue
+        if is_brick_item(n):
+            # 물체 블록은 자세 사이에 끼어들 뿐 '이동 구간' 을 만들지 않는다
+            if is_grasp_item(n):
+                out.append(f"◈ {idx}. 잡기: {brick_label(n[len(GRASP_PREFIX):])}")
+            else:
+                out.append(f"◈ {idx}. 놓기: {dock_label(n[len(RELEASE_PREFIX):])}")
             continue
         if prev_pose is not None:
             k=seg_key(prev_pose,n)
@@ -1812,6 +1829,36 @@ def h_seq_add(name):
     return (gr.update(choices=seq_labels(),value=None),
             f"'{name}' 추가 (3D 미리보기) — 시퀀스: {' -> '.join(S['seq'])}")
 
+def h_seq_grasp(bid):
+    """파이프라인에 잡기 블록 추가."""
+    if not bid: return gr.update(),"물체를 선택하세요"
+    with LOCK: S['seq'].append(GRASP_PREFIX+bid)
+    _macro_save()
+    return gr.update(choices=seq_labels(),value=None), \
+           f"◈ 잡기: {brick_label(bid)} 블록 추가"
+
+def h_seq_release(did):
+    """파이프라인에 놓기 블록 추가."""
+    if not did: return gr.update(),"도킹을 선택하세요"
+    with LOCK: S['seq'].append(RELEASE_PREFIX+did)
+    _macro_save()
+    return gr.update(choices=seq_labels(),value=None), \
+           f"◈ 놓기: {dock_label(did)} 블록 추가"
+
+def h_set_name(oid,name,color):
+    """물체/도킹에 이름과 색을 지정."""
+    BTN('이름 지정',f'{oid} -> {name}')
+    if not oid:
+        return gr.update(),gr.update(),gr.update(),"대상을 선택하세요"
+    set_name(oid,name,color)
+    labs=[f"{disp_name(o)}  ({o})" for o in list(BRICKS)+env_ids()]
+    return (gr.update(choices=list(BRICKS)+env_ids(),value=oid),
+            gr.update(choices=list(BRICKS),
+                      value=(oid if oid in BRICKS else None)),
+            gr.update(choices=docking_ids(),
+                      value=(oid if oid in docking_ids() else None)),
+            f"'{disp_name(oid)}' 로 지정 (색 {color})")
+
 def h_seq_grip(open_):
     """파이프라인에 그리퍼 블록 추가."""
     with LOCK: S['seq'].append(GRIP_OPEN_ITEM if open_ else GRIP_CLOSE_ITEM)
@@ -1962,7 +2009,12 @@ def _clear_plan_cache(): _PLAN_CACHE.clear()
 
 def plan_all(mode,axorder,check_coll=False):
     ps=pose_seq()                                   # 그리퍼 블록 제외
-    if len(ps)<2: return None,"시퀀스에 자세가 2개 이상 필요합니다",""
+    if len(ps)<2:
+        # 자세가 1개여도 잡기/놓기 블록만으로 이뤄진 파이프라인은 유효하다
+        # (그 블록들이 스스로 이동까지 하므로 자세 사이 경로가 필요 없다)
+        if any(is_brick_item(x) for x in S['seq']):
+            return [],None,""
+        return None,"시퀀스에 자세가 2개 이상 필요합니다",""
     segs=[]
     mv=get_moves()
     carry=None          # 앞 구간의 '실제 끝 자세' (j5 고정 등이 반영된 값)
@@ -2199,10 +2251,28 @@ def h_run(kind,mode,axorder,speed,loop,coll=False):
             # 첫 자세는 위에서 이미 이동함 -> 그 '자세 블록' 하나만 건너뛰고
             # 나머지는 전부 순서대로 (첫 자세 앞의 그리퍼 블록도 실행되어야 함)
             first_pose_i=next(i for i,x in enumerate(S['seq'])
-                              if not is_grip_item(x))
+                              if not is_grip_item(x) and not is_brick_item(x))
             items=[x for i,x in enumerate(S['seq']) if i!=first_pose_i]
             for item in items:
                 if STOP.is_set(): raise KeyboardInterrupt
+                if is_brick_item(item):
+                    # 잡기/놓기 블록: 상승 -> 축 일치 -> 하강 -> 그리퍼 순으로
+                    # 자체 완결된 동작이라 경로 계획과 별개로 실행한다.
+                    RUNNING.clear()            # do_grasp 가 자체적으로 잡는다
+                    if is_grasp_item(item):
+                        b=item[len(GRASP_PREFIX):]
+                        LOG(f"\n[잡기] {brick_label(b)}")
+                        msg=do_grasp(b)
+                    else:
+                        d=item[len(RELEASE_PREFIX):]
+                        LOG(f"\n[놓기] {dock_label(d)}")
+                        msg=do_release(d)
+                    RUNNING.set()
+                    LOG(f"  {msg}")
+                    yield gr.update(),msg
+                    if '오류' in msg or '없습니다' in msg or '불가' in msg:
+                        raise RuntimeError(msg)
+                    continue
                 if is_grip_item(item):
                     op = (item==GRIP_OPEN_ITEM)
                     tgt=GRIPPER_OPEN if op else GRIPPER_CLOSE
@@ -2697,6 +2767,7 @@ try:
     S['rotmodes']=_d.get('rotmodes',{})
     S['macros']=_d.get('macros',{})
     if _d.get('robot_xy'): S['robot_xy']=_d['robot_xy']
+    S['names']=_d.get('names',{})
     if not any(p['name']=='base' for p in S['poses']):
         S['poses'].insert(0,{'name':'base','angles':[0.0]*6,'offset':[0.0]*6})
     print(f"  자세 {len(S['poses'])}개, 녹화 {len(S['moves'])}건 불러옴")
@@ -3445,6 +3516,34 @@ def do_release(did):
         ROBOT.estop(); return f"오류: {ex} - 토크 해제됨"
     finally:
         RUNNING.clear()
+
+# ===== 물체·도킹 이름 (사람이 부르는 말) =====
+# "분홍색 펜", "도킹 4번" 처럼 지칭하려면 파일명 말고 이름이 필요하다.
+# calib.json 에 저장되어 재시작해도 유지된다.
+def _names():
+    return S.setdefault('names',{})          # id -> {'name':..,'color':..}
+
+def set_name(oid,name=None,color=None):
+    d=_names().setdefault(oid,{})
+    if name is not None: d['name']=name.strip()
+    if color: d['color']=color
+    if color:                                # 3D 색도 함께 바꾼다
+        for e in ENV_SHOW:
+            if e['id']==oid: e['color']=color
+    _macro_save()
+    return d
+
+def disp_name(oid):
+    """등록된 이름이 있으면 그것, 없으면 파일명에서 뽑은 짧은 이름."""
+    d=_names().get(oid) or {}
+    if d.get('name'): return d['name']
+    s=str(oid)
+    for tag in ('Industry_gyu_arm_','20260721_-_','20260727_-_','_-_'):
+        s=s.replace(tag,'')
+    return s
+
+def brick_label(bid): return disp_name(bid)
+def dock_label(did):  return disp_name(did)
 
 def _peg_layout_changed():
     """플레이트 배치가 바뀌면 목심 구성도 바뀐다 -> 도달표/캐시 무효화.
@@ -4421,6 +4520,19 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                     with gr.Row():
                         btn_grasp=gr.Button('잡기',variant='primary')
                         btn_release=gr.Button('놓기',variant='primary')
+                    with gr.Row():
+                        btn_gr_add=gr.Button('◈ 잡기 블록 추가',size='sm')
+                        btn_rl_add=gr.Button('◈ 놓기 블록 추가',size='sm')
+                    gr.Markdown('---\n**이름 붙이기** — 물체·도킹에 부르는 이름과 '
+                                '색을 지정하면 3D와 블록에 그 이름이 표시됩니다')
+                    nm_target=gr.Dropdown(
+                        choices=list(BRICKS)+env_ids(),
+                        value=(list(BRICKS)[0] if BRICKS else None),
+                        label='대상')
+                    with gr.Row():
+                        nm_text=gr.Textbox(label='이름',placeholder='예: 분홍 펜')
+                        nm_color=gr.ColorPicker(label='색',value='#ff69b4')
+                    btn_nm=gr.Button('이름·색 적용')
                     gr.Markdown('로봇이 없으면 [이동] 탭에서 **시뮬레이션** 을 '
                                 '고르면 3D로 확인할 수 있습니다.')
 
@@ -4458,6 +4570,10 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                     [brick_sel,dock_sel],[status])
     btn_grasp.click(do_grasp,[brick_sel],[status])
     btn_release.click(do_release,[dock_sel],[status])
+    btn_gr_add.click(h_seq_grasp,[brick_sel],[seq_sel,status])
+    btn_rl_add.click(h_seq_release,[dock_sel],[seq_sel,status])
+    btn_nm.click(h_set_name,[nm_target,nm_text,nm_color],
+                 [nm_target,brick_sel,dock_sel,status])
     plate_del.click(h_plate_remove,[plate_sel],[plate_info,plate_sel])
     plate_ref.click(h_plate_refresh,None,[plate_info,plate_sel])
     demo.load(h_plate_refresh,None,[plate_info,plate_sel])
