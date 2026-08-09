@@ -3223,7 +3223,10 @@ def tile_label(t):
 #   ② 두 축의 z 방향 수직 거리 = 물체마다 정해진 값 (PPAP 는 36.37mm)
 # 원통이라 회전 방향은 무관하고, 수평 유지는 기존 IK 가 이미 보장한다.
 BRICK_DIR='/home/drboom/2026_project/urdf/bricks'
-GRASP_DZ_DEFAULT=0.03637          # PPAP: 바닥에서 36.37mm
+# PPAP 실측은 36.37mm 지만 37mm 로 고정한다.
+# 정확히 맞추면 오차가 아래로 날 때 그리퍼가 물체를 파고들어 이상하게 잡힌다
+# -> 0.63mm 여유를 위로 두는 편이 안전 (사용자 결정)
+GRASP_DZ_DEFAULT=0.037            # PPAP: 바닥에서 37mm
 
 BRICKS={}                         # id -> {mesh, dia, height, grasp_dz, pos}
 def _load_bricks():
@@ -3310,15 +3313,28 @@ GRASP_LIFT=0.06        # 원하는 접근/상승 여유 높이 (m)
 HELD={'brick':None}    # 지금 그리퍼가 들고 있는 물체
 
 def _max_z_over(x,y,z_from,z_to=0.30):
-    """(x,y) 축 위에서 도달 가능한 가장 높은 z. 없으면 None.
-    잡기 ②단계 - '그 도킹에서 갈 수 있는 최고 높이' 를 찾는다."""
+    """(x,y) 축 위에서 도달 가능한 가장 높은 z. 없으면 None."""
     q0=list(CURRENT_Q); seeds=_seed_list(q0)
-    best=None
     z=z_to
     while z>=z_from-1e-9:
-        if ik_tool((x,y,z),seeds,q0[4],q0[5]) is not None:
-            best=z; break
+        if ik_tool((x,y,z),seeds,q0[4],q0[5]) is not None: return z
         z-=0.005
+    return None
+
+def _travel_z(p_from,p_to,z_min,z_max=0.30,n=8):
+    """출발점 -> 목표점 '경로 전체' 에서 공통으로 갈 수 있는 최고 z.
+
+    한쪽에서만 높이 올라갈 수 있어도 소용없다. 중간에 막히면 수평 이동이
+    안 되므로, 경로를 나눠 각 지점의 최고 높이 중 '가장 낮은 값' 을 쓴다.
+    (간편 이동의 '뽑기 -> 수평 -> 하강' 과 같은 원리)
+    """
+    a=np.asarray(p_from,float); b=np.asarray(p_to,float)
+    best=z_max
+    for k in range(n+1):
+        c=a+(b-a)*(k/n)
+        z=_max_z_over(float(c[0]),float(c[1]),z_min,best)
+        if z is None: return None
+        best=min(best,z)
     return best
 
 def _descend(x,y,z_hi,z_lo,tag,steps=None):
@@ -3356,10 +3372,11 @@ def _brick_move_to(p,tag):
 
 def do_grasp(bid):
     """잡기 (사용자 정의 순서)
-      ① 그리퍼 열기
-      ② 목표 도킹의 축 위로 이동 - 그 자리에서 갈 수 있는 최고 높이까지
-      ③ 두 축(axis_ppap = axis_7)을 맞춘 채 수직으로만 하강
-      ④ 물체 바닥 +36.37mm 지점에서 그리퍼 닫기 = 잡힘
+      ① z 상승  - 현재 위치에서 목표 축까지 '경로 전체' 에서 갈 수 있는 최고 z
+      ② 그리퍼 열기 (안전 높이에서)
+      ③ 축 일치  - 그 높이를 유지한 채 수평 이동, axis_ppap = axis_7
+      ④ 수직 하강 - 축 맞춘 채 z 만 내려 바닥 +37mm 까지
+      ⑤ 닫기 = 잡힘
     """
     BTN('잡기',bid)
     p=brick_grasp_point(bid)
@@ -3368,21 +3385,24 @@ def do_grasp(bid):
     if not ROBOT.connect():
         return "로봇 연결 실패 — [이동] 탭에서 '시뮬레이션' 을 고르면 3D로 볼 수 있습니다"
     x,y,zg=float(p[0]),float(p[1]),float(p[2])
+    now=tool_pos(ROBOT.read() if ROBOT.connect() else CURRENT_Q)
     STOP.clear(); RUNNING.set()
     try:
         ROBOT.time_profile(True); ROBOT.torque(True)
-        ROBOT.gripper(True); time.sleep(0.3)                 # ① 열기
-        ztop=_max_z_over(x,y,zg)                             # ② 최고 높이
-        if ztop is None:
-            return f"{bid} 의 축({x*1000:.0f},{y*1000:.0f}) 위로는 갈 수 없습니다"
-        e=_brick_move_to((x,y,ztop),'잡기② 축 위로')
+        ztr=_travel_z(now,p,zg)                              # 경로 공통 최고 z
+        if ztr is None:
+            return f"{bid} 의 축({x*1000:.0f},{y*1000:.0f}) 까지 갈 수 없습니다"
+        e=_descend(float(now[0]),float(now[1]),float(now[2]),ztr,'잡기① 상승')
+        if e: return e                                       # ① 제자리 상승
+        ROBOT.gripper(True); time.sleep(0.3)                 # ② 열기
+        e=_brick_move_to((x,y,ztr),'잡기③ 축 일치')          # ③ 수평 이동
         if e: return e
-        e=_descend(x,y,ztop,zg,'잡기③ 수직하강')             # ③ 수직 하강
+        e=_descend(x,y,ztr,zg,'잡기④ 수직하강')              # ④ 수직 하강
         if e: return e
-        ROBOT.gripper(False); time.sleep(0.5)                # ④ 닫기 = 잡힘
+        ROBOT.gripper(False); time.sleep(0.5)                # ⑤ 닫기 = 잡힘
         HELD['brick']=bid
-        return (f"{bid} 잡음 — 축 정렬 후 z {ztop*1000:.0f}→{zg*1000:.1f}mm "
-                f"수직하강, 바닥 +{BRICKS[bid]['grasp_dz']*1000:.2f}mm 에서 닫음")
+        return (f"{bid} 잡음 — 상승 z{ztr*1000:.0f}mm → 축 일치 → "
+                f"수직하강 {zg*1000:.0f}mm (바닥 +{BRICKS[bid]['grasp_dz']*1000:.0f}mm) → 닫기")
     except Exception as ex:
         ROBOT.estop(); return f"오류: {ex} - 토크 해제됨"
     finally:
@@ -3397,27 +3417,30 @@ def do_release(did):
     if t is None: return f"도킹을 찾을 수 없습니다: {did}"
     if RUNNING.is_set(): return "다른 동작 실행 중 - [정지] 후 다시"
     if not ROBOT.connect(): return "로봇 연결 실패"
-    # 놓기 = 잡기의 역순
-    #  ① 목표 도킹 축 위 최고 높이로 이동 (물체를 든 채)
-    #  ② 축 맞춘 채 수직 하강  ③ 열기 = 놓임  ④ 수직 상승
+    # 놓기 = 잡기와 같은 구조 (물체를 든 채이므로 열기가 하강 뒤에 온다)
+    #  ① z 상승  ② 축 일치(수평)  ③ 수직 하강  ④ 열기=놓임  ⑤ 수직 상승
     x,y=float(t[0]),float(t[1])
     zg=float(t[2]+BRICKS[bid]['grasp_dz'])
+    now=tool_pos(ROBOT.read() if ROBOT.connect() else CURRENT_Q)
     STOP.clear(); RUNNING.set()
     try:
         ROBOT.time_profile(True); ROBOT.torque(True)
-        ztop=_max_z_over(x,y,zg)
-        if ztop is None:
-            return f"{did} 축 위로는 갈 수 없습니다"
-        e=_brick_move_to((x,y,ztop),'놓기① 축 위로')
+        ztr=_travel_z(now,(x,y,zg),zg)
+        if ztr is None:
+            return f"{did} 축까지 갈 수 없습니다"
+        e=_descend(float(now[0]),float(now[1]),float(now[2]),ztr,'놓기① 상승')
         if e: return e
-        e=_descend(x,y,ztop,zg,'놓기② 수직하강')
+        e=_brick_move_to((x,y,ztr),'놓기② 축 일치')
         if e: return e
-        ROBOT.gripper(True); time.sleep(0.5)          # ③ 열기 = 놓임
+        e=_descend(x,y,ztr,zg,'놓기③ 수직하강')
+        if e: return e
+        ROBOT.gripper(True); time.sleep(0.5)          # ④ 열기 = 놓임
         place_brick(bid,t[0],t[1],t[2])               # 물체 위치 갱신
         HELD['brick']=None
-        e=_descend(x,y,zg,ztop,'놓기④ 수직상승')      # ④ 같은 축으로 상승
+        e=_descend(x,y,zg,ztr,'놓기⑤ 수직상승')       # ⑤ 같은 축으로 상승
         if e: return e
-        return f"{bid} 를 {did} 위에 놓음 (z {zg*1000:.1f}→{ztop*1000:.0f}mm 상승)"
+        return (f"{bid} 를 {did} 위에 놓음 — 상승 z{ztr*1000:.0f}mm → 축 일치 → "
+                f"수직하강 {zg*1000:.0f}mm → 열기 → 상승")
     except Exception as ex:
         ROBOT.estop(); return f"오류: {ex} - 토크 해제됨"
     finally:
