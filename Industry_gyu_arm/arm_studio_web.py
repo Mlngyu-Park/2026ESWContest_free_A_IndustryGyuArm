@@ -186,6 +186,31 @@ def build_chain():
         active.append(True)
     return Chain(name='arm',links=links,active_links_mask=active)
 CHAIN=build_chain()
+# ===== 툴 중심 (axis_7) =====
+# 사용자가 SolidWorks 에서 그리퍼 회전 원의 중심에 잡은 좌표계.
+# 2026-08-09 URDF(20260809_base)의 j7 에서 읽은 값. j1~j6/메쉬는 이전 URDF 와
+# 완전히 동일함을 확인했으므로(차이 0), URDF 는 그대로 두고 이 값만 쓴다.
+#   -> j7 이 들어있는 URDF 를 base 로 쓰면 그쪽 값이 자동으로 우선한다.
+TOOL_OFF_DEFAULT=np.array([-0.009, 0.0395, 0.0393351262037889])
+def _tool_offset():
+    try:
+        root=ET.parse(BASE_URDF).getroot()
+        for j in root.findall('joint'):
+            if j.get('name')=='j7':
+                o=j.find('origin')
+                v=np.array([float(x) for x in (o.get('xyz') or '0 0 0').split()])
+                if np.linalg.norm(v)>1e-9: return v
+    except Exception: pass
+    return TOOL_OFF_DEFAULT.copy()
+TOOL_OFF=_tool_offset()          # l6(=j6 프레임) 기준
+TOOL_HAS=bool(np.linalg.norm(TOOL_OFF)>1e-9)
+if TOOL_HAS:
+    print(f"툴 중심(axis_7): j6 에서 {np.round(TOOL_OFF*1000,1)} mm")
+
+def tool_pos(q):
+    """월드 기준 툴 중심 좌표 (axis_7). j6 프레임에서 TOOL_OFF 만큼 이동."""
+    T=CHAIN.forward_kinematics([0]+list(q))
+    return T[:3,3]+T[:3,:3]@TOOL_OFF+BASE_OFF
 # ===== 로봇 베이스 위치 (플레이트 홈 스냅) =====
 # 로봇을 플레이트 위 원하는 타일에 재배치할 수 있다.
 #   - 내부 기구학(CHAIN)은 항상 로봇 로컬 좌표로 푼다
@@ -2958,6 +2983,7 @@ VIEWER_HTML="""<!DOCTYPE html><html><head><meta charset="utf-8">
  "three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
 </head><body>
 <div id="lg">축 (base_link 고정)<br>
+<b style="color:#ff44dd">●</b> 자홍색 = 툴 중심(axis_7)<br>
 <b style="color:#ff5555">X</b> <b style="color:#55dd55">Y</b> <b style="color:#55aaff">Z</b>
 &nbsp;· 큰축=원점, 작은축=EE</div>
 <script type="module">
@@ -3006,6 +3032,12 @@ world.add(makeAxes(0.20,3));          // base_link 원점 축 (크게)
 
 // ---- EE 좌표축 (엔드이펙터 위치, 방향은 월드축과 동일) ----
 const eeAxes=makeAxes(0.08,2); world.add(eeAxes);
+// ---- 툴 중심 (axis_7) : 자홍색 구 + 작은 축. j6 와 구분되게 ----
+const toolMark=new THREE.Group();
+toolMark.add(new THREE.Mesh(new THREE.SphereGeometry(0.006,16,12),
+  new THREE.MeshBasicMaterial({color:0xff00cc,depthTest:false})));
+toolMark.add(makeAxes(0.05,2));
+toolMark.visible=false; world.add(toolMark);
 const loader=new STLLoader(); const objs={};
 function ensure(id,color,scale){
   if(objs[id])return;
@@ -3134,7 +3166,10 @@ async function poll(){
       pegPaint(pegMeshes.find(m=>m.userData.name===pegSelName));
     }
     if(st.eexyz) eeAxes.position.set(st.eexyz[0],st.eexyz[1],st.eexyz[2]);
-    document.title='EE '+st.ee;
+    if(st.toolxyz){ toolMark.visible=true;
+      toolMark.position.set(st.toolxyz[0],st.toolxyz[1],st.toolxyz[2]); }
+    else toolMark.visible=false;
+    document.title=(st.tool?('툴 '+st.tool):('EE '+st.ee));
   }catch(err){}
   setTimeout(poll,50);
 }
@@ -3180,6 +3215,7 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                     links.append({'id':ln,'color':ROBOT_COLOR_MAP[ln],
                                   'm':[float(x) for x in T[:3,:].flatten()]+[0,0,0,1]})
                 p,_=fk(CURRENT_Q)
+                _tp=tool_pos(CURRENT_Q) if TOOL_HAS else p
                 env=[]
                 for e in ENV_SHOW:
                     env.append({'id':e['id'],'color':e['color'],
@@ -3211,7 +3247,11 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                     'links':links,'env':env,'ghosts':ghosts,
                     'psize':PLATE_SIZE,'sel':PLATE_EDIT.get('sel'),
                     'ee':f"x={p[0]*1000:.0f} y={p[1]*1000:.0f} z={p[2]*1000:.0f}mm",
-                    'eexyz':[float(v) for v in p]}).encode()
+                    'eexyz':[float(v) for v in p],
+                    'toolxyz':([float(v) for v in _tp] if TOOL_HAS else None),
+                    'tool':(f"x={_tp[0]*1000:.0f} y={_tp[1]*1000:.0f} "
+                            f"z={_tp[2]*1000:.0f}mm" if TOOL_HAS else None)
+                    }).encode()
                 self._send(200,'application/json',body)
             elif self.path.startswith('/peg/'):
                 # 3D 에서 목심 클릭 -> 선택 + 이동 시뮬 예약

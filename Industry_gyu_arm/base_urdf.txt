@@ -1,0 +1,1 @@
+/home/drboom/2026_project/urdf/sts3215/Industry_gyu_arm_20260728_base/urdf/Industry_gyu_arm_20260728.urdf
