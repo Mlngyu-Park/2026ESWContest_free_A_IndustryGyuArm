@@ -3023,7 +3023,7 @@ def peg_reachable(height_mm,use_cache=True):
     return out
 
 # --- 3D 목심 표시/선택 상태 + 이동 시뮬레이션(반복 재생) ---
-PEG_VIEW={'on':False,'ok':[],'sel':None,'h':80}
+PEG_VIEW={'on':False,'ok':[],'sel':None,'h':80,'dirty':False}
 _PEG_SIM={'th':None,'stop':threading.Event(),'name':None}
 
 def _peg_sim_loop(name,height_mm,stop,q_home):
@@ -3217,6 +3217,13 @@ def ghost_tiles():
     return sorted(g)
 def tile_label(t):
     return f"({t[0]},{t[1]})"
+def _peg_layout_changed():
+    """플레이트 배치가 바뀌면 목심 구성도 바뀐다 -> 도달표/캐시 무효화.
+    (안 하면 새로 생긴 목심이 옛 목록에 없어 전부 빨강으로 표시된다)"""
+    PEG_TABLE['key']=None; PEG_TABLE['span']={}
+    _PEG_CACHE.clear()
+    PEG_VIEW['dirty']=True
+
 def add_plate(tile):
     """빈 타일에 플레이트 추가 (원본 STL을 오프셋만 다르게 복제)."""
     if tile in PLATES or PLATE_SRC is None: return False
@@ -3232,6 +3239,7 @@ def add_plate(tile):
     ENV_SHOW.append({'id':mid,'color':'#8f8f8f','visible':True,
                      'tile':tile,'offset':off,'added':True})
     PLATES[tile]={'id':mid,'origin':(tox,toy),'added':True}
+    _peg_layout_changed()
     return True
 def remove_plate(tile):
     if tile not in PLATES: return False
@@ -3241,6 +3249,7 @@ def remove_plate(tile):
     ENV_SHOW[:] = [e for e in ENV_SHOW if e['id']!=mid]
     MESH_REG.pop(mid,None); _COLL_ENV.pop(mid,None)
     del PLATES[tile]
+    _peg_layout_changed()
     return True
 
 VIEWER_HTML="""<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -3513,6 +3522,12 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                     # (드래그 중에는 gradio 핸들러가 아직 안 도는데, 뷰어는 계속
                     #  폴링하므로 옛 높이의 색이 남아 실제와 어긋났었다)
                     live=peg_reachable_fast(PEG_VIEW['h'])
+                    if live is None and PEG_VIEW.get('dirty'):
+                        # 플레이트 추가/삭제 등으로 목심 구성이 바뀌었는데
+                        # 표가 아직 없다 -> 옛 목록을 쓰면 새 목심이 전부
+                        # 빨강으로 뜬다. 한 번만 다시 계산해 반영한다.
+                        PEG_VIEW['ok']=peg_reachable(PEG_VIEW['h'])
+                        PEG_VIEW['dirty']=False
                     ok=set(live if live is not None else PEG_VIEW['ok'])
                     for nm in peg_names():
                         xy=peg_xy(nm)
