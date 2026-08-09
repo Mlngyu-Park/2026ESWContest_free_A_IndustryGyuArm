@@ -2927,7 +2927,49 @@ def build_peg_table():
     PEG_TABLE['key']=key; PEG_TABLE['span']=span
     el=time.time()-t0
     print(f"[목심표] {len(span)}/{len(jobs)}개 도달 가능, {el:.1f}초")
+    try:                                   # 다음 실행에서 바로 쓰도록 저장
+        with open(peg_table_file(),'w') as f:
+            json.dump({'key':[key[0],key[1],key[2],[list(t) for t in key[3]]],
+                       'max_h':PEG_H_MAX,'pitch':PEG_PITCH,
+                       'built':time.strftime('%Y-%m-%d %H:%M:%S'),
+                       'span':{nm:[list(s) for s in sp]
+                               for nm,sp in span.items()}},f)
+        print(f"[목심표] 저장: {peg_table_file()}")
+    except Exception as e:
+        print(f"[목심표] 저장 실패: {e}")
     return span,el
+
+def peg_table_file():
+    return os.path.join(URDF_PKG_DIR,'peg_table.json')
+
+def load_peg_table():
+    """peg_table_build.py 가 미리 만들어 둔 표를 불러온다.
+    로봇 위치/URDF/플레이트 배치가 그때와 다르면 무시한다."""
+    p=peg_table_file()
+    if not os.path.exists(p): return False
+    try:
+        with open(p) as f: d=json.load(f)
+        k=peg_table_key()
+        saved=d.get('key') or []
+        same=(len(saved)==4
+              and abs(float(saved[0])-k[0])<1e-6
+              and abs(float(saved[1])-k[1])<1e-6
+              and saved[2]==k[2]
+              and [tuple(t) for t in saved[3]]==list(k[3]))
+        if not same:
+            print("  (peg_table.json 은 다른 배치의 것이라 무시 — "
+                  "peg_table_build.py 를 다시 돌리세요)")
+            return False
+        PEG_TABLE['span']={nm:[tuple(s) for s in sp]
+                           for nm,sp in d['span'].items()}
+        PEG_TABLE['key']=k
+        globals()['PEG_H_MAX']=int(d.get('max_h',PEG_H_MAX))
+        print(f"목심 도달표 불러옴: {len(PEG_TABLE['span'])}개 "
+              f"(생성 {d.get('built','?')})")
+        return True
+    except Exception as e:
+        print(f"  (peg_table.json 읽기 실패: {e})")
+        return False
 
 def peg_table_ready():
     return PEG_TABLE['key']==peg_table_key() and PEG_TABLE['span']
@@ -3018,6 +3060,8 @@ def _peg_sim_start(name):
     th=threading.Thread(target=_peg_sim_loop,
                         args=(name,PEG_VIEW['h'],ev),daemon=True)
     _PEG_SIM['th']=th; th.start()
+
+load_peg_table()          # 미리 만들어 둔 표가 있으면 시작할 때 불러온다
 
 def h_peg_view(on,height_mm):
     """3D 목심 표시 on/off. 켤 때 그 높이의 도달성을 계산해 둔다."""
