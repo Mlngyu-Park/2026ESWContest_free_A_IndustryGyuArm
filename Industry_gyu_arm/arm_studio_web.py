@@ -655,7 +655,9 @@ def ik_tool(pt,seeds,j5,j6,iters=6):
         if q is None: return None
         err=tgt-tool_pos(q)
         best=q
-        if np.linalg.norm(err)<0.0005: break     # 0.5mm 이내면 충분
+        # 반복마다 오차가 ~7배씩 줄어든다(56mm -> 1.2 -> 0.16 -> 0.02 ...).
+        # 0.01mm 까지 조여도 4ms 밖에 안 늘어나므로 여기서 멈춘다.
+        if np.linalg.norm(err)<0.00001: break
         aim=aim+err
         seeds=[q]+list(seeds)                    # 다음 반복은 이 해에서 출발
     return best
