@@ -3230,10 +3230,7 @@ VIEWER_HTML="""<!DOCTYPE html><html><head><meta charset="utf-8">
  "three":"https://unpkg.com/three@0.160.0/build/three.module.js",
  "three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
 </head><body>
-<div id="lg">축 (base_link 고정)<br>
-<b style="color:#ff44dd">●</b> 자홍색 = 툴 중심(axis_7)<br>
-<b style="color:#ff5555">X</b> <b style="color:#55dd55">Y</b> <b style="color:#55aaff">Z</b>
-&nbsp;· 큰축=원점</div>
+<div id="lg"><b style="color:#ff44dd">●</b> 자홍색 = 툴 중심(axis_7)</div>
 <script type="module">
 import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
@@ -3276,7 +3273,9 @@ function makeAxes(len,lw){
   }
   return g;
 }
-world.add(makeAxes(0.20,3));          // base_link 원점 축 (크게)
+// base_link 원점 축은 표시하지 않는다 (플레이트 위가 지저분해 보임).
+// 다시 켜려면 아래 주석을 해제.
+// world.add(makeAxes(0.20,3));
 
 // ---- EE 좌표축 (엔드이펙터 위치, 방향은 월드축과 동일) ----
 // EE(j6) 축은 표시하지 않는다 - 기준점은 툴 중심(axis_7) 이므로 혼동 방지.
