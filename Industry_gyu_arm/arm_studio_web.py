@@ -3177,7 +3177,7 @@ VIEWER_HTML="""<!DOCTYPE html><html><head><meta charset="utf-8">
 <div id="lg">축 (base_link 고정)<br>
 <b style="color:#ff44dd">●</b> 자홍색 = 툴 중심(axis_7)<br>
 <b style="color:#ff5555">X</b> <b style="color:#55dd55">Y</b> <b style="color:#55aaff">Z</b>
-&nbsp;· 큰축=원점, 작은축=EE</div>
+&nbsp;· 큰축=원점</div>
 <script type="module">
 import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
@@ -3223,7 +3223,9 @@ function makeAxes(len,lw){
 world.add(makeAxes(0.20,3));          // base_link 원점 축 (크게)
 
 // ---- EE 좌표축 (엔드이펙터 위치, 방향은 월드축과 동일) ----
-const eeAxes=makeAxes(0.08,2); world.add(eeAxes);
+// EE(j6) 축은 표시하지 않는다 - 기준점은 툴 중심(axis_7) 이므로 혼동 방지.
+// 위치는 계속 갱신하되 화면에는 숨김 (다시 켜려면 visible=true)
+const eeAxes=makeAxes(0.08,2); eeAxes.visible=false; world.add(eeAxes);
 // ---- 툴 중심 (axis_7) : 자홍색 구 + 작은 축. j6 와 구분되게 ----
 const toolMark=new THREE.Group();
 toolMark.add(new THREE.Mesh(new THREE.SphereGeometry(0.006,16,12),
