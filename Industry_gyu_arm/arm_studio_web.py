@@ -3026,39 +3026,61 @@ def peg_reachable(height_mm,use_cache=True):
 PEG_VIEW={'on':False,'ok':[],'sel':None,'h':80}
 _PEG_SIM={'th':None,'stop':threading.Event(),'name':None}
 
-def _peg_sim_loop(name,height_mm,stop):
+def _peg_sim_loop(name,height_mm,stop,q_home):
     """선택한 목심으로 가는 경로를 3D 에서 반복 재생 (실물은 안 움직임).
-    실제 실행 중이거나 다른 목심이 선택되면 즉시 멈춘다."""
+    실제 실행 중이거나 다른 목심이 선택되면 즉시 멈춘다.
+
+    q_home: 재생의 '출발 자세'. CURRENT_Q 를 그때그때 읽으면 안 된다 -
+    미리보기가 스스로 움직여 놓은 중간 자세를 다시 출발점으로 삼게 되어
+    (0도 -> 97도 -> 101도 ...) 경로가 매번 바뀌고 튀는 느낌이 난다."""
     xy=peg_xy(name)
     if xy is None: return
-    q0=list(CURRENT_Q)
+    q0=list(q_home)
     tgt=ik_tool((xy[0],xy[1],peg_z(height_mm)),_seed_list(q0),q0[4],q0[5])
     if tgt is None: return
     tgt[5]=q0[5]
     if LEVEL_ALWAYS: tgt[J5_IDX]=q0[J5_IDX]
     way,_=plan_joint_seq(q0,tgt)
     if LEVEL_ALWAYS: lock_j5(way,q0)
-    frames=way[::max(1,len(way)//40)]+[way[-1]]      # 40 프레임으로 축약
+    # 프레임을 솎아내면 프레임당 관절 변화가 커져 '확확' 튄다(측정 3.2도/프레임).
+    # 웨이포인트를 그대로 쓰고, 대신 간격을 줄여 같은 시간에 더 부드럽게 재생.
+    frames=way
+    dt=max(0.02,min(0.05,2.5/max(len(frames),1)))    # 편도 약 2.5초 목표
     while not stop.is_set():
         for seq in (frames,frames[::-1]):            # 갔다가 되돌아오기(왕복)
             for q in seq:
                 if stop.is_set() or RUNNING.is_set(): return
-                ros_publish(q); time.sleep(0.05)
+                ros_publish(q); time.sleep(dt)
             if stop.is_set(): return
             time.sleep(0.4)
 
-def _peg_sim_stop():
+def _peg_home_pose():
+    """미리보기의 기준 자세. 재생으로 오염되지 않은 값을 쓴다.
+    (재생 중이면 재생 시작 때 기억해 둔 자세, 아니면 현재 자세)"""
+    if _PEG_SIM.get('home') is not None and _PEG_SIM['th'] \
+            and _PEG_SIM['th'].is_alive():
+        return list(_PEG_SIM['home'])
+    return list(CURRENT_Q)
+
+def _peg_sim_stop(restore=True):
+    """미리보기 정지. restore=True 면 3D 를 원래 자세로 되돌린다
+    (안 되돌리면 재생 중간 자세가 그대로 남아 다음 계산의 출발점이 오염된다)."""
+    home=_PEG_SIM.get('home')
     if _PEG_SIM['th'] and _PEG_SIM['th'].is_alive():
         _PEG_SIM['stop'].set(); _PEG_SIM['th'].join(timeout=1.0)
-    _PEG_SIM['th']=None; _PEG_SIM['name']=None
+        if restore and home is not None:
+            ros_publish(list(home))
+    _PEG_SIM['th']=None; _PEG_SIM['name']=None; _PEG_SIM['home']=None
 
 def _peg_sim_start(name):
     """목심 선택 시 미리보기 반복 재생 시작 (이전 재생은 중단)."""
+    home=_peg_home_pose()                 # 오염되지 않은 기준 자세를 먼저 확보
     _peg_sim_stop()
     if not name or name not in PEG_VIEW['ok']: return   # 도달 불가는 재생 안 함
     ev=threading.Event(); _PEG_SIM['stop']=ev; _PEG_SIM['name']=name
+    _PEG_SIM['home']=list(home)
     th=threading.Thread(target=_peg_sim_loop,
-                        args=(name,PEG_VIEW['h'],ev),daemon=True)
+                        args=(name,PEG_VIEW['h'],ev,home),daemon=True)
     _PEG_SIM['th']=th; th.start()
 
 load_peg_table()          # 미리 만들어 둔 표가 있으면 시작할 때 불러온다
@@ -3421,7 +3443,7 @@ async function poll(){
     else toolMark.visible=false;
     document.title=(st.tool?('툴 '+st.tool):('EE '+st.ee));
   }catch(err){}
-  setTimeout(poll,50);
+  setTimeout(poll,25);   // 미리보기 재생(25ms)과 맞춰야 프레임이 안 버려진다
 }
 poll();
 addEventListener('resize',()=>{cam.aspect=innerWidth/innerHeight;
