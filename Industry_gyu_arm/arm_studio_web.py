@@ -3309,17 +3309,33 @@ def brick_graspable(bid):
 GRASP_LIFT=0.06        # 원하는 접근/상승 여유 높이 (m)
 HELD={'brick':None}    # 지금 그리퍼가 들고 있는 물체
 
-def _lift_point(p,want=GRASP_LIFT):
-    """p 바로 위의 '실제로 도달 가능한' 접근점을 찾는다.
-    팔 한계 때문에 원하는 여유(6cm)가 항상 되는 건 아니므로
-    위에서부터 내려오며 가능한 높이를 고른다. 없으면 p 자신."""
+def _max_z_over(x,y,z_from,z_to=0.30):
+    """(x,y) 축 위에서 도달 가능한 가장 높은 z. 없으면 None.
+    잡기 ②단계 - '그 도킹에서 갈 수 있는 최고 높이' 를 찾는다."""
     q0=list(CURRENT_Q); seeds=_seed_list(q0)
-    h=want
-    while h>0.005:
-        t=np.asarray(p,float)+np.array([0,0,h])
-        if ik_tool(t,seeds,q0[4],q0[5]) is not None: return t,h
-        h-=0.01
-    return np.asarray(p,float),0.0
+    best=None
+    z=z_to
+    while z>=z_from-1e-9:
+        if ik_tool((x,y,z),seeds,q0[4],q0[5]) is not None:
+            best=z; break
+        z-=0.005
+    return best
+
+def _descend(x,y,z_hi,z_lo,tag,steps=None):
+    """축을 맞춘 채 수직으로만 내려간다 (x,y 고정 = 두 축 일치 유지).
+    중간 지점마다 IK 를 풀어 보내므로 경로가 옆으로 새지 않는다."""
+    n=steps or max(6,int(abs(z_hi-z_lo)/0.005))
+    q0=ROBOT.read() if ROBOT.connect() else list(CURRENT_Q)
+    for k in range(1,n+1):
+        if STOP.is_set(): return f"{tag}: 정지됨"
+        z=z_hi+(z_lo-z_hi)*k/n
+        q=ik_tool((x,y,z),_seed_list(q0),q0[4],q0[5])
+        if q is None: return f"{tag}: z={z*1000:.0f}mm 도달 불가"
+        q[5]=q0[5]
+        if LEVEL_ALWAYS: q[J5_IDX]=q0[J5_IDX]
+        ros_publish(q); ROBOT.send(q,log=True,tag=tag)
+        q0=q; time.sleep(0.05)
+    return None
 
 def _brick_move_to(p,tag):
     """툴 중심을 월드 좌표 p 로 (수평 유지). 실패 시 사유 문자열 반환."""
@@ -3339,30 +3355,34 @@ def _brick_move_to(p,tag):
     return None
 
 def do_grasp(bid):
-    """잡기: 물체 위로 접근 -> 그리퍼 열기 -> 하강(잡는 점) -> 닫기 -> 상승.
-    조건은 단 하나 - 툴 중심축이 물체 중심축과 겹치고 z 거리가 grasp_dz."""
+    """잡기 (사용자 정의 순서)
+      ① 그리퍼 열기
+      ② 목표 도킹의 축 위로 이동 - 그 자리에서 갈 수 있는 최고 높이까지
+      ③ 두 축(axis_ppap = axis_7)을 맞춘 채 수직으로만 하강
+      ④ 물체 바닥 +36.37mm 지점에서 그리퍼 닫기 = 잡힘
+    """
     BTN('잡기',bid)
     p=brick_grasp_point(bid)
     if p is None: return f"{bid} 가 배치되지 않았습니다"
     if RUNNING.is_set(): return "다른 동작 실행 중 - [정지] 후 다시"
     if not ROBOT.connect():
         return "로봇 연결 실패 — [이동] 탭에서 '시뮬레이션' 을 고르면 3D로 볼 수 있습니다"
-    above,lift=_lift_point(p)
+    x,y,zg=float(p[0]),float(p[1]),float(p[2])
     STOP.clear(); RUNNING.set()
     try:
         ROBOT.time_profile(True); ROBOT.torque(True)
-        e=_brick_move_to(above,'잡기① 접근')
+        ROBOT.gripper(True); time.sleep(0.3)                 # ① 열기
+        ztop=_max_z_over(x,y,zg)                             # ② 최고 높이
+        if ztop is None:
+            return f"{bid} 의 축({x*1000:.0f},{y*1000:.0f}) 위로는 갈 수 없습니다"
+        e=_brick_move_to((x,y,ztop),'잡기② 축 위로')
         if e: return e
-        ROBOT.gripper(True); time.sleep(0.3)          # ② 열기
-        e=_brick_move_to(p,'잡기③ 하강')
+        e=_descend(x,y,ztop,zg,'잡기③ 수직하강')             # ③ 수직 하강
         if e: return e
-        ROBOT.gripper(False); time.sleep(0.5)         # ④ 닫기 = 잡힘
+        ROBOT.gripper(False); time.sleep(0.5)                # ④ 닫기 = 잡힘
         HELD['brick']=bid
-        e=_brick_move_to(above,'잡기⑤ 상승')
-        if e: return e
-        return (f"{bid} 잡음 (툴 중심 z={p[2]*1000:.1f}mm = "
-                f"물체 바닥 +{BRICKS[bid]['grasp_dz']*1000:.2f}mm, "
-                f"접근 여유 {lift*1000:.0f}mm)")
+        return (f"{bid} 잡음 — 축 정렬 후 z {ztop*1000:.0f}→{zg*1000:.1f}mm "
+                f"수직하강, 바닥 +{BRICKS[bid]['grasp_dz']*1000:.2f}mm 에서 닫음")
     except Exception as ex:
         ROBOT.estop(); return f"오류: {ex} - 토크 해제됨"
     finally:
@@ -3377,21 +3397,27 @@ def do_release(did):
     if t is None: return f"도킹을 찾을 수 없습니다: {did}"
     if RUNNING.is_set(): return "다른 동작 실행 중 - [정지] 후 다시"
     if not ROBOT.connect(): return "로봇 연결 실패"
-    p=np.array([t[0],t[1],t[2]+BRICKS[bid]['grasp_dz']])   # 놓을 자리의 잡는 점
-    above,_=_lift_point(p)
+    # 놓기 = 잡기의 역순
+    #  ① 목표 도킹 축 위 최고 높이로 이동 (물체를 든 채)
+    #  ② 축 맞춘 채 수직 하강  ③ 열기 = 놓임  ④ 수직 상승
+    x,y=float(t[0]),float(t[1])
+    zg=float(t[2]+BRICKS[bid]['grasp_dz'])
     STOP.clear(); RUNNING.set()
     try:
         ROBOT.time_profile(True); ROBOT.torque(True)
-        e=_brick_move_to(above,'놓기① 접근')
+        ztop=_max_z_over(x,y,zg)
+        if ztop is None:
+            return f"{did} 축 위로는 갈 수 없습니다"
+        e=_brick_move_to((x,y,ztop),'놓기① 축 위로')
         if e: return e
-        e=_brick_move_to(p,'놓기② 하강')
+        e=_descend(x,y,ztop,zg,'놓기② 수직하강')
         if e: return e
         ROBOT.gripper(True); time.sleep(0.5)          # ③ 열기 = 놓임
         place_brick(bid,t[0],t[1],t[2])               # 물체 위치 갱신
         HELD['brick']=None
-        e=_brick_move_to(above,'놓기④ 상승')
+        e=_descend(x,y,zg,ztop,'놓기④ 수직상승')      # ④ 같은 축으로 상승
         if e: return e
-        return f"{bid} 를 {did} 위에 놓음"
+        return f"{bid} 를 {did} 위에 놓음 (z {zg*1000:.1f}→{ztop*1000:.0f}mm 상승)"
     except Exception as ex:
         ROBOT.estop(); return f"오류: {ex} - 토크 해제됨"
     finally:
