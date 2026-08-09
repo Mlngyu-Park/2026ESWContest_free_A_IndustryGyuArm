@@ -2882,33 +2882,29 @@ def _peg_ik_worker(a):
 # 그래서 목심마다 [zmin,zmax] 두 값만 저장하면 어떤 높이든 즉시 판정된다.
 #   -> 1mm 는 물론 소수점 높이까지 조회 가능(해상도 제한 없음)
 # 표는 (로봇위치, URDF) 가 바뀌면 무효화된다.
+PEG_H_MAX=250          # 표가 담는 최대 높이(mm). 슬라이더 상한과 같아야 한다
 PEG_TABLE={'key':None,'span':{}}
 _PEG_SCAN={'busy':False,'msg':''}
 
 def _peg_span_one(args):
-    """한 목심의 도달 높이 구간 [zmin,zmax] (mm). 이분 탐색."""
+    """한 목심의 도달 가능 높이 구간들 [(a,b),...] (mm).
+
+    주의: 도달 영역이 항상 하나의 연속 구간은 아니다. 관절 한계 때문에
+    중간이 끊기는 목심이 실제로 존재한다(예: 0~0 가능, 2~38 불가, 40~232 가능).
+    그래서 하나의 [min,max] 가 아니라 '구간 목록' 으로 저장한다.
+    1mm 전수 검사가 가장 확실하고, 목심당 251회면 병렬로 충분히 빠르다.
+    """
     nm,x,y=args
     q0=list(CURRENT_Q); seeds=_seed_list(q0)
-    def ok(h):
-        return ik_tool((x,y,peg_z(h)),seeds,q0[4],q0[5]) is not None
-    # 대략적인 성공 지점부터 찾는다 (없으면 도달 불가 목심)
-    probe=[h for h in range(0,255,15) if ok(h)]
-    if not probe: return (nm,None)
-    lo_ok,hi_ok=probe[0],probe[-1]
-    # 아래쪽 경계
-    a,b=max(lo_ok-15,0),lo_ok
-    while b-a>1:
-        mid=(a+b)//2
-        if ok(mid): b=mid
-        else: a=mid
-    zmin=b
-    # 위쪽 경계
-    a,b=hi_ok,min(hi_ok+15,260)
-    while b-a>1:
-        mid=(a+b)//2
-        if ok(mid): a=mid
-        else: b=mid
-    return (nm,(zmin,a))
+    hits=[h for h in range(0,PEG_H_MAX+1)
+          if ik_tool((x,y,peg_z(h)),seeds,q0[4],q0[5]) is not None]
+    if not hits: return (nm,None)
+    spans=[]; a=p=hits[0]
+    for h in hits[1:]:
+        if h==p+1: p=h; continue
+        spans.append((a,p)); a=p=h
+    spans.append((a,p))
+    return (nm,spans)
 
 def peg_table_key():
     return (round(BASE_OFF[0],4),round(BASE_OFF[1],4),BASE_URDF,
@@ -2939,8 +2935,9 @@ def peg_table_ready():
 def peg_reachable_fast(height_mm):
     """표에서 즉시 조회 (IK 없음). 표가 없으면 None."""
     if not peg_table_ready(): return None
-    h=float(height_mm)
-    return sorted(nm for nm,(a,b) in PEG_TABLE['span'].items() if a<=h<=b)
+    h=int(round(float(height_mm)))
+    return sorted(nm for nm,sp in PEG_TABLE['span'].items()
+                  if any(a<=h<=b for a,b in sp))
 
 _PEG_CACHE={}
 def peg_reachable(height_mm,use_cache=True):
@@ -3030,9 +3027,17 @@ def h_peg_view(on,height_mm):
         _peg_sim_stop(); PEG_VIEW['sel']=None
         return gr.update(),'목심 표시 끔'
     note=''
-    if not peg_table_ready():               # 최초 1회만 표를 만든다
-        _,el=build_peg_table()
-        note=f" (도달 구간표 생성 {el:.0f}초 — 이후 높이 변경은 즉시)"
+    if not peg_table_ready():
+        # 표는 1mm 전수라 6분쯤 걸린다 -> 백그라운드로 만들고, 그동안은
+        # 기존 방식(그때그때 IK)으로 동작한다. 완성되면 자동으로 표를 쓴다.
+        if not _PEG_SCAN['busy']:
+            _PEG_SCAN['busy']=True
+            def _bg():
+                try: build_peg_table()
+                finally: _PEG_SCAN['busy']=False
+            threading.Thread(target=_bg,daemon=True).start()
+        note=(" (정밀 도달표를 백그라운드에서 만드는 중 — 완성되면 높이 변경이"
+              " 즉시 반영됩니다. 그 전까지는 조금 느립니다)")
     t0=time.time(); lst=peg_reachable(height_mm); PEG_VIEW['ok']=lst
     return (gr.update(choices=lst,value=(lst[0] if lst else None)),
             f"목심 표시 ON — 높이 {height_mm}mm 기준 도달 가능 {len(lst)}개"
