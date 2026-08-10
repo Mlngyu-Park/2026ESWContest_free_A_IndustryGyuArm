@@ -2441,16 +2441,20 @@ def _off_str(off,rk=None):
     body='  '.join(f"j{j+1}:{math.degrees(o):+.1f}" for j,o in enumerate(off[:n]))
     return f"[{ROBOT_LABEL.get(rk,rk)}] "+body
 def h_ft_goto(name):
+    """[자세] 탭의 '로봇을 이 자세로'.
+    [이동] 탭의 실행 로봇이 아니라 이 탭에서 고른 '보정할 로봇' 으로 보낸다
+    (같은 탭의 미세조정 +/- 와 같은 로봇이어야 보정 작업이 성립한다)."""
     if not name: return "왼쪽 [자세] 탭에서 자세를 먼저 선택하세요"
     if RUNNING.is_set(): return "다른 동작 실행 중 - [정지] 후 다시"
-    if not ROBOT.connect():
-        return (f"로봇 연결 실패 ({PORT}) — 확인: "
-                "1) USB/전원 연결  2) 다른 프로그램(sts_bridge 등)이 포트를 쓰는 중인지")
+    rk=offset_robot(); dev=ROBOT_DXL if rk=='dxl' else ROBOT_STS
+    if rk=='dxl' and not DXL_OK: return "Dynamixel 프로필이 없습니다"
+    if not dev.connect():
+        return (f"{ROBOT_LABEL.get(rk)} 연결 실패 — 확인: "
+                "1) USB/전원  2) 다른 프로그램이 포트를 쓰는 중인지")
     STOP.clear(); RUNNING.set()
     try:
-        ROBOT.time_profile(True); ROBOT.torque(True)
-        q0=ROBOT.read()
-        off=level_offset(get_offset(name))     # 수평 유지 보정
+        q0=list(CURRENT_Q)                     # 3D 기준 자세에서 출발
+        off=level_offset(get_offset(name))     # 그 로봇의 보정값, 수평 유지
         tgt=[a+o for a,o in zip(get_angles(name),off)]
         tgt[5]=q0[5]                           # 그리퍼는 현재 상태 유지
         if LEVEL_ALWAYS: tgt[J5_IDX]=q0[J5_IDX]
@@ -2460,11 +2464,14 @@ def h_ft_goto(name):
         ros_publish(get_angles(name))          # 3D 뷰 = 정답 자세
         for q in way:
             if STOP.is_set(): break
-            ROBOT.send(q); time.sleep(dt)
+            e=_cal_send(q)                     # 고른 로봇에만 전송
+            if e: return e
+            time.sleep(dt)
         FT['pose']=name
-        return f"'{name}' 도착. 관절 선택 후 +/- 로 미세조정하세요. 현재 보정: "+_off_str(off)
+        return (f"[{ROBOT_LABEL.get(rk)}] '{name}' 도착. "
+                "관절 선택 후 +/- 로 미세조정하세요. 현재 보정: "+_off_str(off))
     except Exception as e:
-        ROBOT.estop(); return f"오류: {e} - 토크 해제됨"
+        dev.estop(); return f"오류: {e} - 토크 해제됨"
     finally:
         RUNNING.clear()
 def _cal_send(q_sts):
@@ -2548,14 +2555,18 @@ def h_ft_grip(pose_name,open_):
                 a=list(p['angles']); a[5]=rad; p['angles']=a
     ros_publish(get_angles(name),with_grip=True)
     lbl='열기' if open_ else '닫기'
-    if ROBOT.connect():
+    rk=offset_robot()                       # 이 탭에서 고른 로봇으로
+    if rk=='dxl':
+        return (f"[{name}] 그리퍼 {lbl} -> 자세에 저장 "
+                "(Dynamixel 그리퍼는 열림/닫힘 값이 미측정이라 실물은 동작 안 함)")
+    if ROBOT_STS.connect():
         try:
-            ROBOT.gripper(open_)
+            ROBOT_STS.gripper(open_)
             raw=GRIPPER_OPEN if open_ else GRIPPER_CLOSE
-            return f"[{name}] 그리퍼 {lbl} -> 자세에 저장 (실물 {raw})"
+            return f"[SO-ARM] [{name}] 그리퍼 {lbl} -> 자세에 저장 (실물 {raw})"
         except Exception as e:
             return f"[{name}] 그리퍼 {lbl} 저장됨 (실물 실패: {e})"
-    return f"[{name}] 그리퍼 {lbl} -> 자세에 저장 (실물 미연결)"
+    return f"[{name}] 그리퍼 {lbl} -> 자세에 저장 (SO-ARM 미연결)"
 
 def h_ft_reset(pose_name):
     name=FT['pose'] or pose_name
