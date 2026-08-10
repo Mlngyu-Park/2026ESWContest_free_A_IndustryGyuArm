@@ -1354,11 +1354,33 @@ class DXLRobot:
                 v,r,_=self.packet.read4ByteTxRx(self.port,i,a)
                 return s32(v) if r==0 else None
             except Exception: return None
+    def _r1(self,i,a):
+        with self.lock:
+            try:
+                v,r,_=self.packet.read1ByteTxRx(self.port,i,a)
+                return v if r==0 else None
+            except Exception: return None
+    _prof=None                       # 이미 설정된 프로파일 (재설정 방지)
     def time_profile(self,on,sp=1.0):
-        """Drive Mode bit2=1 시간기반 프로파일 (덜덜거림 방지, 이전 실측)."""
+        """Drive Mode bit2=1 시간기반 프로파일 (덜덜거림 방지, 이전 실측).
+
+        !! Drive Mode 는 토크가 켜져 있으면 못 바꾼다 -> 잠깐 토크를 꺼야 하는데,
+        그 순간 팔이 중력으로 떨어진다(실제로 바닥에 부딪힌 사고 발생).
+        그래서 값이 실제로 바뀔 때만 건드리고, 끈 토크는 즉시 되살린다.
+        """
+        key=(bool(on),round(float(sp),3))
+        if self._prof==key: return          # 이미 같은 설정 - 토크 건드리지 않음
+        was_on=False
+        try:                                # 현재 토크 상태 확인
+            v=self._r1(DXL_J2ID[0],self.A_TORQUE)
+            was_on=bool(v)
+        except Exception: pass
         for i in set(DXL_J2ID):
             self._w1(i,self.A_TORQUE,0)
             self._w1(i,self.A_DRIVE,4 if on else 0)
+        if was_on:                          # 켜져 있었으면 곧바로 복구
+            for i in set(DXL_J2ID): self._w1(i,self.A_TORQUE,1)
+        self._prof=key
         # 시간기반 프로파일: ms 가 클수록 느리다.
         # 기본 600ms 는 실물이 너무 빨라 1200ms 로 (= 속도 절반, 사용자 요청)
         ms=int(DXL_MOVE_MS/max(sp,0.1))
