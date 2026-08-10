@@ -11,3 +11,4 @@ ZERO_RAW={
     5: 3462,
     6: 842,
 }
+VERIFIED=True   # 손으로 잡아 확인한 값

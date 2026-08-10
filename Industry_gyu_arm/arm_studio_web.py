@@ -2917,6 +2917,12 @@ def h_cal_capture_zero(rlabel):
             time.sleep(0.04)
         if not got: return f"ID{i} 읽기 실패 - 배선/전원 확인"
         got.sort(); vals[i]=got[len(got)//2]        # 중앙값 (노이즈 제거)
+    # 덮어쓰기 전에 이전 값을 백업해 둔다 (잘못 저장했을 때 되돌리기용)
+    try:
+        if os.path.exists(path):
+            import shutil
+            shutil.copy2(path,path+'.bak')
+    except Exception: pass
     with open(path,'w') as f:
         f.write(f"# {title} 영점 raw - 웹에서 손으로 잡아 캡처\n")
         f.write(f"# 캡처: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
