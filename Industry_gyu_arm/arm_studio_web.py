@@ -1308,11 +1308,17 @@ class Robot:
         except Exception: pass
 ROBOT_STS=Robot()
 
+# Dynamixel 이동 시간(ms). 값이 클수록 느리다.
+# 기본 600 은 실물이 너무 빨라 1200 으로 = 속도 절반 (사용자 요청)
+DXL_MOVE_MS=1200
+DXL_STEP_SLOW=2.0          # 웨이포인트 간 대기도 이 배수만큼 늘린다
+
 class DXLRobot:
     """옛 Dynamixel 로봇 (XC/XM430, Protocol 2.0, U2D2).
     j4<->j5 배선 교차/방향/영점은 dxl_profile 에서. 관절값은 DXL 로컬 rad."""
     A_TORQUE=64; A_GOAL=116; A_PRESENT=132
     A_PVEL=112; A_PACC=108; A_DRIVE=10
+    # 이동 시간(ms). 크면 느리다. 600 -> 1200 = 속도 절반
     def __init__(self):
         self.port=None; self.packet=None; self.lock=threading.RLock()
     def connect(self):
@@ -1353,7 +1359,9 @@ class DXLRobot:
         for i in set(DXL_J2ID):
             self._w1(i,self.A_TORQUE,0)
             self._w1(i,self.A_DRIVE,4 if on else 0)
-        ms=int(600/max(sp,0.1))
+        # 시간기반 프로파일: ms 가 클수록 느리다.
+        # 기본 600ms 는 실물이 너무 빨라 1200ms 로 (= 속도 절반, 사용자 요청)
+        ms=int(DXL_MOVE_MS/max(sp,0.1))
         for i in set(DXL_J2ID):
             self._w4(i,self.A_PVEL,ms if on else 0)
             self._w4(i,self.A_PACC,ms//3 if on else 0)
@@ -1471,8 +1479,20 @@ def offset_robot():
     return CAL.get('robot','sts')
 
 def robot_njoints(rk=None):
-    """그 로봇의 조정 가능한 관절 수 (그리퍼 제외)."""
-    return 5        # STS/DXL 모두 j1~j5 (j6=그리퍼는 열기/닫기만)
+    """그 로봇의 조정 가능한 관절 수를 URDF 에서 읽는다 (그리퍼 제외).
+
+    로봇마다 축 수가 다르므로 하드코딩하지 않는다. URDF 의 revolute 조인트를
+    세고, 마지막 하나는 그리퍼(열기/닫기만)로 보아 제외한다.
+    """
+    rk=rk or offset_robot()
+    try:
+        path=DXL_URDF if (rk=='dxl' and DXL_OK) else BASE_URDF
+        root=ET.parse(path).getroot()
+        n=sum(1 for j in root.findall('joint')
+              if (j.get('type') or '').lower() in ('revolute','continuous'))
+        return max(1,n-1)                 # 마지막 = 그리퍼
+    except Exception:
+        return 5
 
 def _pose_rec(name):
     for p in S['poses']:
@@ -2462,11 +2482,14 @@ def h_ft_goto(name):
         for f in way: f[5]=q0[5]
         if LEVEL_ALWAYS: lock_j5(way,q0)
         ros_publish(get_angles(name))          # 3D 뷰 = 정답 자세
+        # DXL 은 모터 프로파일이 느리므로(1200ms) 전송 간격도 함께 늘린다.
+        # 안 그러면 명령만 앞질러 쌓이고 실제 동작은 뚝뚝 끊긴다.
+        step=dt*(DXL_STEP_SLOW if rk=='dxl' else 1.0)
         for q in way:
             if STOP.is_set(): break
             e=_cal_send(q)                     # 고른 로봇에만 전송
             if e: return e
-            time.sleep(dt)
+            time.sleep(step)
         FT['pose']=name
         return (f"[{ROBOT_LABEL.get(rk)}] '{name}' 도착. "
                 "관절 선택 후 +/- 로 미세조정하세요. 현재 보정: "+_off_str(off))
@@ -2826,17 +2849,17 @@ def h_cal_capture_zero(rlabel):
         f.write(f"# 캡처: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"ZERO_RAW={vals}\n")
         f.write("VERIFIED=True\n")
-    rng=[]
+    rng=[]; nj=robot_njoints(rk)
     if rk=='dxl':
         DXL_ZERO.clear(); DXL_ZERO.update(vals); _DXL_CHAINS.clear()
-        for k in range(5):
+        for k in range(nj):
             lo,hi=dxl_jr_limits(k)
             rng.append(f"j{k+1} {math.degrees(lo):+.0f}~{math.degrees(hi):+.0f}")
     else:
         ZERO_RAW.clear(); ZERO_RAW.update(vals)
         globals()['CHAIN']=build_chain(); globals()['_CHAIN_L']=None
         _AN['done']=False                            # 해석 파라미터 재산출
-        for k in range(5):
+        for k in range(nj):
             lo,hi=jr_limits(k)
             rng.append(f"j{k+1} {math.degrees(lo):+.0f}~{math.degrees(hi):+.0f}")
     return (f"{title} base 저장됨 ({os.path.basename(path)})\n  "
@@ -3604,7 +3627,8 @@ def _descend(x,y,z_hi,z_lo,tag,steps=None):
         q[5]=q0[5]
         if LEVEL_ALWAYS: q[J5_IDX]=q0[J5_IDX]
         ros_publish(q); ROBOT.send(q,log=True,tag=tag)
-        q0=q; time.sleep(0.05)
+        q0=q
+        time.sleep(0.05*(DXL_STEP_SLOW if EXEC.get('mode')=='dxl' else 1.0))
     return None
 
 def _brick_move_to(p,tag):
