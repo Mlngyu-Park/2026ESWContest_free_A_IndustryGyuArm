@@ -1419,10 +1419,14 @@ def get_angles(name):
 # 같은 자세라도 값이 달라야 한다.
 #   저장: p['offsets'] = {'sts':[...], 'dxl':[...]}
 #   예전 형식 p['offset'] 은 STS 로 보고 자동 이관한다.
+# 보정 대상 로봇은 [자세] 탭에서 직접 고른다.
+# 실행 로봇(EXEC)과는 별개다 - 실물이 연결돼 있지 않아도 보정값을 보고
+# 고칠 수 있어야 하고, "지금 실행할 로봇" 과 "지금 보정하는 로봇" 은 다른 개념.
+CAL={'robot':'sts'}
+
 def offset_robot():
-    """지금 보정 대상 로봇 키. 'both' 면 STS 기준으로 본다."""
-    m=EXEC.get('mode','sts')
-    return 'dxl' if m=='dxl' else 'sts'
+    """지금 보정 대상 로봇 키 ('sts' | 'dxl')."""
+    return CAL.get('robot','sts')
 
 def robot_njoints(rk=None):
     """그 로봇의 조정 가능한 관절 수 (그리퍼 제외)."""
@@ -2388,6 +2392,7 @@ def h_run(kind,mode,axorder,speed,loop,coll=False):
 # ===== 미세조정 (실물 보정) — 3D 뷰는 정답 유지, 실물만 움직임 =====
 FT={'pose':None}
 ROBOT_LABEL={'sts':'SO-ARM','dxl':'Dynamixel','both':'SO-ARM'}
+_CAL_KEYS={'SO-ARM (STS3215)':'sts','Dynamixel':'dxl'}
 def _off_str(off,rk=None):
     rk=rk or offset_robot()
     n=robot_njoints(rk)
@@ -2420,20 +2425,33 @@ def h_ft_goto(name):
         ROBOT.estop(); return f"오류: {e} - 토크 해제됨"
     finally:
         RUNNING.clear()
+def _cal_send(q_sts):
+    """보정 대상 로봇에 자세를 보낸다 (실행 로봇 설정과 무관).
+    DXL 은 EE 경로 매핑으로 변환해서 보낸다."""
+    rk=offset_robot()
+    if rk=='dxl':
+        if not DXL_OK or not ROBOT_DXL.connect(): return "Dynamixel 연결 실패"
+        qd=map_sts_to_dxl(q_sts)
+        if qd is None: return "그 자세는 Dynamixel 로 옮길 수 없습니다"
+        ROBOT_DXL.time_profile(True); ROBOT_DXL.torque(True); ROBOT_DXL.send(qd)
+        return None
+    if not ROBOT_STS.connect(): return f"SO-ARM 연결 실패 ({PORT})"
+    ROBOT_STS.time_profile(True); ROBOT_STS.torque(True); ROBOT_STS.send(q_sts)
+    return None
+
 def h_ft_step(pose_name,joint_label,step_deg,sign):
     """[로봇 이동] 없이도 바로 보정 가능. 선택된 자세를 그대로 사용."""
     name=FT['pose'] or pose_name
     if not name: return "왼쪽 [자세] 탭에서 자세를 먼저 선택하세요"
     FT['pose']=name
-    if not ROBOT.connect(): return f"로봇 연결 실패 ({PORT}) - 다른 프로그램이 포트를 쓰고 있는지 확인"
     j=int(joint_label[1])-1
     off=get_offset(name)
     off[j]+=math.radians(float(step_deg))*sign
     set_offset(name,off)
     tgt=[a+o for a,o in zip(get_angles(name),off)]
     try:
-        ROBOT.time_profile(True); ROBOT.torque(True)
-        ROBOT.send(tgt)                        # 실물만 이동 (3D는 그대로)
+        e=_cal_send(tgt)                       # 보정 대상 로봇만 이동 (3D 는 정답 유지)
+        if e: return e
     except Exception as e:
         return f"전송 실패: {e}"
     d='+' if sign>0 else '-'
@@ -2501,9 +2519,8 @@ def h_ft_reset(pose_name):
     name=FT['pose'] or pose_name
     if not name: return "자세를 먼저 선택하세요"
     set_offset(name,[0.0]*6)
-    if ROBOT.connect():
-        try: ROBOT.send(get_angles(name))
-        except Exception: pass
+    try: _cal_send(get_angles(name))
+    except Exception: pass
     return f"'{name}' {ROBOT_LABEL.get(offset_robot())} 보정 초기화 (실물 = 정답 자세로)"
 def h_ft_save(pose_name):
     name=FT['pose'] or pose_name
@@ -2701,60 +2718,85 @@ def h_exec_robot(sel):
     warn=''
     if EXEC['mode'] in ('dxl','both') and DXL_OK and not DXL_ZERO_VERIFIED:
         warn='\n!! DXL 영점 미검증 상태 - 실물 실행 전 dxl_capture_zero.py 필수 !!'
-    rk=offset_robot()
-    n=robot_njoints(rk)
-    jl=[f'J{i+1}' for i in range(n)]
-    note=(f"\n미세조정 대상: {ROBOT_LABEL.get(rk,rk)} "
-          f"(J1~J{n}) — 보정값은 로봇마다 따로 저장됩니다")
-    return (gr.update(choices=jl,value=jl[0]),
-            f"실행 로봇: {sel}{warn}{note}\n{_robot_status_str()}")
+    return f"실행 로봇: {sel}{warn}\n{_robot_status_str()}"
 def h_robot_status():
     BTN('연결 확인')
     return _robot_status_str()
 
-def h_dxl_torque_off():
-    """Dynamixel 토크 해제 - 손으로 base 자세를 잡을 수 있게."""
-    BTN('DXL 토크 해제')
-    if not DXL_OK: return "Dynamixel 프로필이 없습니다"
-    if not ROBOT_DXL.connect():
-        return f"Dynamixel 연결 실패 ({DXL_PORT}) — usbipd 연결/전원 확인"
-    ROBOT_DXL.torque(False)
-    return ("Dynamixel 토크 해제 — 손으로 base 자세를 잡으세요.\n"
+def h_cal_torque_off(rlabel):
+    """보정 대상 로봇의 토크를 풀어 손으로 자세를 잡을 수 있게 한다."""
+    rk=_CAL_KEYS.get(rlabel,'sts'); CAL['robot']=rk
+    BTN('토크 해제',rlabel)
+    if rk=='dxl':
+        if not DXL_OK: return "Dynamixel 프로필이 없습니다"
+        if not ROBOT_DXL.connect():
+            return f"Dynamixel 연결 실패 ({DXL_PORT}) — usbipd 연결/전원 확인"
+        ROBOT_DXL.torque(False)
+    else:
+        if not ROBOT_STS.connect():
+            return f"SO-ARM 연결 실패 ({PORT}) — USB/전원, 포트 점유 확인"
+        ROBOT_STS.torque(False)
+    return (f"{ROBOT_LABEL.get(rk)} 토크 해제 — 손으로 base 자세를 잡으세요.\n"
             "  * 그리퍼가 지면과 수평이 되게 (물컵 규칙의 기준 자세)\n"
             "  자세를 잡았으면 [이 자세를 base 로 저장] 을 누르세요")
 
-def h_dxl_capture_zero():
-    """지금 손으로 잡아둔 자세를 Dynamixel 영점(base)으로 저장."""
-    BTN('DXL base 저장')
-    if not DXL_OK: return "Dynamixel 프로필이 없습니다"
-    if not ROBOT_DXL.connect():
-        return f"Dynamixel 연결 실패 ({DXL_PORT})"
+def h_cal_capture_zero(rlabel):
+    """지금 손으로 잡아둔 자세를 그 로봇의 영점(base)으로 저장."""
+    rk=_CAL_KEYS.get(rlabel,'sts'); CAL['robot']=rk
+    BTN('base 저장',rlabel)
+    here=os.path.dirname(os.path.abspath(__file__))
+    if rk=='dxl':
+        if not DXL_OK: return "Dynamixel 프로필이 없습니다"
+        if not ROBOT_DXL.connect(): return f"Dynamixel 연결 실패 ({DXL_PORT})"
+        ids=sorted(set(DXL_J2ID)); rd=lambda i: ROBOT_DXL._r4(i,ROBOT_DXL.A_PRESENT)
+        path=os.path.join(here,'dxl_zero.py'); title='Dynamixel'
+    else:
+        if not ROBOT_STS.connect(): return f"SO-ARM 연결 실패 ({PORT})"
+        ids=sorted(set(J2ID)); rd=lambda i: ROBOT_STS._r2(i,ADDR_PRESENT)
+        path=os.path.join(here,'sts_zero.py'); title='SO-ARM'
     vals={}
-    for i in sorted(set(DXL_J2ID)):
+    for i in ids:
         got=[]
         for _ in range(30):
-            v=ROBOT_DXL._r4(i,ROBOT_DXL.A_PRESENT)
+            v=rd(i)
             if v is not None: got.append(int(v))
             if len(got)>=5: break
             time.sleep(0.04)
         if not got: return f"ID{i} 읽기 실패 - 배선/전원 확인"
         got.sort(); vals[i]=got[len(got)//2]        # 중앙값 (노이즈 제거)
-    path=os.path.join(os.path.dirname(os.path.abspath(__file__)),'dxl_zero.py')
     with open(path,'w') as f:
-        f.write("# Dynamixel(옛 로봇) 영점 raw - 웹에서 손으로 잡아 캡처\n")
+        f.write(f"# {title} 영점 raw - 웹에서 손으로 잡아 캡처\n")
         f.write(f"# 캡처: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"ZERO_RAW={vals}\n")
         f.write("VERIFIED=True\n")
-    DXL_ZERO.clear(); DXL_ZERO.update(vals)         # 메모리에도 즉시 반영
-    _DXL_CHAINS.clear()                             # 한계가 바뀌므로 체인 재생성
     rng=[]
-    for k in range(5):
-        lo,hi=dxl_jr_limits(k)
-        rng.append(f"j{k+1} {math.degrees(lo):+.0f}~{math.degrees(hi):+.0f}")
-    return ("Dynamixel base 저장됨 (dxl_zero.py)\n  "
+    if rk=='dxl':
+        DXL_ZERO.clear(); DXL_ZERO.update(vals); _DXL_CHAINS.clear()
+        for k in range(5):
+            lo,hi=dxl_jr_limits(k)
+            rng.append(f"j{k+1} {math.degrees(lo):+.0f}~{math.degrees(hi):+.0f}")
+    else:
+        ZERO_RAW.clear(); ZERO_RAW.update(vals)
+        globals()['CHAIN']=build_chain(); globals()['_CHAIN_L']=None
+        _AN['done']=False                            # 해석 파라미터 재산출
+        for k in range(5):
+            lo,hi=jr_limits(k)
+            rng.append(f"j{k+1} {math.degrees(lo):+.0f}~{math.degrees(hi):+.0f}")
+    return (f"{title} base 저장됨 ({os.path.basename(path)})\n  "
             +'  '.join(f"ID{i}:{v}" for i,v in vals.items())
             +"\n  가동범위: "+'  '.join(rng)
             +"\n  * 범위가 좌우 대칭에 가까우면 기계적 중립에 잘 앉은 것입니다")
+
+def h_cal_robot(rlabel):
+    """보정 대상 로봇 변경 -> 미세조정 축 수와 현재 보정값 표시를 갱신."""
+    rk=_CAL_KEYS.get(rlabel,'sts'); CAL['robot']=rk
+    BTN('보정 대상',rlabel)
+    n=robot_njoints(rk); jl=[f'J{i+1}' for i in range(n)]
+    name=FT.get('pose')
+    cur=("  현재 보정: "+_off_str(get_offset(name),rk)) if name else ""
+    return (gr.update(choices=jl,value=jl[0]),
+            f"보정 대상: {ROBOT_LABEL.get(rk)} (J1~J{n}) — "
+            f"보정값은 로봇마다 따로 저장됩니다\n{cur}")
 
 # ===== 매크로 버튼 1·2·3 (좌표 기록 -> 원버튼 재생) =====
 # 웹 버전 먼저. 나중에 물리 버튼(아두이노/RP2040/조이스틱)이 생겨도
@@ -4406,6 +4448,16 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                                           label='자세 목록 (클릭 = 3D 미리보기)',
                                           scale=4)
                         ft_refresh=gr.Button('↻',scale=1,size='sm')
+                    cal_robot=gr.Radio(choices=list(_CAL_KEYS),
+                                       value=list(_CAL_KEYS)[0],
+                                       label='보정할 로봇 (실행 로봇과 별개)')
+                    with gr.Accordion('영점(base) 손으로 맞추기',open=False):
+                        gr.Markdown('토크를 풀고 손으로 base 자세를 잡은 뒤 '
+                                    '저장합니다. 그리퍼가 지면과 수평이 되게.')
+                        with gr.Row():
+                            btn_cal_off=gr.Button('① 토크 해제',size='sm')
+                            btn_cal_cap=gr.Button('② 이 자세를 base 로 저장',
+                                                  size='sm',variant='primary')
                     ft_joint=gr.Radio(choices=['J1','J2','J3','J4','J5'],
                                       value='J1',label='조인트 선택')
                     with gr.Accordion('미세조정 (실물만 보정, 3D는 정답 고정)',
@@ -4484,14 +4536,6 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                         robot_stat=gr.Textbox(label='연결 상태',value='(확인 전)',
                                               interactive=False,scale=4,lines=2)
                         btn_rstat=gr.Button('확인',scale=1,size='sm')
-                    with gr.Accordion('Dynamixel 영점(base) 손으로 맞추기',
-                                      open=False):
-                        gr.Markdown('토크를 풀고 손으로 base 자세를 잡은 뒤 '
-                                    '저장하세요. 그리퍼가 지면과 수평이 되게.')
-                        with gr.Row():
-                            btn_dxl_off=gr.Button('① 토크 해제',size='sm')
-                            btn_dxl_cap=gr.Button('② 이 자세를 base 로 저장',
-                                                  size='sm',variant='primary')
                     with gr.Row():
                         speed=gr.Dropdown(choices=['0.5x','1.0x','1.5x','2.0x','3.0x','4.0x'],
                                           value='1.5x',label='속도')
@@ -4679,6 +4723,9 @@ with gr.Blocks(title='ARM STUDIO') as demo:
         names=pose_names()
         val=cur if cur in names else (names[0] if names else None)
         return gr.update(choices=names,value=val)
+    cal_robot.change(h_cal_robot,[cal_robot],[ft_joint,status])
+    btn_cal_off.click(h_cal_torque_off,[cal_robot],[status])
+    btn_cal_cap.click(h_cal_capture_zero,[cal_robot],[status])
     ft_refresh.click(_refresh_poses,[pose_sel],[pose_sel])
     ft_go.click(h_ft_goto,[ft_pose],[status])
     ft_minus.click(lambda p,j,s:h_ft_step(p,j,s,-1),
@@ -4731,10 +4778,8 @@ with gr.Blocks(title='ARM STUDIO') as demo:
     demo.load(render_map2d,None,[map_img])
     btn_stop.click(h_stop,None,[status])
     btn_toff.click(h_torque_off,None,[status])
-    exec_robot.change(h_exec_robot,[exec_robot],[ft_joint,status])
+    exec_robot.change(h_exec_robot,[exec_robot],[status])
     btn_rstat.click(h_robot_status,None,[robot_stat])
-    btn_dxl_off.click(h_dxl_torque_off,None,[status])
-    btn_dxl_cap.click(h_dxl_capture_zero,None,[status])
     for _s,_b in zip(MACRO_SLOTS,macro_btns):
         _b.click(lambda s=_s: h_macro_go(s),None,[status])
     btn_mrec.click(h_macro_rec,[macro_slot],macro_btns+[status])
