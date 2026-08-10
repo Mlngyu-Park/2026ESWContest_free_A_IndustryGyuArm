@@ -1244,14 +1244,16 @@ class Robot:
                 self._w1(i,ADDR_KI,GAIN_KI)   # 중력으로 남는 편차를 없앰
     def torque(self,on):
         for i in J2ID: self._w1(i,ADDR_TORQUE,1 if on else 0)
-    def send(self,q,log=False,tag='',with_grip=False):
+    def send(self,q,log=False,tag='',with_grip=False,only=None):
         """관절 목표 전송.
         그리퍼(j6)는 기본적으로 '보내지 않는다' -> URDF/자세 값과 무관하게
         ◆열기/닫기 블록으로만 바뀌고 그 상태를 유지한다.
-        with_grip=True 일 때만 j6 도 함께 보낸다(그리퍼 블록 전용)."""
+        with_grip=True 일 때만 j6 도 함께 보낸다(그리퍼 블록 전용).
+        only=[관절인덱스] 면 그 관절에만 보낸다(미세조정 - 한 축만 움직이기)."""
         raws={}
         for jidx in range(6):
             if jidx==5 and not with_grip: continue   # j6 제외
+            if only is not None and jidx not in only: continue
             raw,i=rad_to_raw(jidx,q[jidx])
             self._w2(i,ADDR_GOAL,raw); raws[i]=raw
         if log: LOG_TARGET(raws,tag)
@@ -1420,9 +1422,13 @@ class DXLRobot:
             self._w4(i,self.A_PACC,ms//3 if on else 0)
     def torque(self,on):
         for i in set(DXL_J2ID): self._w1(i,self.A_TORQUE,1 if on else 0)
-    def send(self,q_dxl,log=False,tag=''):
+    def send(self,q_dxl,log=False,tag='',only=None):
+        """only=[관절인덱스] 를 주면 그 관절에만 명령을 보낸다.
+        미세조정에서 한 축만 움직이려면 나머지에는 아예 명령을 보내면 안 된다
+        (같은 값이라도 명령을 받으면 미세하게 움직인다)."""
         raws={}
         for jidx in range(5):                  # 그리퍼(j6) 자동제어 안 함(값 미측정)
+            if only is not None and jidx not in only: continue
             raw,i=dxl_rad_to_raw(jidx,q_dxl[jidx])
             self._w4(i,self.A_GOAL,raw); raws[f'D{i}']=raw
         if log: LOG_TARGET(raws,tag)
@@ -2555,7 +2561,7 @@ def h_ft_goto(name):
         dev.estop(); return f"오류: {e} - 토크 해제됨"
     finally:
         RUNNING.clear()
-def _cal_send(q_sts,direct=False):
+def _cal_send(q_sts,direct=False,only=None):
     """보정 대상 로봇에 자세를 보낸다 (실행 로봇 설정과 무관).
 
     direct=True 면 관절값을 '그 로봇의 관절로 그대로' 보낸다.
@@ -2568,10 +2574,12 @@ def _cal_send(q_sts,direct=False):
         if not DXL_OK or not ROBOT_DXL.connect(): return "Dynamixel 연결 실패"
         qd=list(q_sts) if direct else map_sts_to_dxl(q_sts)
         if qd is None: return "그 자세는 Dynamixel 로 옮길 수 없습니다"
-        ROBOT_DXL.time_profile(True); ROBOT_DXL.torque(True); ROBOT_DXL.send(qd)
+        ROBOT_DXL.time_profile(True); ROBOT_DXL.torque(True)
+        ROBOT_DXL.send(qd,only=only)
         return None
     if not ROBOT_STS.connect(): return f"SO-ARM 연결 실패 ({PORT})"
-    ROBOT_STS.time_profile(True); ROBOT_STS.torque(True); ROBOT_STS.send(q_sts)
+    ROBOT_STS.time_profile(True); ROBOT_STS.torque(True)
+    ROBOT_STS.send(q_sts,only=only)
     return None
 
 def h_ft_step(pose_name,joint_label,step_deg,sign):
@@ -2587,7 +2595,7 @@ def h_ft_step(pose_name,joint_label,step_deg,sign):
     try:
         # 미세조정은 고른 관절 하나만 움직여야 한다 -> direct 전송
         # (EE 매핑을 거치면 IK 가 전 관절을 다시 풀어 여러 축이 함께 움직인다)
-        e=_cal_send(tgt,direct=True)
+        e=_cal_send(tgt,direct=True,only=[j])   # 고른 관절 하나만
         if e: return e
     except Exception as e:
         return f"전송 실패: {e}"
