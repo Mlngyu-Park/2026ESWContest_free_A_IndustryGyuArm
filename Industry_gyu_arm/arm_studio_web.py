@@ -2496,7 +2496,9 @@ def h_ft_goto(name):
     STOP.clear(); RUNNING.set()
     try:
         q0=list(CURRENT_Q)                     # 3D 기준 자세에서 출발
-        off=level_offset(get_offset(name))     # 그 로봇의 보정값, 수평 유지
+        # 보정값을 그대로 쓴다. level_offset 은 j2/j3 에 준 값을 j4 로 상쇄해
+        # '하나 눌렀는데 둘이 움직이는' 현상을 만든다 -> 보정 작업에는 쓰지 않는다
+        off=get_offset(name)
         tgt=[a+o for a,o in zip(get_angles(name),off)]
         tgt[5]=q0[5]                           # 그리퍼는 현재 상태 유지
         if LEVEL_ALWAYS: tgt[J5_IDX]=q0[J5_IDX]
@@ -2519,13 +2521,18 @@ def h_ft_goto(name):
         dev.estop(); return f"오류: {e} - 토크 해제됨"
     finally:
         RUNNING.clear()
-def _cal_send(q_sts):
+def _cal_send(q_sts,direct=False):
     """보정 대상 로봇에 자세를 보낸다 (실행 로봇 설정과 무관).
-    DXL 은 EE 경로 매핑으로 변환해서 보낸다."""
+
+    direct=True 면 관절값을 '그 로봇의 관절로 그대로' 보낸다.
+      미세조정은 관절 하나만 건드려야 하는데, EE 매핑(map_sts_to_dxl)을 거치면
+      IK 가 모든 관절을 다시 풀어 여러 축이 함께 움직인다 -> 미세조정 불가.
+    direct=False 는 '이 자세로 이동' 처럼 EE 를 맞춰야 할 때 쓴다.
+    """
     rk=offset_robot()
     if rk=='dxl':
         if not DXL_OK or not ROBOT_DXL.connect(): return "Dynamixel 연결 실패"
-        qd=map_sts_to_dxl(q_sts)
+        qd=list(q_sts) if direct else map_sts_to_dxl(q_sts)
         if qd is None: return "그 자세는 Dynamixel 로 옮길 수 없습니다"
         ROBOT_DXL.time_profile(True); ROBOT_DXL.torque(True); ROBOT_DXL.send(qd)
         return None
@@ -2544,7 +2551,9 @@ def h_ft_step(pose_name,joint_label,step_deg,sign):
     set_offset(name,off)
     tgt=[a+o for a,o in zip(get_angles(name),off)]
     try:
-        e=_cal_send(tgt)                       # 보정 대상 로봇만 이동 (3D 는 정답 유지)
+        # 미세조정은 고른 관절 하나만 움직여야 한다 -> direct 전송
+        # (EE 매핑을 거치면 IK 가 전 관절을 다시 풀어 여러 축이 함께 움직인다)
+        e=_cal_send(tgt,direct=True)
         if e: return e
     except Exception as e:
         return f"전송 실패: {e}"
@@ -2617,7 +2626,7 @@ def h_ft_reset(pose_name):
     name=FT['pose'] or pose_name
     if not name: return "자세를 먼저 선택하세요"
     set_offset(name,[0.0]*6)
-    try: _cal_send(get_angles(name))
+    try: _cal_send(get_angles(name),direct=True)
     except Exception: pass
     return f"'{name}' {ROBOT_LABEL.get(offset_robot())} 보정 초기화 (실물 = 정답 자세로)"
 def h_ft_save(pose_name):
