@@ -55,7 +55,45 @@ except Exception:
     _ros=None; _pub=None
 
 # ================= 캘리브레이션 (2026-07-24 확정) =================
-PORT='/dev/ttyACM0'; BAUD=1000000       # Feetech STS3215 (SO-ARM101)
+# ===== USB 자동 인식 =====
+# /dev/ttyACM0 같은 번호는 뽑았다 꽂으면 1, 2 로 밀린다(usbip 재연결도 마찬가지).
+# 대신 /dev/serial/by-id/ 에는 칩 종류와 시리얼번호가 박힌 고정 경로가 있어
+# 번호가 바뀌어도 늘 같은 장치를 가리킨다. 그걸로 어느 로봇인지 자동 판별한다.
+#   SO-ARM(STS3215) : CH343 칩  -> by-id 에 '1a86' 또는 'CH343'
+#   Dynamixel(U2D2) : FTDI 칩   -> by-id 에 'FTDI'
+# 환경변수 ARM_STS_PORT / ARM_DXL_PORT 로 수동 지정도 가능.
+BYID_DIR='/dev/serial/by-id'
+
+def scan_serial():
+    """연결된 시리얼 어댑터를 종류별로 찾는다. {'sts':경로,'dxl':경로}"""
+    found={'sts':None,'dxl':None}
+    try: names=sorted(os.listdir(BYID_DIR))
+    except Exception: names=[]
+    for n in names:
+        p=os.path.join(BYID_DIR,n); low=n.lower()
+        if ('ftdi' in low or '0403' in low) and not found['dxl']:
+            found['dxl']=p
+        elif ('1a86' in low or 'ch343' in low or 'ch340' in low) and not found['sts']:
+            found['sts']=p
+    # by-id 가 없는 환경(예: 일부 SBC)에서는 예전 방식으로 폴백
+    if not found['sts']:
+        for c in ('/dev/ttyACM0','/dev/ttyACM1','/dev/ttyACM2'):
+            if os.path.exists(c): found['sts']=c; break
+    if not found['dxl']:
+        for c in ('/dev/ttyUSB0','/dev/ttyUSB1','/dev/ttyUSB2'):
+            if os.path.exists(c): found['dxl']=c; break
+    return found
+
+def port_of(rk):
+    """그 로봇의 현재 포트. 매번 스캔하므로 도중에 다시 꽂아도 따라간다."""
+    env=os.environ.get('ARM_STS_PORT' if rk=='sts' else 'ARM_DXL_PORT')
+    if env: return env
+    return scan_serial().get(rk)
+
+_SCAN0=scan_serial()
+PORT=_SCAN0['sts'] or '/dev/ttyACM0'    # Feetech STS3215 (SO-ARM101)
+BAUD=1000000
+print(f"USB 자동 인식: SO-ARM={PORT}")
 # STS3215 레지스터
 ADDR_TORQUE=40; ADDR_P_ACCEL=41; ADDR_P_VEL=46; ADDR_GOAL=42; ADDR_PRESENT=56
 ADDR_KP=21; ADDR_KD=22; ADDR_KI=23     # 위치 PID (공장값 32/32/0 = 이 팔엔 약함)
@@ -1126,9 +1164,11 @@ class Robot:
             import scservo_sdk.port_handler as _ph
             _ph.LATENCY_TIMER=16
             from scservo_sdk import PortHandler, PacketHandler
-            p=PortHandler(PORT)
+            pt=port_of('sts') or PORT       # 재연결로 번호가 밀려도 따라감
+            p=PortHandler(pt)
             if not p.openPort(): return False
             p.setBaudRate(BAUD)
+            globals()['PORT']=pt
             self.port=p; self.packet=PacketHandler(0); return True
         except Exception: return False
     def _w1(self,i,addr,v):
@@ -1280,9 +1320,11 @@ class DXLRobot:
         if self.port: return True
         try:
             from dynamixel_sdk import PortHandler,PacketHandler
-            p=PortHandler(DXL_PORT)
+            pt=port_of('dxl') or DXL_PORT
+            p=PortHandler(pt)
             if not p.openPort(): return False
             p.setBaudRate(DXL_BAUD)
+            globals()['DXL_PORT']=pt
             pk=PacketHandler(2.0)
             _,r,_=pk.ping(p,DXL_J2ID[0])
             if r!=0:
@@ -2698,15 +2740,19 @@ def h_torque_off():
 def _robot_status_str():
     if EXEC['mode']=='sim':
         return "시뮬레이션 모드 — 실물은 움직이지 않고 3D/RViz 만 재생됩니다"
+    sc=scan_serial()
+    def short(p): return os.path.basename(p) if p else '어댑터 없음'
     s='● 연결됨' if ROBOT_STS.connect() else '○ 미연결'
-    out=f"SO-ARM ({PORT}): {s}"
+    out=f"SO-ARM [{short(sc['sts'])}]: {s}"
     if DXL_OK:
         d='● 연결됨' if ROBOT_DXL.connect() else '○ 미연결'
-        out+=f"\nDynamixel ({DXL_PORT}): {d}"
+        out+=f"\nDynamixel [{short(sc['dxl'])}]: {d}"
         if not DXL_ZERO_VERIFIED:
-            out+="  [경고: 영점 미검증 - dxl_capture_zero.py 먼저!]"
+            out+="  [경고: 영점 미검증]"
     else:
         out+="\nDynamixel: 프로필/URDF 없음"
+    if not sc['sts'] and not sc['dxl']:
+        out+="\n어댑터가 하나도 안 보입니다 — usbipd attach 후 다시 [확인]"
     return out
 
 _EXEC_LABELS={'시뮬레이션 (로봇 없이)':'sim','SO-ARM (STS)':'sts',

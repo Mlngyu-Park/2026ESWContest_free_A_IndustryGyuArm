@@ -4,7 +4,18 @@
 #  - j4<->j5 배선 교차: RViz j4 = 모터 ID4, RViz j5 = 모터 ID3
 #  - j1(ID0) 만 방향 반대
 
-PORT='/dev/ttyUSB0'          # U2D2
+# U2D2 포트. /dev/ttyUSB0 번호는 재연결하면 밀리므로 by-id(FTDI 칩)로 찾는다.
+import os as _os, glob as _glob
+def _find_u2d2():
+    p=_os.environ.get('ARM_DXL_PORT')
+    if p: return p
+    for c in sorted(_glob.glob('/dev/serial/by-id/*')):
+        low=_os.path.basename(c).lower()
+        if 'ftdi' in low or '0403' in low: return c
+    for c in ('/dev/ttyUSB0','/dev/ttyUSB1','/dev/ttyUSB2'):
+        if _os.path.exists(c): return c
+    return '/dev/ttyUSB0'
+PORT=_find_u2d2()
 BAUD=57600
 PROTOCOL=2.0
 
