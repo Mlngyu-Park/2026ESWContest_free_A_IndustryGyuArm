@@ -463,6 +463,37 @@ def level_offset(off):
     o[J5_IDX]=0.0                # j5 오프셋 금지
     return o
 
+# ===== Dynamixel 의 '수평' 기준 =====
+# SO-ARM 은 j2+j3+j4 합으로 기울기를 계산한다(위 level_offset). 그런데 DXL 은
+# 축 구성이 달라(수평축이 j1,j2,j3,j5) 그 수식이 맞지 않는다.
+# 대신 사용자가 손으로 물컵 규칙에 맞게 잡아둔 base 자세를 기준으로 쓴다.
+#   -> base 를 다시 잡으면 이 기준도 자동으로 따라간다 (코드 수정 불필요)
+def dxl_level_axes():
+    """DXL 에서 '수평을 만드는' 관절 인덱스들 (URDF 축 구조에서 자동 판별)."""
+    if not DXL_OK: return []
+    try:
+        lvl=_level_mask(DXL_DEF)
+        return [k for k in range(6) if lvl[k]]
+    except Exception:
+        return []
+
+def dxl_base_pose():
+    """DXL 관절 공간에서의 base 자세. 영점이 곧 base 이므로 전부 0.
+    (dxl_zero.py 를 손으로 다시 잡으면 그 자세가 새 기준이 된다)"""
+    return [0.0]*6
+
+def dxl_apply_level(qd):
+    """DXL 자세에 '수평 유지' 를 적용한다.
+
+    수평을 깨는 축(수평 그룹에 속하지 않는 회전축)은 base 값으로 고정한다.
+    SO-ARM 의 j5 고정과 같은 개념이지만, 어느 축인지는 DXL URDF 에서 판별한다.
+    """
+    if not qd: return qd
+    q=list(qd); base=dxl_base_pose(); lv=set(dxl_level_axes())
+    for k in range(5):
+        if k not in lv: q[k]=base[k]      # 수평을 깨는 축 -> base 로 고정
+    return q
+
 def lock_j5(way,qa):
     """경로 전체에서 j5 를 출발 각도로 고정 (기울기 원인 제거)."""
     for f in way: f[J5_IDX]=qa[J5_IDX]
@@ -1433,7 +1464,10 @@ class RobotMux:
     def send(self,q,log=False,tag='',with_grip=False):
         if self._dxl():
             qd=map_sts_to_dxl(q)
-            if qd is not None: ROBOT_DXL.send(qd,log=log,tag=tag)
+            if qd is not None:
+                # DXL 의 수평 기준은 사용자가 손으로 잡은 base 자세다
+                # (SO-ARM 의 j2+j3+j4 합 수식은 DXL 축 구성에 맞지 않음)
+                ROBOT_DXL.send(dxl_apply_level(qd),log=log,tag=tag)
             else:
                 EXEC['miss']+=1                # 도달 불가: DXL 은 그 자리 유지
                 if EXEC['miss']%25==1:
