@@ -3208,8 +3208,9 @@ def set_robot_pose(x,y,yaw,save=True):
     BASE_OFF[0]=float(x); BASE_OFF[1]=float(y); BASE_YAW[0]=float(yaw)
     _MAXZ_R.clear(); _clear_plan_cache()
     _OBS['grid']=None
-    if 'PEG_TABLE' in globals():        # 시작 복원 시엔 아직 정의 전
-        PEG_TABLE['key']=None; PEG_TABLE['span']={}; _PEG_CACHE.clear()
+    # 도달표(PEG_TABLE)는 상대좌표라 로봇 이동/회전에도 그대로 유효.
+    if '_PEG_CACHE' in globals(): _PEG_CACHE.clear()
+    if 'PEG_VIEW' in globals(): PEG_VIEW['dirty']=True
     if save:
         with LOCK:
             S['robot_xy']=[float(x),float(y)]; S['robot_yaw']=float(yaw)
@@ -3318,8 +3319,7 @@ def set_env_pose(oid,ox,oy,yaw):
     if e is None: return False
     e['offset']=(float(ox),float(oy),0.0); e['yaw']=float(yaw)
     _OBS['grid']=None; _clear_plan_cache()
-    if 'PEG_TABLE' in globals():
-        PEG_TABLE['key']=None; _PEG_CACHE.clear()
+    # 도달표는 순수 '팔이 닿는가' 라 설비 이동과 무관 - 무효화하지 않는다.
     with LOCK:
         S.setdefault('env_off',{})[oid]=[float(ox),float(oy),float(yaw)]
     _macro_save()
@@ -3513,57 +3513,95 @@ def _peg_ik_worker(a):
 #   -> 1mm 는 물론 소수점 높이까지 조회 가능(해상도 제한 없음)
 # 표는 (로봇위치, URDF) 가 바뀌면 무효화된다.
 PEG_H_MAX=250          # 표가 담는 최대 높이(mm). 슬라이더 상한과 같아야 한다
-PEG_TABLE={'key':None,'span':{}}
+# 도달표는 "로봇 기준 상대좌표" 로 저장한다.
+#   - 도달 가능성은 로봇에서 (dx,dy) 떨어진 지점의 성질이라 로봇을 어디로
+#     옮기든(90도 회전 포함) 표는 그대로다. 재계산이 아니라 조회만 한다.
+#   - 목심도 로봇 발도 전부 20mm 격자 + 90도 스냅이라, 상대좌표는 항상
+#     (10+20i, 10+20j)mm 격자에 떨어진다 (검증: 핀 로컬 (270,±270) 의
+#     4회전 모두 mod 20 = (10,10)).
+#   - 실제 이동(목심 클릭 -> IK -> 애니메이션)은 표와 무관하게 지금 위치에서
+#     라이브로 푼다. 표는 같은 ik_tool 을 로컬 변위로 돌려 만든 것이라
+#     판정과 실제 이동이 어긋나지 않는다.
+PEG_TABLE={'key':None,'span':{}}     # span: {(dx_mm,dy_mm): [(a,b),...]}
 _PEG_SCAN={'busy':False,'msg':''}
 
-def _peg_span_one(args):
-    """한 목심의 도달 가능 높이 구간들 [(a,b),...] (mm).
+def _rel_span_one(args):
+    """로봇 로컬 변위 (dx,dy)m 지점의 도달 높이 구간들 [(a,b),...] (mm).
 
     주의: 도달 영역이 항상 하나의 연속 구간은 아니다. 관절 한계 때문에
-    중간이 끊기는 목심이 실제로 존재한다(예: 0~0 가능, 2~38 불가, 40~232 가능).
-    그래서 하나의 [min,max] 가 아니라 '구간 목록' 으로 저장한다.
-    1mm 전수 검사가 가장 확실하고, 목심당 251회면 병렬로 충분히 빠르다.
+    중간이 끊기는 지점이 실제로 존재한다 -> '구간 목록' 으로 저장.
+    reach_ring(높이별 수평거리 한계)으로 IK 없이 거를 수 있는 높이는 걸러
+    1mm 전수 검사 비용을 크게 줄인다.
     """
-    nm,x,y=args
+    dx,dy=args
     q0=list(CURRENT_Q); seeds=_seed_list(q0)
-    hits=[h for h in range(0,PEG_H_MAX+1)
-          if ik_tool((x,y,peg_z(h)),seeds,q0[4],q0[5]) is not None]
-    if not hits: return (nm,None)
+    o1=CHAIN.forward_kinematics([0]*7,full_kinematics=True)[1][:3,3][:2]
+    r=math.hypot(dx-float(o1[0]),dy-float(o1[1]))
+    hits=[]
+    for h in range(0,PEG_H_MAX+1):
+        z=peg_z(h)
+        ring=reach_ring(z)
+        if ring is not None and not (ring[0]-0.02<=r<=ring[1]+0.02):
+            continue                     # 그 높이 수평거리 밖 - IK 생략
+        if ik_tool(l2w((dx,dy,z)),seeds,q0[4],q0[5]) is not None:
+            hits.append(h)
+    if not hits: return ((dx,dy),None)
     spans=[]; a=p=hits[0]
     for h in hits[1:]:
         if h==p+1: p=h; continue
         spans.append((a,p)); a=p=h
     spans.append((a,p))
-    return (nm,spans)
+    return ((dx,dy),spans)
 
 def peg_table_key():
-    return (round(BASE_OFF[0],4),round(BASE_OFF[1],4),BASE_URDF,
-            tuple(sorted(PLATES.keys())))
+    # 기하(URDF)에만 의존. 로봇 위치/회전/플레이트/설비 배치와 무관.
+    return (BASE_URDF,int(PEG_H_MAX))
+
+def _rel_cells():
+    """표를 만들 로컬 변위 격자: (10+20i, 10+20j)mm, 도달 한계 반경 안."""
+    o1=CHAIN.forward_kinematics([0]*7,full_kinematics=True)[1][:3,3][:2]
+    rmax=0.0
+    for h in range(0,PEG_H_MAX+1,5):
+        ring=reach_ring(peg_z(h))
+        if ring is not None: rmax=max(rmax,ring[1])
+    rmax+=0.04
+    cells=[]
+    i0=int(math.floor((float(o1[0])-rmax-0.01)/0.02))
+    i1=int(math.ceil ((float(o1[0])+rmax+0.01)/0.02))
+    j0=int(math.floor((float(o1[1])-rmax-0.01)/0.02))
+    j1=int(math.ceil ((float(o1[1])+rmax+0.01)/0.02))
+    for i in range(i0,i1+1):
+        for j in range(j0,j1+1):
+            dx,dy=0.01+i*0.02, 0.01+j*0.02
+            if math.hypot(dx-float(o1[0]),dy-float(o1[1]))<=rmax:
+                cells.append((round(dx,4),round(dy,4)))
+    return cells
 
 def build_peg_table():
-    """모든 목심의 도달 높이 구간을 계산해 표로 만든다 (약 7~15초)."""
+    """로봇 기준 상대 도달표 (URDF 당 한 번만 계산하면 된다)."""
     key=peg_table_key()
-    jobs=[(nm,*peg_xy(nm)) for nm in peg_names() if peg_xy(nm)]
+    jobs=_rel_cells()
     t0=time.time()
     try:
         import multiprocessing as _mp
         ctx=_mp.get_context('fork')
         with ctx.Pool(_worker_count()) as pool:
-            res=pool.map(_peg_span_one,jobs,chunksize=4)
+            res=pool.map(_rel_span_one,jobs,chunksize=4)
     except Exception as e:
         print(f"[목심표] 병렬 실패({type(e).__name__}) - 순차")
-        res=[_peg_span_one(j) for j in jobs]
-    span={nm:v for nm,v in res if v}
+        res=[_rel_span_one(j) for j in jobs]
+    span={(int(round(d[0]*1000)),int(round(d[1]*1000))):v
+          for d,v in res if v}
     PEG_TABLE['key']=key; PEG_TABLE['span']=span
     el=time.time()-t0
-    print(f"[목심표] {len(span)}/{len(jobs)}개 도달 가능, {el:.1f}초")
+    print(f"[목심표] 상대격자 {len(span)}/{len(jobs)}칸 도달 가능, {el:.1f}초")
     try:                                   # 다음 실행에서 바로 쓰도록 저장
         with open(peg_table_file(),'w') as f:
-            json.dump({'key':[key[0],key[1],key[2],[list(t) for t in key[3]]],
+            json.dump({'rel':True,'key':[key[0],key[1]],
                        'max_h':PEG_H_MAX,'pitch':PEG_PITCH,
                        'built':time.strftime('%Y-%m-%d %H:%M:%S'),
-                       'span':{nm:[list(s) for s in sp]
-                               for nm,sp in span.items()}},f)
+                       'span':{f"{k[0]},{k[1]}":[list(s) for s in sp]
+                               for k,sp in span.items()}},f)
         print(f"[목심표] 저장: {peg_table_file()}")
     except Exception as e:
         print(f"[목심표] 저장 실패: {e}")
@@ -3573,29 +3611,29 @@ def peg_table_file():
     return os.path.join(URDF_PKG_DIR,'peg_table.json')
 
 def load_peg_table():
-    """peg_table_build.py 가 미리 만들어 둔 표를 불러온다.
-    로봇 위치/URDF/플레이트 배치가 그때와 다르면 무시한다."""
+    """미리 만들어 둔 상대 도달표를 불러온다. URDF 가 다르면 무시.
+    (구버전 = 월드 목심 이름 형식 파일도 무시하고 새로 만든다)"""
     p=peg_table_file()
     if not os.path.exists(p): return False
     try:
         with open(p) as f: d=json.load(f)
         k=peg_table_key()
-        saved=d.get('key') or []
-        same=(len(saved)==4
-              and abs(float(saved[0])-k[0])<1e-6
-              and abs(float(saved[1])-k[1])<1e-6
-              and saved[2]==k[2]
-              and [tuple(t) for t in saved[3]]==list(k[3]))
-        if not same:
-            print("  (peg_table.json 은 다른 배치의 것이라 무시 — "
-                  "peg_table_build.py 를 다시 돌리세요)")
+        if not d.get('rel'):
+            print("  (peg_table.json 이 구형식(월드 좌표) — 상대표로 새로 만듭니다)")
             return False
-        PEG_TABLE['span']={nm:[tuple(s) for s in sp]
-                           for nm,sp in d['span'].items()}
-        PEG_TABLE['key']=k
+        saved=d.get('key') or []
+        if len(saved)<1 or saved[0]!=k[0]:
+            print("  (peg_table.json 은 다른 URDF 의 것이라 무시)")
+            return False
+        span={}
+        for ks,sp in d['span'].items():
+            xs,ys=ks.split(',')
+            span[(int(xs),int(ys))]=[tuple(s) for s in sp]
+        PEG_TABLE['span']=span
         globals()['PEG_H_MAX']=int(d.get('max_h',PEG_H_MAX))
-        print(f"목심 도달표 불러옴: {len(PEG_TABLE['span'])}개 "
-              f"(생성 {d.get('built','?')})")
+        PEG_TABLE['key']=peg_table_key()
+        print(f"목심 도달표(상대) 불러옴: {len(span)}칸 "
+              f"(생성 {d.get('built','?')}) — 로봇을 옮겨도 재계산 없음")
         return True
     except Exception as e:
         print(f"  (peg_table.json 읽기 실패: {e})")
@@ -3604,12 +3642,26 @@ def load_peg_table():
 def peg_table_ready():
     return PEG_TABLE['key']==peg_table_key() and PEG_TABLE['span']
 
+def _peg_rel_key(x,y):
+    """월드 (x,y) -> 로봇 로컬 변위 격자 키 (mm 정수)."""
+    d=w2l(np.array([x,y,0.0]))
+    return (int(round(d[0]*1000)),int(round(d[1]*1000)))
+
 def peg_reachable_fast(height_mm):
-    """표에서 즉시 조회 (IK 없음). 표가 없으면 None."""
+    """상대표 조회 (IK 없음, 로봇 위치/회전 반영). 표가 없으면 None."""
     if not peg_table_ready(): return None
     h=int(round(float(height_mm)))
-    return sorted(nm for nm,sp in PEG_TABLE['span'].items()
-                  if any(a<=h<=b for a,b in sp))
+    memo=('fast',h,round(BASE_OFF[0],4),round(BASE_OFF[1],4),
+          round(BASE_YAW[0],4),tuple(sorted(PLATES.keys())))
+    if memo in _PEG_CACHE: return _PEG_CACHE[memo]
+    out=[]
+    for nm in peg_names():
+        xy=peg_xy(nm)
+        if not xy: continue
+        sp=PEG_TABLE['span'].get(_peg_rel_key(xy[0],xy[1]))
+        if sp and any(a<=h<=b for a,b in sp): out.append(nm)
+    out.sort(); _PEG_CACHE[memo]=out
+    return out
 
 _PEG_CACHE={}
 def peg_reachable(height_mm,use_cache=True):
@@ -4131,9 +4183,8 @@ def move_env(oid,x,y):
                  f"({off[0]*1000:+.0f},{off[1]*1000:+.0f})mm (목심 정렬)")
 
 def _peg_layout_changed():
-    """플레이트 배치가 바뀌면 목심 구성도 바뀐다 -> 도달표/캐시 무효화.
-    (안 하면 새로 생긴 목심이 옛 목록에 없어 전부 빨강으로 표시된다)"""
-    PEG_TABLE['key']=None; PEG_TABLE['span']={}
+    """플레이트 배치가 바뀌면 목심 목록이 바뀐다. 도달표는 상대좌표라
+    그대로 유효 - 표시 갱신만 필요하다."""
     _PEG_CACHE.clear()
     PEG_VIEW['dirty']=True
 
