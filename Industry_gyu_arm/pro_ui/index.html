@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARM STUDIO</title>
+<link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand"><span class="dot"></span>ARM&nbsp;STUDIO</div>
+  <div id="ticker" class="ticker" title="클릭 = 전체 로그 보기">
+    <span id="tickerText">대기 중</span>
+  </div>
+  <div class="topRight">
+    <div id="robotChip" class="chip">로봇 확인 전</div>
+    <button id="btnEstop" class="btn danger big">■ 정지</button>
+  </div>
+</header>
+
+<main>
+  <!-- ======== 왼쪽: 디지털 트윈 (정사각형) ======== -->
+  <section id="left">
+    <div id="viewerCard" class="card">
+      <div class="viewHead">
+        <span class="viewTitle">디지털 트윈</span>
+        <span id="viewSwitch" class="seg hidden">
+          <button data-v="3d" class="on">3D 뷰</button><button data-v="rviz">RViz</button>
+        </span>
+      </div>
+      <iframe id="viewer" title="3D viewer"></iframe>
+    </div>
+  </section>
+
+  <!-- ======== 오른쪽: 3단계 탭 ======== -->
+  <section id="right" class="card">
+    <nav id="tabs">
+      <button data-tab="factory" class="on">① 공장 꾸미기</button>
+      <button data-tab="robot">② 로봇 연동</button>
+      <button data-tab="voice">③ 음성 코딩</button>
+    </nav>
+
+    <!-- ================= ① 공장 꾸미기 =================
+         디지털 트윈 만들기: 설비 배치·이름·색, 바닥, 로봇 위치, 공간 좌표 -->
+    <div id="tab-factory" class="pane on">
+      <div class="group">
+        <div class="groupHead">설비 (환경 STL) <span class="hint">체크 = 표시</span></div>
+        <div id="envList" class="checkList"></div>
+        <div class="row">
+          <label class="btn sm file">＋ 설비 추가 (STL 업로드)
+            <input id="upStl" type="file" accept=".stl" multiple hidden></label>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">이름 붙이기 <span class="hint">"1번 도색 챔버" 처럼 부를 이름</span></div>
+        <div class="row"><label class="lbl">대상</label><select id="nmTarget" class="grow"></select></div>
+        <div class="row">
+          <input id="nmText" placeholder="예: 1번 도색 챔버" class="grow">
+          <input id="nmColor" type="color" value="#ff69b4">
+          <button id="btnNm" class="btn sm">적용</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">바닥 플레이트</div>
+        <label class="chk"><input id="plateEdit" type="checkbox">
+          바닥 확장 모드 (3D에서 초록 타일 클릭)</label>
+        <pre id="plateInfo" class="mono dim"></pre>
+        <div class="row">
+          <select id="plateSel"></select>
+          <button id="btnPlateDel" class="btn sm danger">삭제</button>
+          <button id="btnPlateRef" class="btn sm">새로고침</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">로봇 위치 <span class="hint">플레이트 타일에 스냅</span></div>
+        <label class="chk"><input id="robotMove" type="checkbox">
+          로봇 이동 모드 (3D에서 타일 클릭 = 그 중앙으로)</label>
+        <div class="row">
+          <span id="robotPos" class="mono dim grow"></span>
+          <button id="btnRobotHome" class="btn sm">원점 복귀</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">공간 좌표 (목심)
+          <span class="hint">노랑=가능 · 빨강=불가 · 클릭=선택</span></div>
+        <label class="chk"><input id="pegView" type="checkbox">
+          3D 목심 선택 모드</label>
+        <div class="row">
+          <label class="lbl">높이<output id="pegHV"></output>mm</label>
+          <input id="pegH" type="range" min="0" max="250" step="1" value="80" class="grow">
+        </div>
+        <div class="row">
+          <select id="pegSel" class="grow"></select>
+          <button id="btnPegGo" class="btn primary">이 목심 위로 이동</button>
+        </div>
+        <div class="row">
+          <input id="pegPName" placeholder="자세 이름 (비우면 자동)">
+          <button id="btnPegPose" class="btn sm">자세로 등록</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= ② 로봇 연동 =================
+         로봇 선택·연결 확인·영점(base)·미세조정·자세 관리 -->
+    <div id="tab-robot" class="pane">
+      <div class="group">
+        <div class="groupHead">실행 로봇 <span class="hint">USB 꽂으면 자동 인식</span></div>
+        <div class="row"><span id="execSel" class="seg wrap"></span></div>
+        <div class="row">
+          <pre id="robotStat" class="mono dim grow">(확인 전)</pre>
+          <button id="btnRStat" class="btn sm">확인</button>
+        </div>
+        <button id="btnToff" class="btn sm">토크 해제</button>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">자세 목록 <span class="hint">클릭 = 3D 미리보기</span></div>
+        <div id="poseList" class="chipList"></div>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">관절 (3D 시뮬)</div>
+        <div id="sliders"></div>
+        <div class="row">
+          <button id="btnGripOpen" class="btn">그리퍼 열기</button>
+          <button id="btnGripClose" class="btn">그리퍼 닫기</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">미세조정 <span class="hint">실물만 보정 · 3D는 정답 고정</span></div>
+        <div class="row">
+          <label class="lbl">보정 로봇</label><span id="calRobot" class="seg"></span>
+        </div>
+        <div id="ftOff" class="mono dim"></div>
+        <button id="btnFtGo" class="btn primary wide">로봇을 이 자세로</button>
+        <div class="row">
+          <label class="lbl">조인트</label><span id="ftJoints" class="seg"></span>
+        </div>
+        <div class="row">
+          <label class="lbl">스텝(도)</label>
+          <select id="ftStep"></select>
+          <button id="btnFtMinus" class="btn">−</button>
+          <button id="btnFtPlus" class="btn">＋</button>
+        </div>
+        <div class="row">
+          <button id="btnFtGOpen" class="btn sm">그리퍼 열기</button>
+          <button id="btnFtGClose" class="btn sm">그리퍼 닫기</button>
+        </div>
+        <div class="row">
+          <button id="btnFtApply" class="btn sm">base 보정 가져오기</button>
+          <button id="btnFtReset" class="btn sm">보정 초기화</button>
+          <button id="btnFtSave" class="btn primary sm">보정 저장</button>
+        </div>
+      </div>
+
+      <details class="group">
+        <summary class="groupHead">영점(base) 손으로 맞추기</summary>
+        <p class="hint">토크를 풀고 손으로 base 자세를 잡은 뒤 저장합니다.
+          그리퍼가 지면과 수평이 되게. 저장하면 이전 값은 자동 백업됩니다.</p>
+        <div class="row">
+          <button id="btnCalOff" class="btn">① 토크 해제</button>
+          <button id="btnCalCap" class="btn primary">② 이 자세를 base 로 저장</button>
+        </div>
+      </details>
+
+      <details class="group">
+        <summary class="groupHead">자세 관리 / 프로젝트</summary>
+        <div class="row">
+          <input id="newName" placeholder="새 이름 (복제용)">
+          <button id="btnDup" class="btn sm">복제</button>
+          <button id="btnDel" class="btn sm danger">삭제</button>
+        </div>
+        <div class="row">
+          <button id="btnSave" class="btn sm">프로젝트 저장</button>
+          <button id="btnLoad" class="btn sm">불러오기</button>
+        </div>
+        <div class="row">
+          <input id="pathIn" placeholder="URDF 폴더/파일 경로">
+          <button id="btnPath" class="btn sm">경로에서 추가</button>
+        </div>
+        <div class="row">
+          <label class="btn sm file">URDF 폴더 업로드 (새 자세/로봇)
+            <input id="upDir" type="file" webkitdirectory multiple hidden></label>
+        </div>
+      </details>
+    </div>
+
+    <!-- ================= ③ 음성 코딩 =================
+         말 → 블록 → 미리보기 → 실물. 블록 색이 곧 종류 -->
+    <div id="tab-voice" class="pane">
+      <div class="group">
+        <div class="groupHead">말로 만들기</div>
+        <button id="btnMic" class="btn wide">🎤 누르고 말하기</button>
+        <p class="hint" id="micHint">예: "베이스에서 1번 도색 챔버로 가서 부품을
+          잡아줘" — 음성 인식 연결 준비 중. 지금은 아래에서 블록을 직접 추가하세요.</p>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">블록 추가
+          <span class="hint">■자세 · ◆그리퍼 · ◈잡기/놓기</span></div>
+        <div class="row">
+          <select id="mvPose"></select>
+          <button id="btnSeqAdd" class="btn primary">■ 자세 추가</button>
+        </div>
+        <div class="row">
+          <button id="btnGripAddOpen" class="btn sm">◆ 그리퍼 열기</button>
+          <button id="btnGripAddClose" class="btn sm">◆ 그리퍼 닫기</button>
+        </div>
+        <div class="row">
+          <label class="lbl">물체</label><select id="brickSel"></select>
+          <label class="lbl">도킹</label><select id="dockSel"></select>
+        </div>
+        <div class="row">
+          <button id="btnGraspAdd" class="btn sm">◈ 잡기 블록</button>
+          <button id="btnReleaseAdd" class="btn sm">◈ 놓기 블록</button>
+          <button id="btnPlace" class="btn sm">세우기(시뮬)</button>
+        </div>
+        <div class="row">
+          <button id="btnGrasp" class="btn sm">지금 잡기</button>
+          <button id="btnRelease" class="btn sm">지금 놓기</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">파이프라인
+          <span class="hint">클릭 = 선택 · 색이 곧 종류</span></div>
+        <div id="pipeline"></div>
+        <div class="row">
+          <button id="btnBlkUp" class="btn sm">▲</button>
+          <button id="btnBlkDn" class="btn sm">▼</button>
+          <button id="btnBlkDel" class="btn sm danger">삭제</button>
+        </div>
+      </div>
+
+      <div id="segPanel" class="group hidden">
+        <div class="groupHead">┃ 이동 블록 설정 <span id="segInfo" class="hint"></span></div>
+        <div class="row"><label class="lbl">이동 방식</label><select id="segMode"></select></div>
+        <div class="row"><label class="lbl">축 우선</label><span id="segPrefer" class="seg"></span></div>
+        <div class="row"><label class="lbl">축 순서</label><select id="segAx"></select></div>
+        <div class="row"><label class="lbl">회전</label><select id="segRot"></select></div>
+        <div class="row">
+          <button id="btnRec" class="btn sm">● 녹화 시작/정지</button>
+          <span id="segRec" class="hint"></span>
+        </div>
+      </div>
+
+      <div id="ignPanel" class="group hidden">
+        <div class="groupHead">■ 이 자세가 무시할 장애물</div>
+        <div id="ignList" class="checkList"></div>
+        <button id="btnIgnSave" class="btn sm">무시 목록 저장</button>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">실행</div>
+        <div class="row">
+          <label class="lbl">속도</label><select id="speed"></select>
+          <label class="chk"><input id="loop" type="checkbox">반복</label>
+        </div>
+        <div class="row runRow">
+          <button id="btnPreview" class="btn wide">미리보기</button>
+          <button id="btnRun" class="btn primary wide">실물 실행</button>
+          <button id="btnStop2" class="btn danger wide">정지</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">매크로 <span class="hint">기록해두고 버튼 하나로 이동</span></div>
+        <div id="macroBtns" class="row"></div>
+        <div class="row">
+          <select id="macroSlot"></select>
+          <button id="btnMRec" class="btn sm">현재 위치 기록</button>
+          <button id="btnMClr" class="btn sm">비우기</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">위에서 본 맵
+          <span class="hint">┃블록 선택 후 클릭 = 경로 점 추가</span></div>
+        <div id="mapBox"></div>
+        <div class="row">
+          <button id="btnMapUndo" class="btn sm">점 취소</button>
+          <button id="btnMapClear" class="btn sm">전부 지움</button>
+          <button id="btnMapRef" class="btn sm">새로고침</button>
+          <button id="btnPathSave" class="btn primary sm">┃블록에 경로 저장</button>
+          <button id="btnPathDel" class="btn sm">블록 경로 삭제</button>
+        </div>
+        <div class="row">
+          <label class="lbl">간편 이동</label><span id="spPrefer" class="seg"></span>
+          <label class="lbl sm">여유<output id="spClearV"></output>cm</label>
+          <input id="spClear" type="range" min="1" max="15" step="1">
+          <label class="lbl sm">하강<output id="spExtraV"></output>cm</label>
+          <input id="spExtra" type="range" min="0" max="15" step="1">
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="logOverlay" class="hidden">
+  <div class="logPanel card">
+    <div class="cardHead">전체 로그
+      <button id="logClose" class="btn sm">닫기</button></div>
+    <div id="console"></div>
+  </div>
+</div>
+
+<div id="mapxy" hidden><input></div>
+<script src="/ui/app.js"></script>
+</body>
+</html>
