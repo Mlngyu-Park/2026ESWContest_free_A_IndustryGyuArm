@@ -159,7 +159,8 @@ SYNC = {
     'robot_move_mode': core.h_robot_move_mode,
     'robot_home':    core.h_robot_home,
     'peg_pick':      a_peg_pick,
-    'set_name':      core.h_set_name,          # (oid, name, color)
+    'set_name':      lambda oid,name,color=None: (_THUMB.pop(oid,None),
+                     core.h_set_name(oid,name,color))[1],   # 색 바꾸면 썸네일 재생성
     'place':         lambda b, d: core.place_brick_on_docking(b, d)[1],
 }
 JOBS = {
@@ -269,6 +270,7 @@ def api_state(sel: str = '', pose: str = ''):
         'ft_off': ft_off,
         'macros': [core._macro_btn_label(s) for s in core.MACRO_SLOTS],
         'env': core.env_ids(), 'env_on': core.env_visible_ids(),
+        'ports': core.scan_serial(),   # USB 자동 감지 (by-id)
         'obstacles': core.obstacle_ids(),
         'plates': core.added_tile_labels(), 'plate_info': core.h_plate_list(),
         'robot_pos': core._robot_pos_str(),

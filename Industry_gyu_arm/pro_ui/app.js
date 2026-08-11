@@ -205,6 +205,17 @@ function render(s){
     $('#spExtra').value=s.simple.extra_cm;$('#spExtraV').value=s.simple.extra_cm;
   }
 
+  /* USB 연결 자동 감지 - 표시/로그만 한다 (동작에는 관여 안 함) */
+  if(changed('ports',s.ports)){
+    const st=s.ports?.sts, dx=s.ports?.dxl;
+    const txt=(!st&&!dx)?'로봇 없음 — 시뮬레이션만 가능'
+      :[st?'SO-ARM':null,dx?'Dynamixel':null].filter(Boolean).join(' + ')+' 연결됨';
+    const el=$('#connChip');
+    el.textContent='🔌 '+txt;
+    el.classList.toggle('on',!!(st||dx));
+    log('[연결 감지] '+txt+(st?` (SO-ARM ${st})`:'')+(dx?` (DXL ${dx})`:''));
+  }
+
   /* 환경: 썸네일 카드 (플레이트 제외, 접두어 제거, 드래그=3D 배치) */
   if(changed('env',[s.env,s.env_on,s.names])){
     const el=$('#envList');el.innerHTML='';
@@ -212,9 +223,18 @@ function render(s){
       const nm=shortNm(id,s.names);
       const c=document.createElement('div');c.className='thumbCard';
       c.draggable=true;c.title=id+' — 3D 화면으로 끌어다 놓으면 이동';
-      c.innerHTML=`<img src="/api/thumb/${encodeURIComponent(id)}" draggable="false">
+      const col=s.names[id]?.color||'#9aa4b2';
+      c.innerHTML=`<img src="/api/thumb/${encodeURIComponent(id)}?c=${
+          encodeURIComponent(col)}" draggable="false">
         <div class="thumbNm">${esc(nm)}</div>
-        <input type="checkbox"${s.env_on.includes(id)?' checked':''} title="표시">`;
+        <input type="checkbox"${s.env_on.includes(id)?' checked':''} title="표시">
+        <input type="color" class="thumbCol" value="${col}"
+          title="색 지정 (음성으로 '${esc(nm)}' 을 색으로 부를 수 있게)">`;
+      c.querySelector('.thumbCol').onchange=ev=>{
+        HASH.env=null;
+        call('set_name',id,s.names[id]?.name||'',ev.target.value);
+      };
+      c.querySelector('.thumbCol').onpointerdown=ev=>ev.stopPropagation();
       c.ondragstart=e=>{
         e.dataTransfer.setData('text/plain',id);
         e.dataTransfer.setDragImage(DRAG_BLANK,0,0);   // 납작한 고스트 대신

@@ -131,18 +131,30 @@
  },
  "macros": {},
  "robot_xy": [
-  0.0,
-  -0.4
+  -0.2200000082453092,
+  -0.08000000824530917
  ],
- "robot_yaw": 0.0,
+ "robot_yaw": 1.5707963267948966,
+ "env_off": {
+  "Industry_gyu_arm_20260721_-_docking_station-6": [
+   0.18000000176062947,
+   -0.14000000000000004,
+   0.0
+  ],
+  "Industry_gyu_arm_20260727_-_docking_station-5": [
+   0.24000000176062955,
+   -0.44000000469501205,
+   -4.71238898038469
+  ]
+ },
  "names": {
   "ppap": {
    "name": "",
-   "color": "#ff69b4"
+   "color": "#000080"
   },
   "Industry_gyu_arm_20260721_-_docking_station-6": {
-   "name": "\ub3c4\ud0b9 1\ubc88",
-   "color": "#6699e6"
+   "name": "",
+   "color": "#8080ff"
   },
   "Industry_gyu_arm_20260727_-_docking_station-5": {
    "name": "\ub3c4\ud0b91",
@@ -151,6 +163,10 @@
   "Industry_gyu_arm_20260727_-_plate_bottom-7": {
    "name": "",
    "color": "#400040"
+  },
+  "Industry_gyu_arm_20260727_-_seed_plate-1": {
+   "name": "",
+   "color": "#000080"
   }
  },
  "simple": {

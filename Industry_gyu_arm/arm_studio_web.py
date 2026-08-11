@@ -1460,12 +1460,14 @@ ROBOT_DXL=DXLRobot()
 # 기존 핸들러들은 전부 ROBOT.* 를 부른다. q 는 항상 STS 관절 공간이고,
 # DXL 쪽은 send 순간에 EE 매핑(map_sts_to_dxl)으로 변환된다.
 EXEC={'mode':'sts','miss':0}
+FORCE_SIM=[False]   # True 동안은 실행 로봇 설정과 무관하게 '무조건 시뮬'
+                    # (② 시뮬레이션 탭 미리보기가 켠다. 실물로는 절대 안 나감)
 class RobotMux:
     # mode='sim' = 시뮬레이션. 실물 통신을 전부 건너뛰고 3D/RViz 만 움직인다.
     #   -> _sts()/_dxl() 이 모두 False 가 되므로 아래 메서드들이 자동으로 무동작
-    def _sim(self): return EXEC['mode']=='sim'
-    def _sts(self): return EXEC['mode'] in ('sts','both')
-    def _dxl(self): return EXEC['mode'] in ('dxl','both') and DXL_OK
+    def _sim(self): return FORCE_SIM[0] or EXEC['mode']=='sim'
+    def _sts(self): return (not FORCE_SIM[0]) and EXEC['mode'] in ('sts','both')
+    def _dxl(self): return (not FORCE_SIM[0]) and EXEC['mode'] in ('dxl','both') and DXL_OK
     def connect(self):
         if self._sim(): return True          # 시뮬은 항상 '연결됨'
         ok=True
@@ -2330,6 +2332,9 @@ def plan_all(mode,axorder,check_coll=False):
     return segs,None,("\n".join(warns))
 
 def h_preview(kind,mode,axorder,speed,loop,coll=False):
+    """② 시뮬레이션 미리보기: 파이프라인 전체(첫 자세 이동 + 그리퍼 +
+    잡기/놓기 + 자세 간 경로)를 3D 에서만 재생한다.
+    FORCE_SIM 을 켜므로 실행 로봇이 무엇이든 실물로는 절대 안 나간다."""
     mode=resolve_mode(kind,mode)
     BTN('3D 미리보기',f'{mode} · {speed}')
     if RUNNING.is_set():
@@ -2351,21 +2356,60 @@ def h_preview(kind,mode,axorder,speed,loop,coll=False):
     if err: yield gr.update(),err; return
     pre=(cwarn+"\n") if cwarn else ""
     sp=float(speed.replace('x','')); STOP.clear(); RUNNING.set()
+    FORCE_SIM[0]=True
     try:
+        ps=pose_seq()
         while True:
-            for label,way,dt,offa,offb in segs:
+            seg_i=0; pose_i=0
+            for item in S['seq']:
+                if STOP.is_set():
+                    yield gr.update(),pre+"미리보기 정지"; return
+                if is_brick_item(item):
+                    # 잡기/놓기: 실물 실행과 같은 함수를 FORCE_SIM 으로 재생
+                    RUNNING.clear()          # do_grasp 가 자체적으로 잡는다
+                    if is_grasp_item(item):
+                        b=item[len(GRASP_PREFIX):]
+                        yield gr.update(),pre+f"미리보기: 잡기 {brick_label(b)}"
+                        msg=do_grasp(b)
+                    else:
+                        d=item[len(RELEASE_PREFIX):]
+                        yield gr.update(),pre+f"미리보기: 놓기 {dock_label(d)}"
+                        msg=do_release(d)
+                    RUNNING.set()
+                    yield gr.update(),pre+f"미리보기: {msg}"
+                    if '오류' in msg or '없습니다' in msg or '불가' in msg:
+                        yield gr.update(),pre+f"미리보기 중단: {msg}"; return
+                    continue
+                if is_grip_item(item):
+                    op=(item==GRIP_OPEN_ITEM)
+                    gq=list(CURRENT_Q); gq[5]=_j6_rad(op)
+                    ros_publish(gq,with_grip=True)
+                    yield gr.update(),pre+f"미리보기: 그리퍼 {'열기' if op else '닫기'}"
+                    time.sleep(0.4/sp)
+                    continue
+                # 자세 블록
+                if pose_i==0:
+                    # 첫 자세: 지금 시뮬 자세에서 그 자세까지 움직여 보여준다
+                    first=get_angles(item)
+                    way,dt=plan_joint_seq(list(CURRENT_Q),first)
+                    lab=f"첫 자세로 이동: {item}"
+                else:
+                    if seg_i>=len(segs): pose_i+=1; continue
+                    lab,way,dt,offa,offb=segs[seg_i]; seg_i+=1
+                pose_i+=1
                 dec=max(1,int(0.2/dt))          # 화면은 ~5fps (메쉬 렌더링)
                 for k,q in enumerate(way):
                     if STOP.is_set():
                         yield robot_fig(q),pre+"미리보기 정지"; return
                     ros_publish(q)
                     if k%dec==0 or k==len(way)-1:
-                        yield robot_fig(q),pre+f"미리보기: {label}"
+                        yield robot_fig(q),pre+f"미리보기: {lab}"
                     time.sleep(dt/sp)
                 time.sleep(0.4)
             if not loop: break
         yield gr.update(),pre+"미리보기 완료"
     finally:
+        FORCE_SIM[0]=False
         RUNNING.clear()
 
 def h_run(kind,mode,axorder,speed,loop,coll=False):
