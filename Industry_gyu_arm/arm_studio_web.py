@@ -3325,6 +3325,12 @@ def set_env_pose(oid,ox,oy,yaw):
     _macro_save()
     return True
 
+DRAG_ENV={'id':None}
+def h_env_drag(oid=''):
+    """썸네일 드래그 시작/끝. 뷰어가 이 id 의 메쉬를 커서에 붙여 보여준다."""
+    DRAG_ENV['id']=oid or None
+    return ''
+
 ENV_MOVE={'on':False,'id':None,'phase':0,'pin':None,'g1':None,'cands':[]}
 def emove_reset():
     ENV_MOVE.update(on=False,id=None,phase=0,pin=None,g1=None,cands=[])
@@ -4225,7 +4231,7 @@ toolMark.add(new THREE.Mesh(new THREE.SphereGeometry(0.006,16,12),
   new THREE.MeshBasicMaterial({color:0xff00cc,depthTest:false})));
 toolMark.add(makeAxes(0.05,2));
 toolMark.visible=false; world.add(toolMark);
-const loader=new STLLoader(); const objs={};
+const loader=new STLLoader(); const objs={}; window._objsDbg=objs;
 function ensure(id,color,scale){
   if(objs[id])return;
   objs[id]={mesh:null,tp:new THREE.Vector3(),tq:new THREE.Quaternion(),
@@ -4389,19 +4395,28 @@ ren.domElement.addEventListener('click',async ev=>{
 });
 
 // 우측 목록에서 설비 썸네일을 끌어다 놓으면 그 자리(20mm 스냅)로 이동
-ren.domElement.addEventListener('dragover',ev=>ev.preventDefault());
-ren.domElement.addEventListener('drop',async ev=>{
-  ev.preventDefault();
-  const id=ev.dataTransfer.getData('text/plain');
-  if(!id)return;
+// 드래그 중: 실제 STL 메쉬가 커서 밑 바닥 위치를 따라다닌다
+const dragEnv={on:false,x:0,y:0}; window._dragDbg=dragEnv;
+function floorXY(ev){
   const r=ren.domElement.getBoundingClientRect();
   mouse.x=((ev.clientX-r.left)/r.width)*2-1;
   mouse.y=-((ev.clientY-r.top)/r.height)*2+1;
   ray.setFromCamera(mouse,cam);
   const t=-ray.ray.origin.z/ray.ray.direction.z;   // z=0 바닥 평면
-  const px=ray.ray.origin.x+ray.ray.direction.x*t;
-  const py=ray.ray.origin.y+ray.ray.direction.y*t;
-  await fetch('/envdrag/'+encodeURIComponent(id)+'/'+px.toFixed(4)+','+py.toFixed(4));
+  return [ray.ray.origin.x+ray.ray.direction.x*t,
+          ray.ray.origin.y+ray.ray.direction.y*t];
+}
+ren.domElement.addEventListener('dragover',ev=>{
+  ev.preventDefault();
+  const p=floorXY(ev); dragEnv.on=true; dragEnv.x=p[0]; dragEnv.y=p[1];
+});
+ren.domElement.addEventListener('dragleave',()=>{dragEnv.on=false;});
+ren.domElement.addEventListener('drop',async ev=>{
+  ev.preventDefault(); dragEnv.on=false;
+  const id=ev.dataTransfer.getData('text/plain');
+  if(!id)return;
+  const p=floorXY(ev);
+  await fetch('/envdrag/'+encodeURIComponent(id)+'/'+p[0].toFixed(4)+','+p[1].toFixed(4));
 });
 async function poll(){
   try{
@@ -4415,7 +4430,18 @@ async function poll(){
         if(_o.mesh&&_o.col!==e.color){_o.col=e.color;_o.mesh.material.color.set(e.color);}}
       const o=e.off||[0,0,0], yw=e.yaw||0;
       const cy=Math.cos(yw), sy=Math.sin(yw);
-      setTarget(e.id,[cy,-sy,0,o[0], sy,cy,0,o[1], 0,0,1,o[2], 0,0,0,1]);
+      let ox=o[0], oy=o[1];
+      if(dragEnv.on&&st.dragid===e.id){
+        const _d=objs[e.id];
+        if(_d&&_d.mesh){
+          if(!_d.c0){_d.mesh.geometry.computeBoundingBox();
+            const bb=_d.mesh.geometry.boundingBox;
+            _d.c0=[(bb.min.x+bb.max.x)/2*_d.s,(bb.min.y+bb.max.y)/2*_d.s];}
+          ox=dragEnv.x-(cy*_d.c0[0]-sy*_d.c0[1]);
+          oy=dragEnv.y-(sy*_d.c0[0]+cy*_d.c0[1]);
+        }
+      }
+      setTarget(e.id,[cy,-sy,0,ox, sy,cy,0,oy, 0,0,1,o[2], 0,0,0,1]);
       objs[e.id].vis=e.v; objs[e.id].env=true; }
     // 삭제된 환경 오브젝트 정리
     for(const id in objs){
@@ -4534,6 +4560,7 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                                             'ok':nm in ok})
                 body=json.dumps({'pegs':pegs,'ptop':PLATE_TOP,'rmove':rmv,
                     'pegsel':PEG_VIEW.get('sel'),
+                    'dragid':DRAG_ENV['id'],
                     'links':links,'env':env,'ghosts':ghosts,
                     'psize':PLATE_SIZE,'sel':PLATE_EDIT.get('sel'),
                     'ee':f"x={p[0]*1000:.0f} y={p[1]*1000:.0f} z={p[2]*1000:.0f}mm",
@@ -4554,11 +4581,12 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                     rest=self.path[len('/envdrag/'):]
                     oid,xy=rest.rsplit('/',1)
                     xs,ys=xy.split(','); oid=unquote(oid)
-                    ok,msg=emove_start(oid)
-                    if not ok and msg is None:   # 핀 미검출 -> 예전 방식 이동
-                        ok,msg=move_env(oid,float(xs),float(ys))
-                        print(f"[설비 이동] {msg}")
-                    elif msg: print(f"[설비 배치] {msg}")
+                    # 어느 쪽이든 우선 드롭 지점 근처로 (20mm 스냅, 회전 유지)
+                    ok,msg=move_env(oid,float(xs),float(ys))
+                    if ok and len(env_pins_local(oid))>=2:
+                        ok,msg2=emove_start(oid)   # 그 자리에서 핀 선택
+                        if msg2: print(f"[설비 배치] {msg2}")
+                    elif msg: print(f"[설비 이동] {msg}")
                     self._send(200,'application/json',
                                json.dumps({'ok':bool(ok)}).encode())
                 except Exception as e:

@@ -152,6 +152,7 @@ SYNC = {
     'path_save':     core.h_path_save,
     'path_del':      core.h_path_del,
     'env':           core.h_env,               # ([ids])
+    'env_drag':      core.h_env_drag,          # (id | '') 드래그 시작/끝
     'plate_edit':    core.h_plate_edit,
     'plate_remove':  core.h_plate_remove,
     'plate_refresh': core.h_plate_refresh,
@@ -284,7 +285,7 @@ def api_state(sel: str = '', pose: str = ''):
                                {'prefer': 'x', 'clear_cm': 5.0, 'extra_cm': 5.0}),
     }
 
-# ================= STL 썸네일 (위에서 본 실루엣 SVG) =================
+# ================= STL 썸네일 (입체: 등각투영 + 면 음영 SVG) =================
 _THUMB = {}
 @app.get('/api/thumb/{oid}')
 def api_thumb(oid: str):
@@ -292,34 +293,50 @@ def api_thumb(oid: str):
     if oid in _THUMB:
         return Response(_THUMB[oid], media_type='image/svg+xml')
     try:
-        import numpy as np, trimesh
+        import math, numpy as np, trimesh
         path, scale = core.MESH_REG[oid]
         m = trimesh.load(path)
         v = np.asarray(m.vertices, float) * scale
         f = np.asarray(m.faces, int)
-        if len(f) > 600:                        # 무거운 메쉬는 줄여서
+        if len(f) > 900:                        # 무거운 메쉬는 줄여서
             import fast_simplification as fs
-            v2, f2 = fs.simplify(v.astype(np.float32), f, target_count=600)
+            v2, f2 = fs.simplify(v.astype(np.float32), f, target_count=900)
             v, f = np.asarray(v2, float), np.asarray(f2, int)
-        lo = v.min(0); hi = v.max(0)
-        w = max(hi[0]-lo[0], 1e-6); h = max(hi[1]-lo[1], 1e-6)
-        tris = []
-        for tri in f:
-            p = v[tri]
-            pts = ' '.join(f"{(x-lo[0])/w*100:.1f},{(hi[1]-y)/h*100:.1f}"
-                           for x, y, _ in p)
-            tris.append(f'<polygon points="{pts}"/>')
+        nrm = trimesh.Trimesh(vertices=v, faces=f, process=False).face_normals
+        # 등각투영: 위 30도에서 대각으로 내려다본 모습
+        c30, s30 = math.cos(math.radians(30)), math.sin(math.radians(30))
+        px = (v[:, 0] - v[:, 1]) * c30
+        py = (v[:, 0] + v[:, 1]) * s30 - v[:, 2]
+        view = np.array([1.0, 1.0, 1.0]) / math.sqrt(3)   # 카메라 쪽
+        light = np.array([0.3, 0.8, 0.52])                # 위-옆 조명
+        light /= np.linalg.norm(light)
+        vis = nrm @ view > 0                              # 뒷면 제거
+        fv = f[vis]
+        depth = v[:, 0] + v[:, 1] + v[:, 2]
+        order = np.argsort(depth[fv].mean(axis=1))        # 먼 면부터 (painter)
         col = '#9aa4b2'
         for e in core.ENV_SHOW:
             if e['id'] == oid: col = e.get('color', col)
-        svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" '
-               f'preserveAspectRatio="xMidYMid meet">'
-               f'<g fill="{col}" fill-opacity="0.9" stroke="none">'
+        r0, g0, b0 = (int(col[i:i+2], 16) for i in (1, 3, 5))
+        sh = nrm[vis] @ light
+        lo = np.array([px.min(), py.min()])
+        span = max(float(np.ptp(px)), float(np.ptp(py)), 1e-6)
+        tris = []
+        for k in order:
+            tri = fv[k]
+            b = 0.38 + 0.62 * max(0.0, float(sh[k]))     # 음영 밝기
+            c = f'rgb({int(r0*b)},{int(g0*b)},{int(b0*b)})'
+            pts = ' '.join(
+                f"{(px[i]-lo[0])/span*100:.1f},{(py[i]-lo[1])/span*100:.1f}"
+                for i in tri)
+            tris.append(f'<polygon points="{pts}" fill="{c}"/>')
+        svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="-4 -4 108 108" '
+               f'preserveAspectRatio="xMidYMid meet"><g stroke="none">'
                + ''.join(tris) + '</g></svg>')
         _THUMB[oid] = svg
         return Response(svg, media_type='image/svg+xml')
-    except Exception as e:
-        return Response(f'<svg xmlns="http://www.w3.org/2000/svg"/>',
+    except Exception:
+        return Response('<svg xmlns="http://www.w3.org/2000/svg"/>',
                         media_type='image/svg+xml')
 
 @app.get('/api/map', response_class=HTMLResponse)

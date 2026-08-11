@@ -77,6 +77,13 @@ function changed(key,data){
 function opts(el,list,cur){
   el.innerHTML=list.map(v=>`<option${v===cur?' selected':''}>${esc(v)}</option>`).join('');
 }
+/* 드래그용 투명 1px 이미지 + 서버에 드래그 중인 설비 id 알림 */
+const DRAG_BLANK=new Image();
+DRAG_BLANK.src='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+const dragPing=id=>fetch('/api/call',{method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({fn:'env_drag',args:[id]})}).catch(()=>{});
+
 function shortNm(id,names){
   return names?.[id]?.name||
     String(id).replace(/Industry_gyu_arm_\d*_?/,'').replace(/^\d{8}_?/,'')
@@ -208,7 +215,12 @@ function render(s){
       c.innerHTML=`<img src="/api/thumb/${encodeURIComponent(id)}" draggable="false">
         <div class="thumbNm">${esc(nm)}</div>
         <input type="checkbox"${s.env_on.includes(id)?' checked':''} title="표시">`;
-      c.ondragstart=e=>e.dataTransfer.setData('text/plain',id);
+      c.ondragstart=e=>{
+        e.dataTransfer.setData('text/plain',id);
+        e.dataTransfer.setDragImage(DRAG_BLANK,0,0);   // 납작한 고스트 대신
+        dragPing(id);                                  // 3D 안 실제 STL 이 따라옴
+      };
+      c.ondragend=()=>dragPing('');
       c.querySelector('input').onchange=()=>{
         const on=$$('#envList .thumbCard input:checked')
           .map(i=>i.closest('.thumbCard').dataset.id);
