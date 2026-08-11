@@ -914,7 +914,7 @@ def build_obs_grid(force=False):
         path,scale=MESH_REG[mid]
         mk=np.zeros((G2_N,G2_N),bool)
         _off=e.get('offset',(0,0,0))
-        _fill_mesh2d(mk,path,scale,off=(_off[0],_off[1]))
+        _fill_mesh2d(mk,path,scale,off=(_off[0],_off[1]),yaw=e.get('yaw',0.0))
         per[mid]=mk; g|=mk
     _OBS['ids']=per
     # 로봇 base 발자국 (m 단위 링크 메시, base_link 프레임 그대로)
@@ -2152,7 +2152,10 @@ def _coll_env_mgr():
             path,scale=MESH_REG[mid]
             v,f=_load_dec(path,scale=scale)
             _COLL_ENV[mid]=_tm.Trimesh(vertices=v,faces=f,process=False)
-        m.add_object(mid,_COLL_ENV[mid]); n+=1
+        _yw=float(e.get('yaw',0.0)); _of=e.get('offset',(0,0,0))
+        _c,_s2=math.cos(_yw),math.sin(_yw)
+        m.add_object(mid,_COLL_ENV[mid],transform=np.array(
+            [[_c,-_s2,0,_of[0]],[_s2,_c,0,_of[1]],[0,0,1,_of[2]],[0,0,0,1]])); n+=1
     return m if n else None
 def check_collision(way,step=2):
     """경로 웨이포인트들에서 로봇(l2~l6) vs 환경 STL 충돌 검사. [(링크,STL)] 반환."""
@@ -3262,6 +3265,129 @@ def rmove_click_peg(x,y):
     return False
 
 
+# ===== 설비 2핀 배치 (로봇 이동과 같은 방식) =====
+# 드래그 드롭 -> 다리(핀) 클릭 -> 바닥 목심 클릭 -> 하늘색 후보 클릭 = 자리+회전 확정
+_EPINS={}
+def env_pins_local(oid):
+    """설비 STL 바닥의 목심 다리(핀) 중심들 (로컬 좌표 m). 지름 ~10mm 검출."""
+    if oid in _EPINS: return _EPINS[oid]
+    pins=[]
+    try:
+        from scipy.cluster.hierarchy import fclusterdata as _fc
+        path,scale=MESH_REG[oid]
+        m=trimesh.load(path)
+        v=np.asarray(m.vertices)*scale*1000.0     # mm
+        n=m.face_normals; f=np.asarray(m.faces)
+        zmin=v[:,2].min()
+        w=v[np.unique(f[np.abs(n[:,2])<0.25])]
+        w=w[np.abs(w[:,2]-zmin)<4]
+        if len(w):
+            lab=_fc(w[:,:2],t=3.0,criterion='distance')
+            for k in set(lab):
+                g=w[lab==k]
+                if len(g)<6: continue
+                c=g[:,:2].mean(0); r=np.linalg.norm(g[:,:2]-c,axis=1)
+                if 4.0<np.median(r)<6.0:          # 지름 8~12mm
+                    pins.append(np.array([c[0]/1000.0,c[1]/1000.0,0.0]))
+        if pins:
+            print(f"설비 핀 검출 {disp_name(oid)}: "
+                  f"{[list(np.round(q[:2]*1000,1)) for q in pins]} mm")
+    except Exception as e:
+        print(f"설비 핀 검출 실패({oid}): {e}")
+    _EPINS[oid]=pins
+    return pins
+
+def _rz2(yaw):
+    c,si=math.cos(yaw),math.sin(yaw)
+    return np.array([[c,-si],[si,c]])
+
+def _env_ent(oid):
+    for e in ENV_SHOW:
+        if e['id']==oid: return e
+    return None
+
+def env_pins_world(oid):
+    e=_env_ent(oid) or {}
+    R=_rz2(float(e.get('yaw',0.0)))
+    off=np.asarray(e.get('offset',(0,0,0)),float)
+    return [np.array([*(R@q[:2]+off[:2]),0.0]) for q in env_pins_local(oid)]
+
+def set_env_pose(oid,ox,oy,yaw):
+    """설비를 오프셋(ox,oy)+회전 yaw 로. 캐시 무효화 + 영속화."""
+    e=_env_ent(oid)
+    if e is None: return False
+    e['offset']=(float(ox),float(oy),0.0); e['yaw']=float(yaw)
+    _OBS['grid']=None; _clear_plan_cache()
+    if 'PEG_TABLE' in globals():
+        PEG_TABLE['key']=None; _PEG_CACHE.clear()
+    with LOCK:
+        S.setdefault('env_off',{})[oid]=[float(ox),float(oy),float(yaw)]
+    _macro_save()
+    return True
+
+ENV_MOVE={'on':False,'id':None,'phase':0,'pin':None,'g1':None,'cands':[]}
+def emove_reset():
+    ENV_MOVE.update(on=False,id=None,phase=0,pin=None,g1=None,cands=[])
+
+def emove_start(oid):
+    """드롭 시 호출. 핀이 2개 이상이면 배치 모드 시작, 아니면 (False,None)=폴백."""
+    if 'plate' in str(oid).lower(): return False,'플레이트는 더블클릭 확장으로만'
+    if _env_ent(oid) is None: return False,f'설비를 찾을 수 없습니다: {oid}'
+    if len(env_pins_local(oid))<2: return False,None
+    rmove_reset()                          # 로봇 배치와 동시 진행 금지
+    ENV_MOVE.update(on=True,id=oid,phase=0,pin=None,g1=None,cands=[])
+    print(f"[설비 배치] {disp_name(oid)} — ① 주황 다리(핀) 클릭 "
+          f"② 꽂을 목심 클릭 ③ 남은 다리가 갈 목심(하늘색) 클릭")
+    return True,None
+
+def _emove_pair(oid,a):
+    """핀 a 의 짝이 될 두 번째 기준 핀: 20mm 배수 거리 우선, 그 중 최단."""
+    pins=env_pins_local(oid); best=None; bk=None
+    for j,q in enumerate(pins):
+        if j==a: continue
+        d=float(np.linalg.norm((q-pins[a])[:2]))*1000.0
+        key=(0 if abs(d/20.0-round(d/20.0))<0.15 else 1, d)
+        if bk is None or key<bk: best,bk=j,key
+    return best
+
+def emove_click_pin(idx):
+    ENV_MOVE.update(phase=1,pin=int(idx),g1=None,cands=[])
+    return True
+
+def emove_click_peg(x,y):
+    oid=ENV_MOVE['id']; pins=env_pins_local(oid)
+    a=int(ENV_MOVE.get('pin') or 0)
+    b=_emove_pair(oid,a)
+    if b is None: return False
+    if ENV_MOVE['phase']==1:
+        d=float(np.linalg.norm((pins[b]-pins[a])[:2]))
+        cands=[]
+        for dx,dy in ((d,0),(-d,0),(0,d),(0,-d)):
+            gx,gy=x+dx,y+dy
+            if _on_plate(gx,gy): cands.append([round(gx,4),round(gy,4)])
+        if not cands:
+            print("[설비 배치] 그 목심 옆엔 남은 다리가 갈 자리가 없습니다 — 다른 목심을 고르세요")
+            return False
+        ENV_MOVE['g1']=[float(x),float(y)]
+        ENV_MOVE.update(phase=2,cands=cands)
+        return True
+    if ENV_MOVE['phase']==2:
+        hit=None
+        for gx,gy in ENV_MOVE['cands']:
+            if math.hypot(gx-x,gy-y)<0.005: hit=(gx,gy); break
+        if hit is None: return False
+        g1=np.array(ENV_MOVE['g1']); g2=np.array(hit)
+        pa,pb=pins[a][:2],pins[b][:2]
+        yaw=math.atan2(g2[1]-g1[1],g2[0]-g1[0])-math.atan2(pb[1]-pa[1],pb[0]-pa[0])
+        yaw=round(yaw/(math.pi/2))*(math.pi/2)
+        off=g1-_rz2(yaw)@pa
+        set_env_pose(oid,off[0],off[1],yaw)
+        print(f"[설비 배치] {disp_name(oid)}: 다리{a+1}->"
+              f"({g1[0]*1000:.0f},{g1[1]*1000:.0f})mm 회전={math.degrees(yaw):.0f}도")
+        emove_reset()
+        return True
+    return False
+
 def _robot_pos_str():
     return (f"x={BASE_OFF[0]*1000:+.0f}mm  y={BASE_OFF[1]*1000:+.0f}mm"
             f"  회전={math.degrees(BASE_YAW[0]):.0f}도")
@@ -3282,7 +3408,9 @@ def robot_to_tile(t):
 # 시작 시 저장된 로봇 위치 복원
 for _oid,_o in (S.get('env_off') or {}).items():
     for _e in ENV_SHOW:
-        if _e['id']==_oid: _e['offset']=(float(_o[0]),float(_o[1]),0.0)
+        if _e['id']==_oid:
+            _e['offset']=(float(_o[0]),float(_o[1]),0.0)
+            if len(_o)>2: _e['yaw']=float(_o[2])
 if S.get('robot_xy'):
     set_robot_pose(S['robot_xy'][0],S['robot_xy'][1],
                    float(S.get('robot_yaw',0.0)),save=False)
@@ -3692,7 +3820,7 @@ def h_peg_save_pose(name,height_mm,newname):
             f"자세 '{nm}' 등록 — [이동] 탭에서 파이프라인 블록으로 쓸 수 있습니다")
 
 def h_robot_move_mode(on):
-    ROBOT_MOVE['on']=bool(on); rmove_reset()
+    ROBOT_MOVE['on']=bool(on); rmove_reset(); emove_reset()
     if on: PLATE_EDIT['on']=False          # 두 클릭 모드 동시 금지
     msg=('로봇 이동 모드 ON — ① 로봇의 주황 핀 클릭 ② 꽂을 목심 클릭 '
          '③ 남은 핀이 갈 목심(하늘색) 클릭' if on else '로봇 이동 모드 OFF')
@@ -3775,11 +3903,13 @@ def docking_top(did):
     try: mm=trimesh.load(path)
     except Exception: return None
     v=np.asarray(mm.vertices)*scale
-    off=np.zeros(3)
+    off=np.zeros(3); yaw=0.0
     for e in ENV_SHOW:
-        if e['id']==did: off=np.asarray(e.get('offset',(0,0,0)),float)
-    return (float(v[:,0].mean()+off[0]), float(v[:,1].mean()+off[1]),
-            float(v[:,2].max()+off[2]))
+        if e['id']==did:
+            off=np.asarray(e.get('offset',(0,0,0)),float)
+            yaw=float(e.get('yaw',0.0))
+    cx,cy=_rz2(yaw)@np.array([v[:,0].mean(),v[:,1].mean()])
+    return (float(cx+off[0]), float(cy+off[1]), float(v[:,2].max()+off[2]))
 
 def place_brick_on_docking(bid,did):
     """물체를 도킹 스테이션 위에 세운다 (중심축 일치, 바닥=도킹 윗면)."""
@@ -3986,15 +4116,11 @@ def move_env(oid,x,y):
         c=np.asarray(mm.vertices,float).mean(axis=0)*scale
     except Exception as e:
         return False,f'메쉬 읽기 실패: {e}'
-    off=np.array([x-c[0],y-c[1]])
+    yaw=float(ent.get('yaw',0.0))
+    cw=_rz2(yaw)@np.asarray(c[:2],float)           # 회전 반영한 중심
+    off=np.array([x-cw[0],y-cw[1]])
     off=np.round(off/PEG_PITCH)*PEG_PITCH          # 20mm 스냅 = 목심 정렬 유지
-    ent['offset']=(float(off[0]),float(off[1]),0.0)
-    _COLL_ENV.pop(oid,None)
-    _OBS['grid']=None; _clear_plan_cache()
-    PEG_TABLE['key']=None; _PEG_CACHE.clear()
-    with LOCK:
-        S.setdefault('env_off',{})[oid]=[float(off[0]),float(off[1])]
-    _macro_save()
+    set_env_pose(oid,off[0],off[1],yaw)
     return True,(f"{disp_name(oid)} 이동 -> 오프셋 "
                  f"({off[0]*1000:+.0f},{off[1]*1000:+.0f})mm (목심 정렬)")
 
@@ -4243,6 +4369,7 @@ ren.domElement.addEventListener('click',async ev=>{
     if(hg.length){const g=hg[0].object.userData.gxy;
       await fetch('/rpeg/'+g[0]+','+g[1]);
       rmGroup.userData.key=null;return;}
+    if(rmPins.length){fetch('/emoff');rmGroup.userData.key=null;}
   }
   if(pegHover){                            // 목심 선택 (도달 가능한 것만)
     if(!pegHover.userData.ok) return;      // 빨강은 클릭 무시
@@ -4274,7 +4401,7 @@ ren.domElement.addEventListener('drop',async ev=>{
   const t=-ray.ray.origin.z/ray.ray.direction.z;   // z=0 바닥 평면
   const px=ray.ray.origin.x+ray.ray.direction.x*t;
   const py=ray.ray.origin.y+ray.ray.direction.y*t;
-  await fetch('/envmove/'+encodeURIComponent(id)+'/'+px.toFixed(4)+','+py.toFixed(4));
+  await fetch('/envdrag/'+encodeURIComponent(id)+'/'+px.toFixed(4)+','+py.toFixed(4));
 });
 async function poll(){
   try{
@@ -4286,8 +4413,9 @@ async function poll(){
       const _o=objs[e.id];
       if(_o){_o.plate=!!e.plate;
         if(_o.mesh&&_o.col!==e.color){_o.col=e.color;_o.mesh.material.color.set(e.color);}}
-      const o=e.off||[0,0,0];
-      setTarget(e.id,[1,0,0,o[0], 0,1,0,o[1], 0,0,1,o[2], 0,0,0,1]);
+      const o=e.off||[0,0,0], yw=e.yaw||0;
+      const cy=Math.cos(yw), sy=Math.sin(yw);
+      setTarget(e.id,[cy,-sy,0,o[0], sy,cy,0,o[1], 0,0,1,o[2], 0,0,0,1]);
       objs[e.id].vis=e.v; objs[e.id].env=true; }
     // 삭제된 환경 오브젝트 정리
     for(const id in objs){
@@ -4360,6 +4488,7 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                                 'scale':MESH_REG[e['id']][1],
                                 'v':e.get('visible',True),
                                 'off':list(e.get('offset',(0,0,0))),
+                                'yaw':float(e.get('yaw',0.0)),
                                 'tile':list(e['tile']) if e.get('tile') else None,
                                 'plate':'plate' in e['id'].lower()})
                 if PLATE_EDIT['on']:
@@ -4369,7 +4498,16 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                 else:
                     ghosts=[]   # 로봇 이동은 핀/목심 클릭 (타일 강조 없음)
                 rmv=None
-                if ROBOT_MOVE['on']:
+                if ENV_MOVE['on']:               # 설비 2핀 배치 (뷰어 표시 공유)
+                    rmv={'phase':ENV_MOVE['phase'],
+                         'pin':ENV_MOVE.get('pin'),
+                         'pins':[[float(q[0]),float(q[1])]
+                                 for q in env_pins_world(ENV_MOVE['id'])],
+                         'pegs':([] if ENV_MOVE['phase']==0 else
+                                 (ENV_MOVE['cands'] if ENV_MOVE['phase']==2
+                                  else [[x,y] for x,y in _pegs_all_world()])),
+                         'ptop':PLATE_TOP}
+                elif ROBOT_MOVE['on']:
                     rmv={'phase':ROBOT_MOVE['phase'],
                          'pin':ROBOT_MOVE.get('pin'),
                          'pins':[[float(p[0]),float(p[1])] for p in robot_pins_world()],
@@ -4405,6 +4543,26 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                             f"z={_tp[2]*1000:.0f}mm" if TOOL_HAS else None)
                     }).encode()
                 self._send(200,'application/json',body)
+            elif self.path=='/emoff':
+                if ENV_MOVE['on']:
+                    print(f"[설비 배치] 취소: {disp_name(ENV_MOVE['id'])}")
+                    emove_reset()
+                self._send(200,'application/json',b'{"ok":true}')
+            elif self.path.startswith('/envdrag/'):
+                try:
+                    from urllib.parse import unquote
+                    rest=self.path[len('/envdrag/'):]
+                    oid,xy=rest.rsplit('/',1)
+                    xs,ys=xy.split(','); oid=unquote(oid)
+                    ok,msg=emove_start(oid)
+                    if not ok and msg is None:   # 핀 미검출 -> 예전 방식 이동
+                        ok,msg=move_env(oid,float(xs),float(ys))
+                        print(f"[설비 이동] {msg}")
+                    elif msg: print(f"[설비 배치] {msg}")
+                    self._send(200,'application/json',
+                               json.dumps({'ok':bool(ok)}).encode())
+                except Exception as e:
+                    self._send(400,'text/plain',str(e).encode())
             elif self.path.startswith('/envmove/'):
                 try:
                     from urllib.parse import unquote
@@ -4418,12 +4576,14 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                 except Exception as e:
                     self._send(400,'text/plain',str(e).encode())
             elif self.path.startswith('/rpin/'):
-                rmove_click_pin(int(self.path.rsplit('/',1)[1]))
+                _i=int(self.path.rsplit('/',1)[1])
+                (emove_click_pin if ENV_MOVE['on'] else rmove_click_pin)(_i)
                 self._send(200,'application/json',b'{"ok":true}')
             elif self.path.startswith('/rpeg/'):
                 try:
                     xs,ys=self.path.rsplit('/',1)[1].split(',')
-                    ok=rmove_click_peg(float(xs),float(ys))
+                    ok=(emove_click_peg if ENV_MOVE['on']
+                        else rmove_click_peg)(float(xs),float(ys))
                     self._send(200,'application/json',
                                json.dumps({'ok':bool(ok)}).encode())
                 except Exception:
