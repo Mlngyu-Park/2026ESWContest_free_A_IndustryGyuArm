@@ -233,17 +233,7 @@ async function boot(){
 
   /* 뷰어 */
   const host=location.hostname;
-  const v3d=`http://${host}:${META.viewer_port}/`;
-  const vrviz=`http://${host}:${META.rviz_port}/vnc.html?autoconnect=true&resize=scale`;
-  $('#viewer').src=v3d;
-  if(META.rviz_ok){
-    $('#viewSwitch').classList.remove('hidden');
-    $$('#viewSwitch button').forEach(b=>b.onclick=()=>{
-      $$('#viewSwitch button').forEach(x=>x.classList.remove('on'));
-      b.classList.add('on');
-      $('#viewer').src=b.dataset.v==='rviz'?vrviz:v3d;
-    });
-  }
+  $('#viewer').src=`http://${host}:${META.viewer_port}/`;   // 3D 뷰 전용 (RViz 제거)
 
   /* 전광판 클릭 = 전체 로그 오버레이 */
   $('#ticker').onclick=()=>$('#logOverlay').classList.remove('hidden');
