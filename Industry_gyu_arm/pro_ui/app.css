@@ -232,6 +232,20 @@ output{color:var(--accent);font-weight:700;margin:0 .25rem;
 .checkList{display:flex;flex-direction:column;gap:.2rem;margin-bottom:.55rem;
   max-height:11rem;overflow-y:auto}
 
+/* 설비 썸네일 카드 (드래그해서 3D로) */
+.thumbList{display:grid;grid-template-columns:repeat(auto-fill,minmax(6.2rem,1fr));
+  gap:.45rem;margin-bottom:.55rem;max-height:14rem;overflow-y:auto}
+.thumbCard{position:relative;display:flex;flex-direction:column;align-items:center;
+  gap:.25rem;padding:.45rem .3rem .35rem;cursor:grab;
+  background:#12151c;border:1px solid var(--line);border-radius:.6rem;
+  user-select:none}
+.thumbCard:hover{border-color:var(--acc,#5b8cff)}
+.thumbCard:active{cursor:grabbing}
+.thumbCard img{width:3.6rem;height:3.6rem;object-fit:contain;pointer-events:none}
+.thumbCard .thumbNm{font-size:.68rem;color:var(--dim);text-align:center;
+  word-break:break-all;line-height:1.15}
+.thumbCard input[type=checkbox]{position:absolute;top:.3rem;right:.3rem}
+
 /* 맵 */
 #mapBox{margin-bottom:.6rem}
 #mapBox svg{border-radius:.6rem}

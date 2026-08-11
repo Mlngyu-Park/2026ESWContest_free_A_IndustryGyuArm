@@ -15,7 +15,7 @@ ARM STUDIO WEB - 브라우저 통합 UI (Gradio). 파일 하나로 전부.
   - 시퀀스 편집 + 이동방식 4종 + 속도 + 루프
   - PREVIEW(3D 애니메이션) / RUN(실물) / STOP(즉시 토크 OFF)
 """
-import os, sys, json, math, time, struct, threading
+import os, sys, json, math, time, struct, threading, re
 import logging
 
 # 브라우저가 업로드 중 연결을 끊으면 나는 무해한 예외 로그 억제
@@ -248,21 +248,28 @@ if TOOL_HAS:
 def tool_pos(q):
     """월드 기준 툴 중심 좌표 (axis_7). j6 프레임에서 TOOL_OFF 만큼 이동."""
     T=CHAIN.forward_kinematics([0]+list(q))
-    return T[:3,3]+T[:3,:3]@TOOL_OFF+BASE_OFF
+    return l2w(T[:3,3]+T[:3,:3]@TOOL_OFF)
 # ===== 로봇 베이스 위치 (플레이트 홈 스냅) =====
 # 로봇을 플레이트 위 원하는 타일에 재배치할 수 있다.
 #   - 내부 기구학(CHAIN)은 항상 로봇 로컬 좌표로 푼다
 #   - fk 결과는 월드로 (+BASE_OFF), IK 목표는 로컬로 (-BASE_OFF) 변환
 #   -> 나머지 코드(맵/충돌/간편이동)는 전부 월드 좌표라 수정 불필요
 BASE_OFF=np.zeros(3)          # 월드 기준 로봇 base 오프셋 (z 는 항상 0)
+BASE_YAW=[0.0]                # 월드 기준 로봇 회전 (rad, 90도 단위. 2핀 배치용)
+def _yawR():
+    c,si=math.cos(BASE_YAW[0]),math.sin(BASE_YAW[0])
+    return np.array([[c,-si,0],[si,c,0],[0,0,1]])
+def l2w(p):  return _yawR()@np.asarray(p,float)+BASE_OFF
+def w2l(p):  return _yawR().T@(np.asarray(p,float)-BASE_OFF)
+def w2l_v(v):return _yawR().T@np.asarray(v,float)   # 방향 벡터 (평행이동 없음)
 def _base_T():
-    T=np.eye(4); T[:3,3]=BASE_OFF; return T
+    T=np.eye(4); T[:3,:3]=_yawR(); T[:3,3]=BASE_OFF; return T
 def fk(q):
     T=CHAIN.forward_kinematics([0]+list(q))
-    return T[:3,3]+BASE_OFF, T[:3,:3].copy()
+    return l2w(T[:3,3]), _yawR()@T[:3,:3]
 def fk_points(q):
     frames=CHAIN.forward_kinematics([0]+list(q),full_kinematics=True)
-    return np.array([f[:3,3] for f in frames])+BASE_OFF
+    return np.array([l2w(f[:3,3]) for f in frames])
 
 def _read_stl(path,maxtri=20000):
     with open(path,'rb') as f:
@@ -370,7 +377,7 @@ def plan_ee_line(qa,qb,dens=1,rotmode='blend'):
         elif rotmode=='after':  frac=0.0
         else:                   frac=te
         zt=_rot(axz,angz*frac)@z0
-        sol=CHAIN.inverse_kinematics(target_position=pt-BASE_OFF,target_orientation=zt,
+        sol=CHAIN.inverse_kinematics(target_position=w2l(pt),target_orientation=w2l_v(zt),
                                      orientation_mode='Z',initial_position=[0]+q)
         qn=list(sol[1:]); pchk,_=fk(qn)
         if np.linalg.norm(pchk-pt)>0.004: return None
@@ -392,7 +399,7 @@ def _rot_only(way,q,pos,z0,axz,angz,f0,f1,dens):
     for k in range(1,n+1):
         t=k/n; te=t*t*(3-2*t)
         zt=_rot(axz,angz*(f0+(f1-f0)*te))@z0
-        sol=CHAIN.inverse_kinematics(target_position=pos-BASE_OFF,target_orientation=zt,
+        sol=CHAIN.inverse_kinematics(target_position=w2l(pos),target_orientation=w2l_v(zt),
                                      orientation_mode='Z',initial_position=[0]+q)
         qn=list(sol[1:]); pchk,_=fk(qn)
         if np.linalg.norm(pchk-pos)>0.004: return None
@@ -425,7 +432,7 @@ def plan_ee_axis(qa,qb,order,dens=1,rotmode='blend'):
             elif rotmode=='after':  frac=0.0      # 아직 회전 안 함 -> 유지
             else:                   frac=(traveled+abs(dist)*te)/total
             zt=_rot(axz,angz*frac)@z0
-            sol=CHAIN.inverse_kinematics(target_position=pt-BASE_OFF,target_orientation=zt,
+            sol=CHAIN.inverse_kinematics(target_position=w2l(pt),target_orientation=w2l_v(zt),
                                          orientation_mode='Z',initial_position=[0]+q)
             qn=list(sol[1:]); pchk,_=fk(qn)
             if np.linalg.norm(pchk-pt)>0.004: return None
@@ -518,7 +525,7 @@ def plan_ee_level(qa,qb,order,dens=1,down=None):
         for k in range(1,n+1):
             t=k/n; te=t*t*(3-2*t)
             pt=cur.copy(); pt[ai]+=dist*te
-            sol=CHAIN.inverse_kinematics(target_position=pt-BASE_OFF,
+            sol=CHAIN.inverse_kinematics(target_position=w2l(pt),
                                          target_orientation=z_target,
                                          orientation_mode='Z',
                                          initial_position=[0]+q)
@@ -749,7 +756,7 @@ def ik_tool_fast(pt,j5,j6):
     """해석적 IK. 수평유지 + 툴 중심 기준. 실패하면 None (호출측이 수치로 폴백).
     반복 없음 - 공식 한 번."""
     if not _analytic_setup(): return None
-    tgt=np.asarray(pt,float)-BASE_OFF
+    tgt=np.asarray(w2l(pt),float)
     o1=_AN['o1']; d=tgt[:2]-o1
     r=float(np.linalg.norm(d))
     if r<1e-6: return None
@@ -810,7 +817,7 @@ def ik_level(pt,seeds,j5,j6):
     for s in seeds:
         init=[0.0]+list(s); init[5]=j5; init[6]=j6
         try:
-            sol=ch.inverse_kinematics(target_position=tgt-BASE_OFF,
+            sol=ch.inverse_kinematics(target_position=w2l(tgt),
                                       target_orientation=_UPV,
                                       orientation_mode='Z',
                                       initial_position=init)
@@ -878,11 +885,14 @@ def _pt_in_tri(p,tri):
     return not(neg and pos)
 
 _OBS={'grid':None,'dist':None,'base':None,'ids':{}}
-def _fill_mesh2d(g,path,scale,off=(0.0,0.0)):
+def _fill_mesh2d(g,path,scale,off=(0.0,0.0),yaw=0.0):
     """메시를 위에서 본 모양으로 격자 g 에 채운다. off=월드 평행이동(x,y)."""
     try: mm=trimesh.load(path)
     except Exception: return
     v=np.asarray(mm.vertices,float)*scale
+    if yaw:
+        c,si=math.cos(yaw),math.sin(yaw)
+        v[:,:2]=v[:,:2]@np.array([[c,si],[-si,c]])
     v[:,0]+=off[0]; v[:,1]+=off[1]
     f=np.asarray(mm.faces,int)
     for tri in f:
@@ -903,13 +913,14 @@ def build_obs_grid(force=False):
         if 'plate_bottom' in mid.lower(): continue     # 바닥은 장애물 아님
         path,scale=MESH_REG[mid]
         mk=np.zeros((G2_N,G2_N),bool)
-        _fill_mesh2d(mk,path,scale)
+        _off=e.get('offset',(0,0,0))
+        _fill_mesh2d(mk,path,scale,off=(_off[0],_off[1]))
         per[mid]=mk; g|=mk
     _OBS['ids']=per
     # 로봇 base 발자국 (m 단위 링크 메시, base_link 프레임 그대로)
     gb=np.zeros((G2_N,G2_N),bool)
     bp=os.path.join(MESH_DIR,'base_link.STL')
-    if os.path.exists(bp): _fill_mesh2d(gb,bp,1.0,off=(BASE_OFF[0],BASE_OFF[1]))
+    if os.path.exists(bp): _fill_mesh2d(gb,bp,1.0,off=(BASE_OFF[0],BASE_OFF[1]),yaw=BASE_YAW[0])
     _OBS['base']=gb
     # 거리장 (BFS, 칸 단위) - "장애물에서 먼 칸" 선호에 사용. base 도 포함
     import collections
@@ -1736,9 +1747,11 @@ _RANGES=[[_mid[k]-_span/2,_mid[k]+_span/2] for k in range(3)]
 _RANGES[2][0]=min(0.0,lo[2])   # 바닥은 0부터
 
 def link_frames(q):
-    fr=[f.copy() for f in
-        CHAIN.forward_kinematics([0]+list(q),full_kinematics=True)]
-    for f in fr: f[:3,3]+=BASE_OFF
+    R=_yawR()
+    fr=[]
+    for f in CHAIN.forward_kinematics([0]+list(q),full_kinematics=True):
+        g=f.copy(); g[:3,:3]=R@g[:3,:3]; g[:3,3]=R@g[:3,3]+BASE_OFF
+        fr.append(g)
     return fr
 
 def robot_fig(q):
@@ -3052,6 +3065,8 @@ try:
     S['rotmodes']=_d.get('rotmodes',{})
     S['macros']=_d.get('macros',{})
     if _d.get('robot_xy'): S['robot_xy']=_d['robot_xy']
+    if _d.get('robot_yaw') is not None: S['robot_yaw']=_d['robot_yaw']
+    if _d.get('env_off'): S['env_off']=_d['env_off']
     S['names']=_d.get('names',{})
     if not any(p['name']=='base' for p in S['poses']):
         S['poses'].insert(0,{'name':'base','angles':[0.0]*6,'offset':[0.0]*6})
@@ -3119,20 +3134,141 @@ _register_existing_plates()
 
 PLATE_EDIT={'on':False,'sel':None}    # 편집 모드 / 선택 타일
 
-# ===== 로봇 위치 이동 (플레이트 타일에 스냅) =====
-ROBOT_MOVE={'on':False}
+# ===== 로봇 위치 이동 — 2핀 배치 (회전 포함) =====
+# 로봇 바닥에는 목심에 꽂는 핀 2개가 있다(로봇 목심). 배치 순서:
+#   ① 로봇 핀 하나 클릭  ② 그 핀이 꽂힐 바닥 목심 클릭 (위치 고정, 회전만 남음)
+#   ③ 남은 핀이 갈 수 있는 목심(=핀 간격 거리, 플레이트 위)만 색으로 표시
+#   ④ 그중 하나 클릭 -> 위치+회전 확정
+ROBOT_MOVE={'on':False,'phase':0,'pin':None,'g1':None,'cands':[]}
+
+_RPINS=None
+def robot_pins_local():
+    """base_link 바닥의 목심 핀 2개 (로컬 좌표, m). 메쉬에서 자동 검출.
+    지름 ~10mm 원기둥 핀. 실패 시 실측 폴백값."""
+    global _RPINS
+    if _RPINS is not None: return _RPINS
+    try:
+        import trimesh as _tm
+        from scipy.cluster.hierarchy import fclusterdata as _fc
+        m=_tm.load(os.path.join(MESH_DIR,'base_link.STL'))
+        v=np.asarray(m.vertices)*1000.0
+        n=m.face_normals; f=np.asarray(m.faces)
+        zmin=v[:,2].min()
+        w=v[np.unique(f[np.abs(n[:,2])<0.25])]
+        w=w[np.abs(w[:,2]-zmin)<4]
+        lab=_fc(w[:,:2],t=3.0,criterion='distance')
+        cs=[]
+        for k in set(lab):
+            g=w[lab==k]
+            if len(g)<6: continue
+            c=g[:,:2].mean(0); r=np.linalg.norm(g[:,:2]-c,axis=1)
+            if 4.0<np.median(r)<6.0:          # 지름 8~12mm = 목심 핀
+                cs.append((float(c[0]),float(c[1])))
+        # 20mm 격자 위에 있고 서로 20mm 떨어진 쌍을 찾는다
+        grid=[c for c in cs if abs((c[0]+90)%20)<2.5 or abs((c[0]+90)%20)>17.5]
+        best=None
+        for i in range(len(grid)):
+            for j in range(i+1,len(grid)):
+                d=math.hypot(grid[i][0]-grid[j][0],grid[i][1]-grid[j][1])
+                if abs(d-20.0)<2.0: best=(grid[i],grid[j]); break
+            if best: break
+        if best:
+            _RPINS=[np.array([best[0][0]/1000,best[0][1]/1000,0.0]),
+                    np.array([best[1][0]/1000,best[1][1]/1000,0.0])]
+            print(f"로봇 핀 검출: {np.round(np.array(_RPINS)[:,:2]*1000,1).tolist()} mm")
+            return _RPINS
+    except Exception as e:
+        print(f"로봇 핀 검출 실패({e}) - 실측 폴백")
+    _RPINS=[np.array([0.210,-0.290,0.0]),np.array([0.210,-0.270,0.0])]
+    return _RPINS
+
+def robot_pins_world():
+    return [l2w(p) for p in robot_pins_local()]
+
+def _pegs_all_world():
+    """바닥 전체 목심 (x,y) 목록."""
+    out=[]
+    for nm in peg_names():
+        xy=peg_xy(nm)
+        if xy: out.append((float(xy[0]),float(xy[1])))
+    return out
+
+def _on_plate(x,y,margin=0.0):
+    for t in PLATES:
+        ox,oy=tile_origin(t)
+        if ox-margin<=x<=ox+PLATE_SIZE+margin and oy-margin<=y<=oy+PLATE_SIZE+margin:
+            return True
+    return False
+
+def set_robot_pose(x,y,yaw,save=True):
+    """로봇 base 를 월드 (x,y) + 회전 yaw 로. 캐시 전부 무효화."""
+    BASE_OFF[0]=float(x); BASE_OFF[1]=float(y); BASE_YAW[0]=float(yaw)
+    _MAXZ_R.clear(); _clear_plan_cache()
+    _OBS['grid']=None
+    if 'PEG_TABLE' in globals():        # 시작 복원 시엔 아직 정의 전
+        PEG_TABLE['key']=None; PEG_TABLE['span']={}; _PEG_CACHE.clear()
+    if save:
+        with LOCK:
+            S['robot_xy']=[float(x),float(y)]; S['robot_yaw']=float(yaw)
+        _macro_save()
+
+def rmove_reset():
+    ROBOT_MOVE.update(phase=0,pin=None,g1=None,cands=[])
+
+def rmove_click_pin(idx):
+    """① 로봇 핀 선택"""
+    ROBOT_MOVE.update(phase=1,pin=int(idx),g1=None,cands=[])
+    return True
+
+def rmove_click_peg(x,y):
+    """②/④ 바닥 목심 클릭"""
+    if RUNNING.is_set(): return False
+    pins=robot_pins_local(); a=ROBOT_MOVE.get('pin') or 0
+    if ROBOT_MOVE['phase']==1:
+        # 첫 핀 위치 확정 -> 남은 핀 후보 = 20mm 거리의 4방향 중 플레이트 위
+        g1=np.array([x,y]); ROBOT_MOVE['g1']=[float(x),float(y)]
+        pa,pb=pins[a],pins[1-a]
+        gap=float(np.linalg.norm((pb-pa)[:2]))
+        cands=[]
+        for dx,dy in ((gap,0),(-gap,0),(0,gap),(0,-gap)):
+            gx,gy=x+dx,y+dy
+            if not _on_plate(gx,gy): continue
+            # 그 방향으로 놓았을 때 로봇 발이 플레이트를 벗어나지 않는지는
+            # 확정 시점에 다시 확인. 여기선 목심 존재만 본다
+            cands.append([round(gx,4),round(gy,4)])
+        if not cands:
+            print("[로봇 배치] 그 목심 옆엔 남은 핀이 갈 자리가 없습니다 — 다른 목심을 고르세요")
+            return False                     # 1단계 유지
+        ROBOT_MOVE['g1']=[float(x),float(y)]
+        ROBOT_MOVE.update(phase=2,cands=cands)
+        return True
+    if ROBOT_MOVE['phase']==2:
+        # 후보 중 하나인지 확인
+        hit=None
+        for gx,gy in ROBOT_MOVE['cands']:
+            if math.hypot(gx-x,gy-y)<0.005: hit=(gx,gy); break
+        if hit is None: return False
+        g1=np.array(ROBOT_MOVE['g1']); g2=np.array(hit)
+        pa,pb=pins[a][:2],pins[1-a][:2]
+        yaw=math.atan2(g2[1]-g1[1],g2[0]-g1[0]) - math.atan2(pb[1]-pa[1],pb[0]-pa[0])
+        yaw=round(yaw/(math.pi/2))*(math.pi/2)      # 90도 스냅
+        c,si=math.cos(yaw),math.sin(yaw)
+        off=g1-np.array([c*pa[0]-si*pa[1], si*pa[0]+c*pa[1]])
+        set_robot_pose(off[0],off[1],yaw)
+        rmove_reset()
+        print(f"[로봇 배치] 핀{a+1}->({g1[0]*1000:.0f},{g1[1]*1000:.0f}) "
+              f"yaw={math.degrees(yaw):.0f}도 -> {_robot_pos_str()}")
+        return True
+    return False
+
 
 def _robot_pos_str():
-    return f"x={BASE_OFF[0]*1000:+.0f}mm  y={BASE_OFF[1]*1000:+.0f}mm"
+    return (f"x={BASE_OFF[0]*1000:+.0f}mm  y={BASE_OFF[1]*1000:+.0f}mm"
+            f"  회전={math.degrees(BASE_YAW[0]):.0f}도")
 
 def set_robot_xy(x,y,save=True):
-    """로봇 base 를 월드 (x,y) 로 이동. 캐시/격자 전부 무효화."""
-    BASE_OFF[0]=float(x); BASE_OFF[1]=float(y)
-    _MAXZ_R.clear(); _clear_plan_cache()
-    _OBS['grid']=None                      # 다음 사용 때 재구축
-    if save:
-        with LOCK: S['robot_xy']=[float(x),float(y)]
-        _macro_save()
+    """(구버전 호환) 회전 유지한 채 위치만 이동."""
+    set_robot_pose(x,y,BASE_YAW[0],save=save)
 
 def robot_to_tile(t):
     """타일 중앙으로 로봇 이동. 플레이트가 있는 타일만 허용."""
@@ -3144,8 +3280,12 @@ def robot_to_tile(t):
     return True
 
 # 시작 시 저장된 로봇 위치 복원
+for _oid,_o in (S.get('env_off') or {}).items():
+    for _e in ENV_SHOW:
+        if _e['id']==_oid: _e['offset']=(float(_o[0]),float(_o[1]),0.0)
 if S.get('robot_xy'):
-    set_robot_xy(S['robot_xy'][0],S['robot_xy'][1],save=False)
+    set_robot_pose(S['robot_xy'][0],S['robot_xy'][1],
+                   float(S.get('robot_yaw',0.0)),save=False)
     print(f"로봇 위치 복원: {_robot_pos_str()}")
 
 # ===== 공간 좌표 (목심 격자) =====
@@ -3552,16 +3692,16 @@ def h_peg_save_pose(name,height_mm,newname):
             f"자세 '{nm}' 등록 — [이동] 탭에서 파이프라인 블록으로 쓸 수 있습니다")
 
 def h_robot_move_mode(on):
-    ROBOT_MOVE['on']=bool(on)
+    ROBOT_MOVE['on']=bool(on); rmove_reset()
     if on: PLATE_EDIT['on']=False          # 두 클릭 모드 동시 금지
-    msg=('로봇 이동 모드 ON - 3D에서 초록 타일을 클릭하면 로봇이 그 타일 '
-         '중앙으로 이동합니다' if on else '로봇 이동 모드 OFF')
+    msg=('로봇 이동 모드 ON — ① 로봇의 주황 핀 클릭 ② 꽂을 목심 클릭 '
+         '③ 남은 핀이 갈 목심(하늘색) 클릭' if on else '로봇 이동 모드 OFF')
     return _robot_pos_str(), msg
 
 def h_robot_home():
     if RUNNING.is_set(): return _robot_pos_str(),"동작 실행 중 - [정지] 후 다시"
-    set_robot_xy(0.0,0.0)
-    return _robot_pos_str(), "로봇 위치 원점 복귀"
+    set_robot_pose(0.0,0.0,0.0)
+    return _robot_pos_str(), "로봇 위치 원점 복귀 (회전 0)"
 def plate_tiles(): return sorted(PLATES.keys())
 def ghost_tiles():
     """기존 플레이트 4방위 중 비어있는 자리."""
@@ -3824,12 +3964,39 @@ def disp_name(oid):
     d=_names().get(oid) or {}
     if d.get('name'): return d['name']
     s=str(oid)
-    for tag in ('Industry_gyu_arm_','20260721_-_','20260727_-_','_-_'):
-        s=s.replace(tag,'')
-    return s
+    s=re.sub(r'Industry_gyu_arm_\d*_?','',s)   # 프로젝트 접두어
+    s=re.sub(r'^\d{8}_?','',s)                 # 날짜 접두어
+    s=s.replace('_-_','').lstrip('-_ ')
+    return s or str(oid)
 
 def brick_label(bid): return disp_name(bid)
 def dock_label(did):  return disp_name(did)
+
+def move_env(oid,x,y):
+    """설비(STL)를 월드 (x,y) 근처로 이동. 오프셋을 20mm 격자에 스냅해
+    설비의 목심 구멍이 바닥 목심과 계속 맞물리게 한다. 플레이트는 이동 금지."""
+    if 'plate' in str(oid).lower(): return False,'플레이트는 더블클릭 확장으로만'
+    ent=None
+    for e in ENV_SHOW:
+        if e['id']==oid: ent=e; break
+    if ent is None: return False,f'설비를 찾을 수 없습니다: {oid}'
+    path,scale=MESH_REG[oid]
+    try:
+        mm=trimesh.load(path)
+        c=np.asarray(mm.vertices,float).mean(axis=0)*scale
+    except Exception as e:
+        return False,f'메쉬 읽기 실패: {e}'
+    off=np.array([x-c[0],y-c[1]])
+    off=np.round(off/PEG_PITCH)*PEG_PITCH          # 20mm 스냅 = 목심 정렬 유지
+    ent['offset']=(float(off[0]),float(off[1]),0.0)
+    _COLL_ENV.pop(oid,None)
+    _OBS['grid']=None; _clear_plan_cache()
+    PEG_TABLE['key']=None; _PEG_CACHE.clear()
+    with LOCK:
+        S.setdefault('env_off',{})[oid]=[float(off[0]),float(off[1])]
+    _macro_save()
+    return True,(f"{disp_name(oid)} 이동 -> 오프셋 "
+                 f"({off[0]*1000:+.0f},{off[1]*1000:+.0f})mm (목심 정렬)")
 
 def _peg_layout_changed():
     """플레이트 배치가 바뀌면 목심 구성도 바뀐다 -> 도달표/캐시 무효화.
@@ -4005,6 +4172,35 @@ function pegPaint(m){
   m.material = (m.userData.name===pegSelName) ? PEG_SEL
              : (m===pegHover ? (m.userData.ok?PEG_OK:PEG_NG) : PEG_INVIS);
 }
+// ---- 로봇 2핀 배치 레이어 ----
+// 주황 원기둥 = 로봇 핀(클릭=선택), 하늘색 디스크 = 꽂을 수 있는 목심
+const rmGroup=new THREE.Group(); world.add(rmGroup);
+const RM_PIN =new THREE.MeshBasicMaterial({color:0xe8720c});
+const RM_PINS=new THREE.MeshBasicMaterial({color:0xffb066});
+const RM_PEG =new THREE.MeshBasicMaterial({color:0x33ccff,transparent:true,opacity:0.9});
+let rmPins=[],rmPegs=[];
+function buildRMove(rm){
+  const key=rm?JSON.stringify([rm.phase,rm.pin,rm.pins,rm.pegs.length,
+                               rm.pegs[0]||0]):'off';
+  if(rmGroup.userData.key===key)return;
+  rmGroup.userData.key=key;
+  rmGroup.clear();rmPins=[];rmPegs=[];
+  if(!rm)return;
+  const pg=new THREE.CylinderGeometry(0.007,0.007,0.03,14);pg.rotateX(Math.PI/2);
+  rm.pins.forEach((p,i)=>{
+    const m=new THREE.Mesh(pg,(rm.pin===i)?RM_PINS:RM_PIN);
+    m.position.set(p[0],p[1],rm.ptop+0.02);
+    m.userData.pin=i;rmGroup.add(m);rmPins.push(m);
+  });
+  const dg=new THREE.CylinderGeometry(0.009,0.009,0.004,16);dg.rotateX(Math.PI/2);
+  rm.pegs.forEach(g=>{
+    const m=new THREE.Mesh(dg,RM_PEG);
+    m.position.set(g[0],g[1],rm.ptop+0.003);
+    m.userData.gxy=g;rmGroup.add(m);rmPegs.push(m);
+  });
+  window._rmDbg={pins:rmPins.map(m=>[m.position.x,m.position.y,m.position.z]),
+                 pegs:rmPegs.length};   // 모듈 밖 점검용
+}
 const ray=new THREE.Raycaster(), mouse=new THREE.Vector2();
 let hover=null;
 ren.domElement.addEventListener('pointermove',ev=>{
@@ -4023,7 +4219,31 @@ ren.domElement.addEventListener('pointermove',ev=>{
   if(hover) hover.material=ghostMatHi;
   ren.domElement.style.cursor=(hover||pegHover)?'pointer':'';
 });
+// 플레이트 더블클릭 = 확장 모드 (고스트 표시). 고스트 클릭하면 서버가 알아서 닫는다
+ren.domElement.addEventListener('dblclick',async ev=>{
+  const r=ren.domElement.getBoundingClientRect();
+  mouse.x=((ev.clientX-r.left)/r.width)*2-1;
+  mouse.y=-((ev.clientY-r.top)/r.height)*2+1;
+  ray.setFromCamera(mouse,cam);
+  const plates=Object.values(objs).filter(o=>o.plate&&o.mesh).map(o=>o.mesh);
+  if(ray.intersectObjects(plates,false).length){
+    await fetch('/pedit/1'); ghostGroup.userData.key=null;
+  }
+});
 ren.domElement.addEventListener('click',async ev=>{
+  {// 로봇 2핀 배치가 우선
+    const r=ren.domElement.getBoundingClientRect();
+    mouse.x=((ev.clientX-r.left)/r.width)*2-1;
+    mouse.y=-((ev.clientY-r.top)/r.height)*2+1;
+    ray.setFromCamera(mouse,cam);
+    const hp=ray.intersectObjects(rmPins,false);
+    if(hp.length){await fetch('/rpin/'+hp[0].object.userData.pin);
+      rmGroup.userData.key=null;return;}
+    const hg=ray.intersectObjects(rmPegs,false);
+    if(hg.length){const g=hg[0].object.userData.gxy;
+      await fetch('/rpeg/'+g[0]+','+g[1]);
+      rmGroup.userData.key=null;return;}
+  }
   if(pegHover){                            // 목심 선택 (도달 가능한 것만)
     if(!pegHover.userData.ok) return;      // 빨강은 클릭 무시
     const prev=pegMeshes.find(m=>m.userData.name===pegSelName);
@@ -4032,18 +4252,40 @@ ren.domElement.addEventListener('click',async ev=>{
     await fetch('/peg/'+encodeURIComponent(pegSelName));
     return;
   }
-  if(!hover) return;
+  if(!hover){
+    if(ghostMeshes.length){await fetch('/pedit/0');ghostGroup.userData.key=null;}
+    return;
+  }
   const t=hover.userData.tile;
   await fetch('/click/'+t[0]+','+t[1]);
   ghostGroup.userData.key=null;      // 다음 폴링에서 갱신
 });
 
+// 우측 목록에서 설비 썸네일을 끌어다 놓으면 그 자리(20mm 스냅)로 이동
+ren.domElement.addEventListener('dragover',ev=>ev.preventDefault());
+ren.domElement.addEventListener('drop',async ev=>{
+  ev.preventDefault();
+  const id=ev.dataTransfer.getData('text/plain');
+  if(!id)return;
+  const r=ren.domElement.getBoundingClientRect();
+  mouse.x=((ev.clientX-r.left)/r.width)*2-1;
+  mouse.y=-((ev.clientY-r.top)/r.height)*2+1;
+  ray.setFromCamera(mouse,cam);
+  const t=-ray.ray.origin.z/ray.ray.direction.z;   // z=0 바닥 평면
+  const px=ray.ray.origin.x+ray.ray.direction.x*t;
+  const py=ray.ray.origin.y+ray.ray.direction.y*t;
+  await fetch('/envmove/'+encodeURIComponent(id)+'/'+px.toFixed(4)+','+py.toFixed(4));
+});
 async function poll(){
   try{
     const st=await (await fetch('/state')).json();
     for(const l of st.links){ ensure(l.id,l.color,1.0); setTarget(l.id,l.m); }
     const alive=new Set();
     for(const e of st.env){ ensure(e.id,e.color,e.scale); alive.add(e.id);
+      // 이름 붙이기에서 색을 바꾸면 반영 (ensure 는 최초 1회만 색을 칠하므로)
+      const _o=objs[e.id];
+      if(_o){_o.plate=!!e.plate;
+        if(_o.mesh&&_o.col!==e.color){_o.col=e.color;_o.mesh.material.color.set(e.color);}}
       const o=e.off||[0,0,0];
       setTarget(e.id,[1,0,0,o[0], 0,1,0,o[1], 0,0,1,o[2], 0,0,0,1]);
       objs[e.id].vis=e.v; objs[e.id].env=true; }
@@ -4055,6 +4297,7 @@ async function poll(){
     }
     buildGhosts(st.ghosts||[],st.psize||0.2);
     buildPegs(st.pegs||[],st.ptop||0.02);
+    buildRMove(st.rmove||null);
     if(st.pegsel!==pegSelName){          // 서버(드롭다운)에서 바뀐 선택 반영
       const a=pegMeshes.find(m=>m.userData.name===pegSelName);
       pegSelName=st.pegsel; pegPaint(a);
@@ -4123,13 +4366,17 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                     ghosts=[{'tile':list(t),
                              'x':tile_origin(t)[0],'y':tile_origin(t)[1]}
                             for t in ghost_tiles()]
-                elif ROBOT_MOVE['on']:
-                    # 로봇 이동 모드: 실존 플레이트 타일이 클릭 대상
-                    ghosts=[{'tile':list(t),
-                             'x':tile_origin(t)[0],'y':tile_origin(t)[1]}
-                            for t in plate_tiles()]
                 else:
-                    ghosts=[]
+                    ghosts=[]   # 로봇 이동은 핀/목심 클릭 (타일 강조 없음)
+                rmv=None
+                if ROBOT_MOVE['on']:
+                    rmv={'phase':ROBOT_MOVE['phase'],
+                         'pin':ROBOT_MOVE.get('pin'),
+                         'pins':[[float(p[0]),float(p[1])] for p in robot_pins_world()],
+                         'pegs':([] if ROBOT_MOVE['phase']==0 else
+                                 (ROBOT_MOVE['cands'] if ROBOT_MOVE['phase']==2
+                                  else [[x,y] for x,y in _pegs_all_world()])),
+                         'ptop':PLATE_TOP}
                 pegs=[]
                 if PEG_VIEW['on']:
                     # 표가 있으면 '현재 슬라이더 높이' 로 그때그때 판정한다.
@@ -4147,7 +4394,7 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                         xy=peg_xy(nm)
                         if xy: pegs.append({'n':nm,'x':xy[0],'y':xy[1],
                                             'ok':nm in ok})
-                body=json.dumps({'pegs':pegs,'ptop':PLATE_TOP,
+                body=json.dumps({'pegs':pegs,'ptop':PLATE_TOP,'rmove':rmv,
                     'pegsel':PEG_VIEW.get('sel'),
                     'links':links,'env':env,'ghosts':ghosts,
                     'psize':PLATE_SIZE,'sel':PLATE_EDIT.get('sel'),
@@ -4158,6 +4405,34 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                             f"z={_tp[2]*1000:.0f}mm" if TOOL_HAS else None)
                     }).encode()
                 self._send(200,'application/json',body)
+            elif self.path.startswith('/envmove/'):
+                try:
+                    from urllib.parse import unquote
+                    rest=self.path[len('/envmove/'):]
+                    oid,xy=rest.rsplit('/',1)
+                    xs,ys=xy.split(',')
+                    ok,msg=move_env(unquote(oid),float(xs),float(ys))
+                    print(f"[설비 이동] {msg}")
+                    self._send(200,'application/json',
+                               json.dumps({'ok':ok}).encode())
+                except Exception as e:
+                    self._send(400,'text/plain',str(e).encode())
+            elif self.path.startswith('/rpin/'):
+                rmove_click_pin(int(self.path.rsplit('/',1)[1]))
+                self._send(200,'application/json',b'{"ok":true}')
+            elif self.path.startswith('/rpeg/'):
+                try:
+                    xs,ys=self.path.rsplit('/',1)[1].split(',')
+                    ok=rmove_click_peg(float(xs),float(ys))
+                    self._send(200,'application/json',
+                               json.dumps({'ok':bool(ok)}).encode())
+                except Exception:
+                    self._send(400,'text/plain',b'bad')
+            elif self.path.startswith('/pedit/'):
+                # 플레이트 더블클릭 -> 확장 모드 on/off
+                PLATE_EDIT['on']=self.path.endswith('/1')
+                if PLATE_EDIT['on']: ROBOT_MOVE['on']=False
+                self._send(200,'application/json',b'{"ok":true}')
             elif self.path.startswith('/peg/'):
                 # 3D 에서 목심 클릭 -> 선택 + 이동 시뮬 예약
                 from urllib.parse import unquote
@@ -4175,7 +4450,8 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                 try:
                     ix,iy=self.path[len('/click/'):].split(',')
                     t=(int(ix),int(iy))
-                    ok=robot_to_tile(t) if ROBOT_MOVE['on'] else add_plate(t)
+                    ok=add_plate(t)
+                    if ok: PLATE_EDIT['on']=False       # 추가되면 알아서 닫힘
                     self._send(200,'application/json',
                                json.dumps({'ok':ok}).encode())
                 except Exception:

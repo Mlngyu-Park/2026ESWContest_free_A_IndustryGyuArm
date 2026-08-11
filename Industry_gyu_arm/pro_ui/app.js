@@ -56,7 +56,7 @@ async function pollJob(){
 }
 function setBusy(b){
   $('#ticker').classList.toggle('busy',b);
-  ['#btnRun','#btnPreview','#btnFtGo','#btnPegGo','#btnGrasp','#btnRelease']
+  ['#btnRun','#btnPreview','#btnPreview2','#btnFtGo','#btnPegGo','#btnGrasp','#btnRelease']
     .forEach(s=>{const e=$(s);if(e)e.disabled=b;});
 }
 async function refresh(){
@@ -76,6 +76,15 @@ function changed(key,data){
 /* ---------- 렌더 ---------- */
 function opts(el,list,cur){
   el.innerHTML=list.map(v=>`<option${v===cur?' selected':''}>${esc(v)}</option>`).join('');
+}
+function shortNm(id,names){
+  return names?.[id]?.name||
+    String(id).replace(/Industry_gyu_arm_\d*_?/,'').replace(/^\d{8}_?/,'')
+      .replace(/_-_/g,'').replace(/^[-_ ]+/,'')||id;
+}
+function opts2(el,list,cur,names){   // value=id, 표시=짧은 이름
+  el.innerHTML=list.map(v=>`<option value="${esc(v)}"${v===cur?' selected':''}>${
+    esc(shortNm(v,names))}</option>`).join('');
 }
 function esc(s){return String(s).replace(/[&<>"]/g,
   c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
@@ -189,17 +198,26 @@ function render(s){
     $('#spExtra').value=s.simple.extra_cm;$('#spExtraV').value=s.simple.extra_cm;
   }
 
-  /* 환경 */
-  if(changed('env',[s.env,s.env_on])){
+  /* 환경: 썸네일 카드 (플레이트 제외, 접두어 제거, 드래그=3D 배치) */
+  if(changed('env',[s.env,s.env_on,s.names])){
     const el=$('#envList');el.innerHTML='';
-    s.env.forEach(id=>{
-      const nm=s.names[id]?.name?` (${s.names[id].name})`:'';
-      const l=document.createElement('label');l.className='chk';
-      l.innerHTML=`<input type="checkbox" value="${esc(id)}"${
-        s.env_on.includes(id)?' checked':''}>${esc(id)}${esc(nm)}`;
-      l.querySelector('input').onchange=()=>call('env',
-        $$('#envList input:checked').map(i=>i.value));
-      el.append(l);
+    s.env.filter(id=>!id.toLowerCase().includes('plate')).forEach(id=>{
+      const nm=shortNm(id,s.names);
+      const c=document.createElement('div');c.className='thumbCard';
+      c.draggable=true;c.title=id+' — 3D 화면으로 끌어다 놓으면 이동';
+      c.innerHTML=`<img src="/api/thumb/${encodeURIComponent(id)}" draggable="false">
+        <div class="thumbNm">${esc(nm)}</div>
+        <input type="checkbox"${s.env_on.includes(id)?' checked':''} title="표시">`;
+      c.ondragstart=e=>e.dataTransfer.setData('text/plain',id);
+      c.querySelector('input').onchange=()=>{
+        const on=$$('#envList .thumbCard input:checked')
+          .map(i=>i.closest('.thumbCard').dataset.id);
+        // 플레이트는 목록에 없으므로 항상 켜진 것으로 함께 전송
+        call('env',[...on,...s.env.filter(x=>x.toLowerCase().includes('plate')
+                                             &&s.env_on.includes(x))]);
+      };
+      c.dataset.id=id;
+      el.append(c);
     });
   }
   if(changed('plates',[s.plates,s.plate_info])){
@@ -214,10 +232,9 @@ function render(s){
     opts($('#pegSel'),s.peg.choices,s.peg.sel||s.peg.choices[0]);
   }
   if(changed('bricks',[s.bricks,s.docking,s.names])){
-    const bl=s.bricks.map(b=>s.names[b]?.name||b);
-    opts($('#brickSel'),s.bricks,$('#brickSel').value);
-    opts($('#dockSel'),s.docking,$('#dockSel').value);
-    opts($('#nmTarget'),[...s.bricks,...s.env],$('#nmTarget').value);
+    opts2($('#brickSel'),s.bricks,$('#brickSel').value,s.names);
+    opts2($('#dockSel'),s.docking,$('#dockSel').value,s.names);
+    opts2($('#nmTarget'),[...s.bricks,...s.env],$('#nmTarget').value,s.names);
   }
 }
 
@@ -246,7 +263,7 @@ async function boot(){
     $$('#tabs button').forEach(x=>x.classList.remove('on'));
     $$('.pane').forEach(x=>x.classList.remove('on'));
     b.classList.add('on');$('#tab-'+b.dataset.tab).classList.add('on');
-    if(b.dataset.tab==='voice')fetchMap();   // 맵은 ③ 음성 코딩 탭에 있음
+    if(b.dataset.tab==='sim')fetchMap();   // 맵은 ② 시뮬레이션 탭에 있음
   });
 
   /* 슬라이더 생성 */
@@ -314,9 +331,11 @@ async function boot(){
   };
   const runArgs=()=>['간편 이동',META.modes[0],'x-z-y',
     $('#speed').value,$('#loop').checked,false];
-  $('#btnPreview').onclick=()=>call('preview',...runArgs());
+  $('#btnPreview').onclick=()=>call('preview',...runArgs());   // ② 시뮬레이션
+  $('#btnPreview2').onclick=()=>call('preview',...runArgs());  // ③ 연동
   $('#btnRun').onclick=()=>call('run',...runArgs());
   $('#btnStop2').onclick=()=>call('stop');
+  $('#btnStopSim').onclick=()=>call('stop');
   $('#btnToff').onclick=()=>call('torque_off');
   $('#btnEstop').onclick=()=>call('stop');
   $('#btnMRec').onclick=()=>call('macro_rec',$('#macroSlot').value);
@@ -335,8 +354,8 @@ async function boot(){
     call('map_xy',sel,e.target.value).then(fetchMap);
   });
 
-  /* ---- 환경 탭 ---- */
-  $('#plateEdit').onchange=e=>call('plate_edit',e.target.checked);
+  /* ---- 공장 꾸미기 ---- */
+  /* 바닥 확장 모드는 3D 더블클릭으로 켜고 끔 (체크박스 제거됨) */
   $('#btnPlateDel').onclick=()=>call('plate_remove',$('#plateSel').value);
   $('#btnPlateRef').onclick=()=>call('plate_refresh');
   $('#robotMove').onchange=e=>call('robot_move_mode',e.target.checked);

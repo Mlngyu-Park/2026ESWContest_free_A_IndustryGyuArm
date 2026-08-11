@@ -284,6 +284,44 @@ def api_state(sel: str = '', pose: str = ''):
                                {'prefer': 'x', 'clear_cm': 5.0, 'extra_cm': 5.0}),
     }
 
+# ================= STL 썸네일 (위에서 본 실루엣 SVG) =================
+_THUMB = {}
+@app.get('/api/thumb/{oid}')
+def api_thumb(oid: str):
+    from fastapi.responses import Response
+    if oid in _THUMB:
+        return Response(_THUMB[oid], media_type='image/svg+xml')
+    try:
+        import numpy as np, trimesh
+        path, scale = core.MESH_REG[oid]
+        m = trimesh.load(path)
+        v = np.asarray(m.vertices, float) * scale
+        f = np.asarray(m.faces, int)
+        if len(f) > 600:                        # 무거운 메쉬는 줄여서
+            import fast_simplification as fs
+            v2, f2 = fs.simplify(v.astype(np.float32), f, target_count=600)
+            v, f = np.asarray(v2, float), np.asarray(f2, int)
+        lo = v.min(0); hi = v.max(0)
+        w = max(hi[0]-lo[0], 1e-6); h = max(hi[1]-lo[1], 1e-6)
+        tris = []
+        for tri in f:
+            p = v[tri]
+            pts = ' '.join(f"{(x-lo[0])/w*100:.1f},{(hi[1]-y)/h*100:.1f}"
+                           for x, y, _ in p)
+            tris.append(f'<polygon points="{pts}"/>')
+        col = '#9aa4b2'
+        for e in core.ENV_SHOW:
+            if e['id'] == oid: col = e.get('color', col)
+        svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" '
+               f'preserveAspectRatio="xMidYMid meet">'
+               f'<g fill="{col}" fill-opacity="0.9" stroke="none">'
+               + ''.join(tris) + '</g></svg>')
+        _THUMB[oid] = svg
+        return Response(svg, media_type='image/svg+xml')
+    except Exception as e:
+        return Response(f'<svg xmlns="http://www.w3.org/2000/svg"/>',
+                        media_type='image/svg+xml')
+
 @app.get('/api/map', response_class=HTMLResponse)
 def api_map(sel: str = ''):
     return core.render_map2d(sel or None)
