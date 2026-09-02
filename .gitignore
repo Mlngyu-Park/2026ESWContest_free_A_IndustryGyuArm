@@ -36,3 +36,10 @@ __pycache__/
 *.bak
 *~
 .DS_Store
+
+# 개인 터널 주소 · 런타임 캐시
+/Industry_gyu_arm/spark_tunnel.txt
+/Industry_gyu_arm/maxz_cache.json
+/Industry_gyu_arm/llm_usage.jsonl
+/Industry_gyu_arm/llm_train.jsonl
+/Industry_gyu_arm/backup_*/
