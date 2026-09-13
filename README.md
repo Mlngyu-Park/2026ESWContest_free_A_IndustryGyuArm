@@ -1,13 +1,11 @@
 말로 명령하는 블록 코딩 로봇팔 제어 · 디지털 트윈 - 인규암
 
-영상 링크 (추가 예정)
+영상 링크 (https://www.youtube.com/watch?v=rnEmlPO3QYE)
 
 사용 디바이스
 - SO-ARM101 로봇팔 (Feetech STS3215 서보 6축)
 - NVIDIA DGX Spark (LLM/STT 서버)
 - 제어 PC (Ubuntu 22.04 / WSL2)
-
-![공장 화면](docs/factory.png)
 
 ### 공장 꾸미기
 - 설비 STL 드래그 앤 드롭 배치 — 실물 모양이 커서를 따라오고, 핀 2개를 목심에 클릭해 자리·회전 확정
