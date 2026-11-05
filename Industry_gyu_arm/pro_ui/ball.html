@@ -1,0 +1,171 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<title>조이콘 테스트 — 3D 공</title>
+<style>
+ *{box-sizing:border-box} body{margin:0;background:#1a1d23;color:#e6e8eb;
+   font:14px/1.5 system-ui,'Malgun Gothic',sans-serif;display:flex;height:100vh}
+ #view{flex:1;position:relative} #side{width:320px;padding:14px;
+   background:#22262e;overflow:auto;border-left:1px solid #333a45}
+ h2{margin:0 0 10px;font-size:15px}
+ .g{background:#2a2f38;border-radius:8px;padding:10px;margin-bottom:10px}
+ .gh{font-size:12px;color:#9aa4b2;margin-bottom:6px}
+ .row{display:flex;align-items:center;gap:8px;margin:4px 0}
+ .lbl{width:78px;color:#9aa4b2;font-size:12px}
+ .v{font-family:ui-monospace,monospace;flex:1}
+ button{background:#3b4250;color:#e6e8eb;border:0;border-radius:6px;
+   padding:8px 10px;cursor:pointer;font-size:13px;width:100%;margin-bottom:6px}
+ button.p{background:#2f6feb} button:hover{filter:brightness(1.15)}
+ .hint{font-size:12px;color:#8b95a3;margin:6px 0 0}
+ .warn{color:#f0883e} .ok{color:#3fb950}
+ canvas{display:block}
+</style></head><body>
+<div id="view"></div>
+<div id="side">
+  <h2>조이콘 테스트 — 3D 공</h2>
+  <p class="hint">로봇과 무관합니다. 조이콘 입력만 순수하게 확인합니다.<br>
+    <b>연결도 스틱찾기도 필요 없습니다</b> — 조이콘 아무 버튼이나 누르세요.</p>
+
+  <div class="g">
+    <div class="gh">상태</div>
+    <p class="hint" id="stat">조이콘의 아무 버튼이나 눌러주세요…</p>
+    <button id="reset">공 원위치</button>
+  </div>
+
+  <div class="g">
+    <div class="gh">스틱 (손을 떼면 0.00 이어야 정상)</div>
+    <div class="row"><span class="lbl">앞뒤 ↕</span><span class="v" id="sy">0.00</span></div>
+    <div class="row"><span class="lbl">좌우 ↔</span><span class="v" id="sx">0.00</span></div>
+    <p class="hint" id="drift"></p>
+  </div>
+
+  <div class="g">
+    <div class="gh">버튼</div>
+    <div class="row"><span class="lbl">위 / 아래</span><span class="v" id="bz">—</span></div>
+    <div class="row"><span class="lbl">눌린 버튼</span><span class="v" id="ball">—</span></div>
+    <p class="hint">위/아래 버튼이 안 맞으면 아래에서 번호를 바꾸세요.</p>
+    <div class="row"><span class="lbl">위 버튼</span>
+      <input id="bUp" type="number" value="7" min="0" max="19" style="width:56px"></div>
+    <div class="row"><span class="lbl">아래 버튼</span>
+      <input id="bDn" type="number" value="1" min="0" max="19" style="width:56px"></div>
+  </div>
+
+  <div class="g">
+    <div class="gh">공 위치 (mm)</div>
+    <div class="row"><span class="lbl">X</span><span class="v" id="px">0</span></div>
+    <div class="row"><span class="lbl">Y</span><span class="v" id="py">0</span></div>
+    <div class="row"><span class="lbl">Z</span><span class="v" id="pz">100</span></div>
+  </div>
+
+  <div class="g">
+    <div class="gh">데드존</div>
+    <div class="row">
+      <input id="dead" type="range" min="0" max="40" step="1" value="12" style="flex:1">
+      <span class="v" id="deadV" style="flex:0 0 40px">12%</span></div>
+  </div>
+</div>
+
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+const el=s=>document.querySelector(s);
+
+/* ---------- 3D 장면 ---------- */
+const view=el('#view');
+const scene=new THREE.Scene(); scene.background=new THREE.Color(0x1a1d23);
+const cam=new THREE.PerspectiveCamera(50,1,0.01,100);
+cam.position.set(0.9,-0.9,0.7); cam.up.set(0,0,1); cam.lookAt(0,0,0.1);
+const rnd=new THREE.WebGLRenderer({antialias:true});
+view.appendChild(rnd.domElement);
+function resize(){const w=view.clientWidth,h=view.clientHeight;
+  cam.aspect=w/h; cam.updateProjectionMatrix(); rnd.setSize(w,h);}
+addEventListener('resize',resize);
+scene.add(new THREE.AmbientLight(0xffffff,0.7));
+const dl=new THREE.DirectionalLight(0xffffff,0.7);
+dl.position.set(1,-1,2); scene.add(dl);
+const grid=new THREE.GridHelper(1.2,12,0x44506a,0x2e3644);
+grid.rotateX(Math.PI/2); scene.add(grid);
+scene.add(new THREE.AxesHelper(0.35));   // 빨강 X · 초록 Y · 파랑 Z
+const ball=new THREE.Mesh(new THREE.SphereGeometry(0.035,32,24),
+  new THREE.MeshPhongMaterial({color:0xf0883e,shininess:60}));
+scene.add(ball);
+const sh=new THREE.Mesh(new THREE.CircleGeometry(0.035,24),
+  new THREE.MeshBasicMaterial({color:0,opacity:.25,transparent:true}));
+scene.add(sh);
+const P={x:0,y:0,z:0.1};
+function draw(){
+  ball.position.set(P.x,P.y,P.z); sh.position.set(P.x,P.y,0.001);
+  el('#px').textContent=(P.x*1000).toFixed(0);
+  el('#py').textContent=(P.y*1000).toFixed(0);
+  el('#pz').textContent=(P.z*1000).toFixed(0);
+  rnd.render(scene,cam);
+}
+resize();
+
+/* ---------- 조이콘: 브라우저 게임패드 API ----------
+   브라우저가 스틱을 axes[0], axes[1] 로 정리해준다.
+   -> 연결 버튼도, 스틱 찾기도 필요 없다. */
+const NINTENDO=/057e|joy-?con|nintendo|switch|pro controller/i;
+function pad(){
+  if(!navigator.getGamepads)return null;
+  const all=[...navigator.getGamepads()].filter(Boolean);
+  return all.find(g=>NINTENDO.test(g.id||''))||all[0]||null;
+}
+addEventListener('gamepadconnected',e=>{
+  el('#stat').innerHTML='<span class="ok">연결됨</span> — '+e.gamepad.id;
+});
+addEventListener('gamepaddisconnected',()=>{
+  el('#stat').textContent='끊김 — 아무 버튼이나 눌러주세요';
+});
+let dead=12, maxIdle=0;
+el('#dead').oninput=e=>{dead=+e.target.value; el('#deadV').textContent=dead+'%';};
+el('#reset').onclick=()=>{P.x=0;P.y=0;P.z=0.1;maxIdle=0;draw();};
+
+let prev=performance.now();
+function loop(){
+  const now=performance.now(), dt=Math.min(.2,(now-prev)/1000); prev=now;
+  const g=pad();
+  if(!g){
+    el('#stat').textContent='조이콘의 아무 버튼이나 눌러주세요…';
+    draw(); return requestAnimationFrame(loop);
+  }
+  if(!/연결됨/.test(el('#stat').innerHTML))
+    el('#stat').innerHTML='<span class="ok">연결됨</span> — '+g.id;
+
+  /* 스틱: 브라우저가 이미 -1..+1 로 준다 */
+  const ax=g.axes[0]||0, ay=g.axes[1]||0;
+  el('#sx').textContent=ax.toFixed(2);
+  el('#sy').textContent=ay.toFixed(2);
+  const idle=Math.max(Math.abs(ax),Math.abs(ay));
+
+  /* 버튼 */
+  const iUp=+el('#bUp').value, iDn=+el('#bDn').value;
+  const bs=g.buttons||[];
+  const up=!!(bs[iUp]&&bs[iUp].pressed), dn=!!(bs[iDn]&&bs[iDn].pressed);
+  el('#bz').textContent=(up?'위 ':'')+(dn?'아래':'')||'—';
+  const names=[]; bs.forEach((b,i)=>{if(b&&b.pressed)names.push(i);});
+  el('#ball').textContent=names.length?names.join(', ')+'번':'—';
+
+  /* 데드존 */
+  const SD=dead/100;
+  const sh2=v=>{const m=Math.abs(v);
+    return m<SD?0:Math.sign(v)*(m-SD)/(1-SD);};
+  const ux=-sh2(ay), uy=-sh2(ax);
+  if(!ux&&!uy&&idle>maxIdle)maxIdle=idle;
+  el('#drift').innerHTML = (ux||uy)
+    ? '움직이는 중'
+    : (maxIdle>SD
+       ? '<span class="warn">손을 뗐는데 '+maxIdle.toFixed(2)
+         +' 까지 흐릅니다 → 데드존을 올리세요</span>'
+       : '<span class="ok">손 뗐을 때 흐름 없음 (정상)</span>');
+
+  const SPD=0.35;
+  P.x=Math.max(-.6,Math.min(.6,P.x+ux*SPD*dt));
+  P.y=Math.max(-.6,Math.min(.6,P.y+uy*SPD*dt));
+  P.z=Math.max(.035,Math.min(.6,P.z+((up?1:0)-(dn?1:0))*SPD*0.6*dt));
+  draw();
+  requestAnimationFrame(loop);
+}
+draw(); loop();
+</script>
+</body></html>

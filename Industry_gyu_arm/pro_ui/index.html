@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ARM STUDIO</title>
-<link rel="stylesheet" href="/ui/app.css">
+<link rel="stylesheet" href="/ui/app.css?v=20261020">
 </head>
 <body>
 
@@ -16,6 +16,7 @@
   <div class="topRight">
     <div id="connChip" class="chip" title="USB 자동 감지 (표시만, 동작과 무관)">감지 중...</div>
     <div id="robotChip" class="chip">로봇 확인 전</div>
+    <button id="btnHomeZero" class="btn big" title="URDF 기본 자세(전 관절 0도)로">⌂ 원위치</button>
     <button id="btnEstop" class="btn danger big">■ 정지</button>
   </div>
 </header>
@@ -25,6 +26,9 @@
   <section id="left">
     <div id="viewerCard" class="card">
       <iframe id="viewer" title="3D viewer"></iframe>
+      <!-- 크롬은 '다른 출처 iframe' 으로의 드롭을 막는다.
+           그래서 드래그 중에만 켜지는 투명 덮개가 부모 화면에서 대신 받는다. -->
+      <div id="viewerDrop"></div>
     </div>
   </section>
 
@@ -34,11 +38,23 @@
       <button data-tab="factory" class="on">① 공장 꾸미기</button>
       <button data-tab="sim">② 시뮬레이션</button>
       <button data-tab="link">③ 연동</button>
+      <button data-tab="joy" style="display:none">④ 조이콘</button><!-- 11-05 (사용자): 조이콘 탭 숨김 (기능은 그대로) -->
     </nav>
 
     <!-- ================= ① 공장 꾸미기 =================
          디지털 트윈 만들기: 설비 배치(드래그)·이름·색, 바닥(더블클릭), 로봇 위치 -->
     <div id="tab-factory" class="pane on">
+      <!-- 11-05 (사용자): 로봇은 SO-ARM (STS3215) 하나만 — 고르는 칸은 숨기고 app.js 가 자동으로 맞춘다 -->
+      <div class="group" style="display:none">
+        <div class="groupHead">로봇
+          <span class="hint">urdf 폴더에 있는 로봇 중에서 고릅니다</span></div>
+        <div class="row">
+          <select id="robotSel" class="grow"></select>
+          <button id="btnRobotPick" class="btn sm primary">이 로봇으로</button>
+        </div>
+        <p class="hint" id="robotNote" style="margin-top:.3rem"></p>
+      </div>
+
       <div class="group">
         <div class="groupHead">설비
           <span class="hint">썸네일을 3D로 끌어다 놓으면 그 자리에 (목심 맞물림)</span></div>
@@ -50,16 +66,40 @@
       </div>
 
       <div class="group">
-        <div class="groupHead">이름 붙이기 <span class="hint">"1번 도색 챔버" 처럼 부를 이름</span></div>
-        <div class="row"><label class="lbl">대상</label><select id="nmTarget" class="grow"></select></div>
+        <div class="groupHead">공장 저장 / 불러오기
+          <span class="hint">시작 배치 = esw_contest_drboom · 배치는 이름으로 보관</span></div>
         <div class="row">
-          <input id="nmText" placeholder="예: 1번 도색 챔버" class="grow">
-          <input id="nmColor" type="color" value="#ff69b4">
-          <button id="btnNm" class="btn sm">적용</button>
+          <input id="fpName" placeholder="새 이름 — 비우고 저장하면 지금 배치에 덮어쓰기" class="grow">
+          <button id="btnFpSave" class="btn primary sm">저장</button>
+        </div>
+        <div class="row">
+          <select id="fpSel" class="grow"></select>
+          <button id="btnFpLoad" class="btn sm">불러오기</button>
+          <button id="btnFpDel" class="btn sm danger">삭제</button>
+        </div>
+        <p class="hint" id="fpCur" style="margin:.2rem 0"></p>
+        <button id="btnFpReset" class="btn sm">🧹 새 공장 (플레이트만)</button>
+      </div>
+
+      <!-- 11-05 (사용자): 이름 붙이기·바닥 플레이트·로봇 위치 칸은 공장 꾸미기에서만 숨김 — 기능은 그대로
+           (3D 클릭 선택·플레이트 더블클릭 확장·팔 우클릭 위치 옮기기 등). 다시 보이려면 style 만 지우면 된다 -->
+      <div class="group" style="display:none">
+        <div class="groupHead">이름 붙이기
+          <span class="hint">왼쪽 3D에서 클릭 = 대상 선택 · 입력하면 바로 적용</span></div>
+        <div class="row"><label class="lbl">대상</label>
+          <span id="nmCur" class="mono dim grow">(3D에서 물체를 클릭하세요)</span></div>
+        <div class="row">
+          <input id="nmText" placeholder="예: 1번 작업대" class="grow" disabled>
+          <input id="nmColor" type="color" value="#e6194b" list="pal6" disabled>
+          <datalist id="pal6"><!-- 표준 6색 (무지개) — 아무 색을 골라도 이 중 가까운 색으로 저장됨 -->
+            <option value="#e6194b"></option><option value="#f58231"></option>
+            <option value="#ffe119"></option><option value="#3cb44b"></option>
+            <option value="#4363d8"></option><option value="#911eb4"></option>
+          </datalist>
         </div>
       </div>
 
-      <div class="group">
+      <div class="group" style="display:none">
         <div class="groupHead">바닥 플레이트</div>
         <p class="hint">3D에서 플레이트를 <b>더블클릭</b> → 초록 자리 클릭 = 확장.
           빈 곳을 클릭하면 저절로 닫힙니다.</p>
@@ -74,11 +114,12 @@
         </details>
       </div>
 
-      <div class="group">
+      <div class="group" style="display:none">
         <div class="groupHead">로봇 위치
           <span class="hint">목심 2개로 자리+방향이 정해집니다</span></div>
-        <label class="chk"><input id="robotMove" type="checkbox">
-          로봇 이동 모드 (주황 핀 클릭 → 바닥 목심 클릭 → 하늘색 목심 클릭)</label>
+        <!-- 11-03: 로봇 팔 옮기기는 3D 에서 팔 우클릭으로 (체크박스는 숨김 — 상태만 맞춘다) -->
+        <input id="robotMove" type="checkbox" hidden>
+        <p class="hint" style="margin:0 0 .5rem">3D 에서 팔을 <b>우클릭 → 📍 위치 옮기기</b> (주황 핀 → 바닥 목심 → 하늘색 목심) · ESC = 취소</p>
         <div class="row">
           <span id="robotPos" class="mono dim grow"></span>
           <button id="btnRobotHome" class="btn sm">원점 복귀</button>
@@ -91,47 +132,92 @@
     <div id="tab-sim" class="pane">
       <div class="group">
         <div class="groupHead">말로 만들기</div>
+        <div class="row">
+          <select id="aiModel" class="grow">
+            <option value="auto">AI 자동 (Spark → 더블 레이첼 → 규칙)</option>
+            <option value="rachel2" selected>더블 레이첼 (두 팔 · 자작)</option>
+            <option value="rachel">RACHEL C++ (자작 · 빠름)</option>
+            <option value="rachel_py">RACHEL 파이썬 (비교용)</option>
+            <option value="gemma">Gemma 4 (Spark)</option>
+            <option value="rule">규칙 파서 (AI 없음)</option>
+          </select>
+        </div>
         <button id="btnMic" class="btn wide">🎤 누르고 말하기</button>
-        <p class="hint" id="micHint">예: "베이스에서 1번 도색 챔버로 가서 부품을
-          잡아줘" — 음성 인식 연결 준비 중. 지금은 아래에서 블록을 직접 추가하세요.</p>
+        <div class="row" style="margin-top:4px;align-items:center;gap:6px">
+          <span class="hint" style="margin:0">음성 인식</span>
+          <select id="sttEngine" style="flex:1">
+            <option value="auto">자동 (Spark 먼저, 안 되면 이 PC)</option>
+            <option value="spark">Spark Whisper — DGX (정확)</option>
+            <option value="moonshine">이 PC · WHISPER DUSK (네트워크 불필요)</option>
+            <option value="both">🔍 둘 다 돌려서 비교 (디버깅)</option>
+          </select>
+        </div>
+        <div class="row">
+          <input id="sayTxt" type="text" style="flex:1"
+                 placeholder='예: 펜 잡아서 3번 도킹에 꽂아'>
+          <button id="btnSay" class="btn sm primary">보내기</button>
+        </div>
+        <p class="hint" id="micHint">말하거나 입력하면 블록이 생기고 바로
+          3D 미리보기가 됩니다. 예: "펜 잡아", "3번 도킹에 꽂아", "그리퍼 열어",
+          "하강", "상승", "파이프라인 지워"</p>
       </div>
 
       <div class="group">
-        <div class="groupHead">블록 추가
-          <span class="hint">■자세 · ◆그리퍼 · ◈잡기/놓기</span></div>
-        <div class="row">
-          <select id="mvPose"></select>
-          <button id="btnSeqAdd" class="btn primary">■ 자세 추가</button>
-        </div>
-        <div class="row">
-          <button id="btnGripAddOpen" class="btn sm">◆ 그리퍼 열기</button>
-          <button id="btnGripAddClose" class="btn sm">◆ 그리퍼 닫기</button>
-        </div>
-        <div class="row">
-          <label class="lbl">물체</label><select id="brickSel"></select>
-          <label class="lbl">도킹</label><select id="dockSel"></select>
-        </div>
-        <div class="row">
-          <button id="btnGraspAdd" class="btn sm">◈ 잡기 블록</button>
-          <button id="btnReleaseAdd" class="btn sm">◈ 놓기 블록</button>
-          <button id="btnPlace" class="btn sm">세우기(시뮬)</button>
-        </div>
-        <div class="row">
-          <button id="btnGrasp" class="btn sm">지금 잡기</button>
-          <button id="btnRelease" class="btn sm">지금 놓기</button>
-        </div>
+        <div class="groupHead">블록 팔레트
+          <span class="hint">스크래치처럼 끌어서 아래 파이프라인에 놓기</span></div>
+        <div id="blkPalette"></div>
       </div>
 
       <div class="group">
         <div class="groupHead">파이프라인
-          <span class="hint">클릭 = 선택 · 색이 곧 종류</span></div>
+          <span class="hint">팔레트에서 끌어다 놓기 · 클릭 = 선택</span></div>
         <div id="pipeline"></div>
         <div class="row">
           <button id="btnBlkUp" class="btn sm">▲</button>
           <button id="btnBlkDn" class="btn sm">▼</button>
           <button id="btnBlkDel" class="btn sm danger">삭제</button>
+          <button id="btnBlkClear" class="btn sm danger">전부 삭제</button>
+        </div>
+        <div id="blkTrash" title="블록을 끌어다 여기 놓으면 삭제">
+          🗑 블록을 여기로 끌면 삭제</div>
+        <div class="row" style="margin-top:.5rem">
+          <button id="btnSuggest" class="btn sm">🧭 로봇 자리 추천</button>
+          <button id="btnSuggestGo" class="btn primary sm hidden">이 자리로 옮기기</button>
+        </div>
+        <div class="row" style="margin-top:.35rem">
+          <button id="btnBlkPose" class="btn sm">🎯 이 블록을 자세로 등록 (미세조정용)</button>
+        </div>
+        <p class="hint">블록을 클릭해 고른 뒤 누르면 그 자리가 자세로 등록됩니다 →
+          ③연동 탭에서 [로봇을 이 자세로] → +/- 미세조정 → [보정 저장]</p>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">미리보기 <span class="hint">3D에서만 움직입니다</span></div>
+        <div id="timebar">
+          <div class="row" style="align-items:center;gap:.5rem">
+            <span class="hint" id="tbNow">대기 중</span>
+            <span class="hint" style="margin-left:auto" id="tbTime">0.0초</span>
+          </div>
+          <input id="tbRange" type="range" min="0" max="0" value="0" step="1"
+                 title="끌어서 그 블록까지 이동">
+          <div id="tbTicks"></div>
+        </div>
+        <div class="row" style="align-items:center;gap:.5rem">
+          <label class="lbl">미리보기 배속</label>
+          <select id="pvBoost" title="3D 미리보기에만 곱합니다 (실물 실행 속도는 그대로)">
+            <option value="1">1×</option><option value="2">2×</option>
+            <option value="4" selected>4×</option><option value="8">8×</option></select>
+          <span class="hint">3D 에만 · 실물 속도는 그대로</span>
+        </div>
+        <div class="row runRow">
+          <button id="btnPreview" class="btn primary wide">▶ 미리보기</button>
+          <button id="btnStopSim" class="btn danger wide">정지</button>
         </div>
       </div>
+
+      <!-- ===== 2026-08-13 사용자 요청으로 숨김 (말로 만들기/팔레트/파이프라인만 유지)
+           필요해지면 이 주석을 풀 것: 이동 블록 설정 / 무시 장애물 / 공간 좌표(목심) /
+           위에서 본 맵. 백엔드 기능은 전부 살아있고 화면만 뺐다.
 
       <div id="segPanel" class="group hidden">
         <div class="groupHead">┃ 이동 블록 설정 <span id="segInfo" class="hint"></span></div>
@@ -140,7 +226,7 @@
         <div class="row"><label class="lbl">축 순서</label><select id="segAx"></select></div>
         <div class="row"><label class="lbl">회전</label><select id="segRot"></select></div>
         <div class="row">
-          <button id="btnRec" class="btn sm">● 녹화 시작/정지</button>
+          <button id="btnRec" class="btn sm">녹화 시작/정지</button>
           <span id="segRec" class="hint"></span>
         </div>
       </div>
@@ -152,8 +238,7 @@
       </div>
 
       <div class="group">
-        <div class="groupHead">공간 좌표 (목심)
-          <span class="hint">노랑=가능 · 빨강=불가 · 클릭=선택</span></div>
+        <div class="groupHead">공간 좌표 (목심)</div>
         <label class="chk"><input id="pegView" type="checkbox">
           3D 목심 선택 모드</label>
         <div class="row">
@@ -171,8 +256,7 @@
       </div>
 
       <div class="group">
-        <div class="groupHead">위에서 본 맵
-          <span class="hint">┃블록 선택 후 클릭 = 경로 점 추가</span></div>
+        <div class="groupHead">위에서 본 맵</div>
         <div id="mapBox"></div>
         <div class="row">
           <button id="btnMapUndo" class="btn sm">점 취소</button>
@@ -189,20 +273,13 @@
           <input id="spExtra" type="range" min="0" max="15" step="1">
         </div>
       </div>
-
-      <div class="group">
-        <div class="groupHead">미리보기 <span class="hint">3D에서만 움직입니다</span></div>
-        <div class="row runRow">
-          <button id="btnPreview" class="btn primary wide">▶ 미리보기</button>
-          <button id="btnStopSim" class="btn danger wide">정지</button>
-        </div>
-      </div>
+      ===== 숨김 끝 -->
     </div>
 
     <!-- ================= ③ 연동 =================
          실물 로봇 연결·보정·실행 -->
     <div id="tab-link" class="pane">
-      <div class="group">
+      <div class="group" style="display:none"><!-- 11-05 (사용자): 실행 로봇 고르기 안 씀 — 숨김 (기능은 그대로) -->
         <div class="groupHead">실행 로봇 <span class="hint">USB 꽂으면 자동 인식</span></div>
         <div class="row"><span id="execSel" class="seg wrap"></span></div>
         <div class="row">
@@ -223,24 +300,56 @@
           <button id="btnRun" class="btn primary wide">실물 실행</button>
           <button id="btnStop2" class="btn danger wide">정지</button>
         </div>
+        <div class="row">  <!-- 11-06 (사용자): 실행 도중 일시 정지 → 3D 에서 도킹을 옮기고 [계속] 하면 옮긴 자리로 -->
+          <button id="btnPause" class="btn pause wide" disabled
+                  title="실행 중에 멈춥니다 (팔은 힘을 준 채 그 자리). 그동안 3D 에서 도킹을 옮기고 [계속] 을 누르면 옮긴 자리로 다시 계산해 갑니다">‖ 일시 정지</button>
+        </div>
       </div>
 
-      <div class="group">
-        <div class="groupHead">자세 목록 <span class="hint">클릭 = 3D 미리보기</span></div>
+      <div class="group" style="display:none"><!-- 11-05 (사용자): 보정 지도 안 씀 — 등록한 자리만 손으로 맞춘 값 (보간 끔) -->
+        <div class="groupHead">🗺 보정 지도 <span class="hint">로봇 앞·대각·옆 판 + 앞앞 판 6줄 · 도킹 꽂는 자리마다 점</span></div>
+        <div class="row">
+          <button id="btnCalMap" class="btn sm">보정 지도 켜기/끄기</button>
+          <button id="btnCalOk" class="btn sm" title="실물로 돌려 보니 잘 됐을 때 — 지금 3D 에 꽂혀 있는 도킹 자리들을 '성공' 으로 기록 (지도에 파란 점)">✅ 보정 성공</button>
+        </div>
+        <p class="hint"><b style="color:#b066ff">보라 = 3D 모델 계산으로는 안 닿는 자리 (실물로 닿으면 눌러서 보정, 안 되면 어쩔 수 없음)</b> · <b style="color:#ff8800">주황 = 주변 보정과 8mm 넘게 다른 보정 (중간값 계산에서 빠짐 — 도킹 자리를 잘못 놓고 맞췄는지 확인)</b> · <b style="color:#2299ff">파랑 = ✅ 보정 성공</b> (실물로 해 보니 잘 된 자리 — 돌려 보고 잘 되면 [✅ 보정 성공], 지금 꽂힌 도킹 자리들이 기록됩니다).
+          점 = 그 자리에 도킹을 꽂았을 때 <b>펜이 들어가는 소켓 중심</b> (도킹 윗면 높이). 큰 점 = 회전 0°, 작은 점 = 90·180·270° 로 돌려 꽂은 자리.
+          초록 = 보정됨 · <b style="color:#ff3344">빨강 = 보정할 기준점(0°, 2칸 간격)</b> · 노랑 = 기준점 사이라 자동 계산 · 회색 = 아직.
+          3D 에서 <b>빨간 점을 누르면</b> 그 자리 보정 자세가 등록되고 아래 미세조정으로 넘어갑니다 → 실제 도킹을 그 자리에 꽂고
+          [로봇을 이 자세로] → +/- → [보정 저장].</p>
+        <p class="hint" id="calMapStat"></p>
+      </div>
+
+      <details class="group">
+        <summary class="groupHead">고급 — 등록 자세/관절
+          <span class="hint">보정용 · 일반 사용은 사물 블록만으로 충분</span></summary>
+        <div class="groupHead" style="margin-top:.5rem">자세 목록
+          <span class="hint">클릭 = 3D 미리보기</span></div>
         <div id="poseList" class="chipList"></div>
-      </div>
-
-      <div class="group">
-        <div class="groupHead">관절 (3D 시뮬)</div>
+        <div class="groupHead" style="margin-top:.7rem">관절 (3D 시뮬)</div>
         <div id="sliders"></div>
         <div class="row">
           <button id="btnGripOpen" class="btn">그리퍼 열기</button>
           <button id="btnGripClose" class="btn">그리퍼 닫기</button>
         </div>
-      </div>
+      </details>
 
       <div class="group">
         <div class="groupHead">미세조정 <span class="hint">실물만 보정 · 3D는 정답 고정</span></div>
+        <!-- 11-05 (사용자): 어느 팔을 보정하는지 늘 보이게 — base 도 팔마다 보정이 따로다 -->
+        <!-- 11-05 (사용자): A/B 고르기 줄은 없앰 — 자세를 고르면 그 자세의 팔로 자동 (base 는 목록의 'A팔 base / B팔 base') -->
+        <p id="ftArm" class="hint" style="margin:.1rem 0 .4rem;font-weight:700"></p>
+        <!-- 11-05 (사용자): 화면은 수평인데 실물이 기울 때 — 이 팔 j4 영점만 옮긴다 (실물만) -->
+        <!-- 11-06 (사용자: 보정은 그 자리의 모터값 — 내가 다시 보정하기 전엔 절대 바꾸지 마) 숨김: j4 영점을 옮기면
+             그 팔 보정 자세 전부의 j4 모터값이 같이 바뀐다 -->
+        <div class="row" style="align-items:center;gap:.4rem;display:none">
+          <label class="lbl">그리퍼 수평</label>
+          <button id="btnLvMinus" class="btn sm">−0.5°</button>
+          <span id="lvTrim" class="mono" style="min-width:4.5em;text-align:center">+0.0°</span>
+          <button id="btnLvPlus" class="btn sm">+0.5°</button>
+          <button id="btnLvReset" class="btn sm">0으로</button>
+        </div>
+        <p class="hint" style="margin:.1rem 0 .5rem;display:none">실물만 · 지금 팔의 j4 영점 · 누르면 실물 j4 가 바로 그만큼 움직임 (기본 자세에서 그리퍼를 보며 맞추기)</p>
         <div class="row">
           <label class="lbl">보정 로봇</label><span id="calRobot" class="seg"></span>
         </div>
@@ -266,7 +375,7 @@
         </div>
       </div>
 
-      <details class="group">
+      <details class="group" style="display:none"><!-- 11-05 (사용자): 영점 손으로 맞추기 안 씀 — 숨김 (기능은 그대로) -->
         <summary class="groupHead">영점(base) 손으로 맞추기</summary>
         <p class="hint">토크를 풀고 손으로 base 자세를 잡은 뒤 저장합니다.
           그리퍼가 지면과 수평이 되게. 저장하면 이전 값은 자동 백업됩니다.</p>
@@ -275,6 +384,72 @@
           <button id="btnCalCap" class="btn primary">② 이 자세를 base 로 저장</button>
         </div>
       </details>
+
+      <!-- 📷 카메라 동기화: 2026-10-20 사용 중지 (다시 쓰려면 이 주석을 풀고 app.js 의 CAM_UI 를 true)
+      <div class="group">
+        <div class="groupHead">📷 카메라 동기화 <span class="hint">영상의 카메라 위치 · 1인칭을 3D 에</span></div>
+        <div class="row">
+          <input id="camPath" placeholder="영상 경로 (cam_grid 기준 또는 절대경로)"
+                 value="shots/KakaoTalk_20261006_123735928.mp4">
+          <button id="btnCamLoad" class="btn sm primary">불러오기</button>
+        </div>
+        <div class="row">
+          <button id="btnCamPlay" class="btn sm">재생 / 정지</button>
+          <button id="btnCamFp" class="btn sm">1인칭 켜기/끄기</button>
+          <button id="btnCamRot" class="btn sm">판 90° 회전</button>
+        </div>
+        <div class="row">
+          <button id="btnCamAuto" class="btn sm">자동 반영 켜기/끄기</button>
+          <button id="btnCamBg" class="btn sm">1인칭 보기 바꾸기 (영상+트윈 → 트윈만 → 영상만)</button>
+          <button id="btnCamPlates" class="btn sm">바닥판 맞추기</button>
+        </div>
+        <div class="row">
+          <span class="hint">판 옮기기</span>
+          <button class="btn sm camMv" data-c="tx-">◀타일</button>
+          <button class="btn sm camMv" data-c="tx+">타일▶</button>
+          <button class="btn sm camMv" data-c="ty+">▲타일</button>
+          <button class="btn sm camMv" data-c="ty-">타일▼</button>
+          <button class="btn sm camMv" data-c="x-">◀</button>
+          <button class="btn sm camMv" data-c="x+">▶</button>
+          <button class="btn sm camMv" data-c="y+">▲</button>
+          <button class="btn sm camMv" data-c="y-">▼</button>
+        </div>
+        <p class="hint" id="camStat">영상을 불러오세요. 영상 속 로봇(위치)과 도킹(위치·색)을 읽어
+          공장 배치에 자동으로 반영합니다 (도킹을 뽑거나 옮기면 따라갑니다).</p>
+      </div>
+      -->
+
+      <div class="group" style="display:none"><!-- 11-05 (사용자): 카메라(휴대폰·판다 웹캠) 안 씀 — 숨김 (기능은 그대로) -->
+        <div class="groupHead">📱 휴대폰 카메라 <span class="hint">손에 든 휴대폰 영상으로 카메라 위치를 3D 에 (실시간)</span></div>
+        <p class="hint">휴대폰(사파리)으로 아래 주소를 여세요 → '안전하지 않음' 경고에서 [자세히 보기 → 웹사이트 방문]
+          → [시작]. 휴대폰과 이 컴퓨터가 같은 와이파이(핫스팟)에 있어야 합니다.</p>
+        <div id="phoneUrls" class="mono" style="user-select:all"></div>
+        <div class="row">
+          <span class="hint">판 맞추기</span>
+          <button class="btn sm liveMv" data-c="rot">판 90° 회전</button>
+          <button class="btn sm liveMv" data-c="x-">◀</button>
+          <button class="btn sm liveMv" data-c="x+">▶</button>
+          <button class="btn sm liveMv" data-c="y+">▲</button>
+          <button class="btn sm liveMv" data-c="y-">▼</button>
+        </div>
+        <div class="row">
+          <button class="btn sm liveMv" data-c="fp">1인칭 켜기/끄기</button>
+          <button class="btn sm liveMv" data-c="view">1인칭 보기 바꾸기</button>
+          <button class="btn sm liveMv" data-c="apply">자동 반영 켜기/끄기</button>
+          <button class="btn sm liveMv" data-c="reg">판 다시 맞추기</button>
+          <button class="btn sm liveMv" data-c="rec">녹화 시작/끝</button>
+          <button class="btn sm liveMv" data-c="smooth">손떨림 거르기 켜기/끄기</button>
+          <button class="btn sm liveMv" data-c="reset">처음부터 다시 찾기</button>
+        </div>
+        <p class="hint">판 맞춤은 <b>로봇 받침</b>으로 자동입니다 (로봇과 판이 함께 보이게). 도킹은 보이는 색·자리대로
+          옮기고, 사라지면 숨깁니다. 실행 중 목표 도킹이 사라지면 팔을 든 채 기다렸다가 다시 꽂으면 이어 갑니다.
+          로봇 위치는 바꾸지 않습니다.</p>
+        <p class="hint" id="liveStat">휴대폰 연결을 기다리는 중</p>
+        <div class="row">
+          <button class="btn sm" id="btnPandaCam">🖥 판다 웹캠 켜기/끄기</button>
+          <span class="hint" id="pandaCamStat">판다에 꽂은 USB 웹캠 영상을 휴대폰 대신 보냅니다 (휴대폰과 동시에 켜지 마세요)</span>
+        </div>
+      </div>
 
       <div class="group">
         <div class="groupHead">매크로 <span class="hint">기록해두고 버튼 하나로 이동</span></div>
@@ -307,8 +482,93 @@
         </div>
       </details>
     </div>
+    <!-- ================= ④ 조이콘 =================
+         왼쪽 스틱으로 앞뒤·좌우, X/ZR 버튼으로 위·아래.
+         (기울기(IMU) 방식은 다루기 어려워 뺐다 — 2026-08-23)
+         로봇에 따라 규칙이 다르다:
+           SO-ARM(6축) = 물컵 규칙 (j5 를 안 돌린다)
+           UR15(8축)   = 변형 물컵 규칙 (axis_end 를 바닥과 평행하게)
+         둘 다 서버의 IK 가 보장한다. -->
+    <div id="tab-joy" class="pane">
+      <div class="group">
+        <div class="groupHead">조이콘</div>
+        <p class="hint" id="joyStat">조이콘의 <b>아무 버튼이나</b> 눌러주세요
+          — 연결 버튼이 따로 없습니다.</p>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">조종</div>
+        <button id="joyStop" class="btn danger wide">정지</button>
+        <button id="joyHome" class="btn wide" style="margin-top:.4rem">
+          ⌂ 로봇 원위치 (전 관절 0도)</button>
+        <button id="headReload" class="btn wide" style="margin-top:.4rem">
+          🔄 조종표 다시 읽기 (표를 새로 만든 뒤)</button>
+        <button id="joyTable" class="btn wide" style="margin-top:.4rem">
+          ⚡ 조종표 미리계산 (한 번만, 그 뒤로는 즉시 반응)</button>
+        <p class="hint" id="joyHow" style="margin-top:.4rem"></p>
+        <p class="hint">방향은 <b>3D 화면 기준</b>(대좌표계)입니다 —
+          로봇을 돌려도 조작 방향은 그대로입니다.</p>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">상태</div>
+        <div class="row"><label class="lbl" id="lbP">스틱 ↕</label>
+          <span id="joyP" class="mono grow">0.00</span></div>
+        <div class="row"><label class="lbl" id="lbR">스틱 ↔</label>
+          <span id="joyR" class="mono grow">0.00</span></div>
+        <div class="row"><label class="lbl">툴 위치</label>
+          <span id="joyPos" class="mono grow">—</span></div>
+        <div class="row"><label class="lbl">막힌 축</label>
+          <span id="joyBlk" class="mono grow">—</span></div>
+        <div class="row"><label class="lbl">진단</label>
+          <span id="joyDiag" class="mono grow" style="font-size:11px">—</span></div>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">🥽 VR 초점 보정 (PSVR)</div>
+        <div class="row">
+          <button id="vrOn" class="btn primary grow">초점 보정 ON/OFF</button>
+          <button id="vrReset" class="btn grow">기본값</button>
+        </div>
+        <p class="hint">PSVR 화면으로 창을 옮기고 <b>F11</b>(전체화면) 하세요.
+          <b>당기기</b>를 왼쪽으로 밀수록 화면이 코앞으로 당겨집니다(확대).
+          <b>왜곡</b>은 렌즈 때문에 생기는 흐림을 잡습니다. 자동 저장됩니다.</p>
+        <div class="row"><span class="lbl">왜곡</span>
+          <input id="vrK1" type="range" min="-0.3" max="0.6" step="0.01" value="0.22">
+          <span id="vrK1V" class="mono">0.22</span></div>
+        <div class="row"><span class="lbl">당기기</span>
+          <input id="vrFov" type="range" min="10" max="90" step="1" value="50">
+          <span id="vrFovV" class="mono">50도</span></div>
+        <div class="row"><span class="lbl">확대</span>
+          <input id="vrScale" type="range" min="0.7" max="1.6" step="0.01" value="1.0">
+          <span id="vrScaleV" class="mono">1.00</span></div>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">버튼 번호</div>
+        <div class="row"><label class="lbl">위 버튼</label>
+          <input id="joyBUp" type="number" value="7" min="0" max="19"
+                 style="width:60px">
+          <label class="lbl">아래</label>
+          <input id="joyBDn" type="number" value="1" min="0" max="19"
+                 style="width:60px"></div>
+      </div>
+
+      <div class="group">
+        <div class="groupHead">감도</div>
+        <div class="row"><label class="lbl">속도</label>
+          <input id="joySpd" type="range" min="0.02" max="1.5" step="0.01"
+                 value="0.25" class="grow">
+          <span id="joySpdV" class="mono">0.25</span></div>
+        <div class="row"><label class="lbl">데드존</label>
+          <input id="joyDead" type="range" min="0" max="40" step="1" value="15"
+                 class="grow">
+          <span id="joyDeadV" class="mono">15%</span></div>
+      </div>
+    </div>
   </section>
 </main>
+
 
 <div id="logOverlay" class="hidden">
   <div class="logPanel card">
@@ -319,6 +579,6 @@
 </div>
 
 <div id="mapxy" hidden><input></div>
-<script src="/ui/app.js"></script>
+<script src="/ui/app.js?v=20261020"></script>
 </body>
 </html>

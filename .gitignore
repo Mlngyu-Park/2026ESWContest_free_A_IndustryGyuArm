@@ -43,3 +43,17 @@ __pycache__/
 /Industry_gyu_arm/llm_usage.jsonl
 /Industry_gyu_arm/llm_train.jsonl
 /Industry_gyu_arm/backup_*/
+
+# ------------------------------------------------------------
+# 11-06: DUSK_BOOM (FPGA TPU · 라떼판다 Mu 실행기) — 소스만
+# ------------------------------------------------------------
+!/dusk_boom_fpga_v35/
+/dusk_boom_fpga_v35/debian/
+/dusk_boom_fpga_v35/sd*/
+/dusk_boom_fpga_v35/vivado_out/
+/dusk_boom_fpga_v35/*.out
+/dusk_boom_fpga_v35/armstudio_board/stage*/
+
+# 손으로 만든 백업 (예: arm_studio_web.py.bak_pause_1106, calib.json.bak2_174406)
+*.bak_*
+*.bak[0-9]*

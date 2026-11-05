@@ -17,7 +17,7 @@ from scservo_sdk import PortHandler, PacketHandler, COMM_SUCCESS
 
 sys.stdout.reconfigure(line_buffering=True)
 PORT='/dev/ttyACM0'; BAUD=1000000
-GID=6
+GID=5      # 그리퍼 (10-29 번호 6 -> 5)
 ADDR_TORQUE=40; ADDR_PRESENT=56
 ADDR_MIN_ANGLE=9; ADDR_MAX_ANGLE=11; ADDR_LOCK=55
 MARGIN=15

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>ARM STUDIO</title>
+<style>
+  html,body{margin:0;height:100%;background:#101418;color:#e8eef4;font-family:"NanumGothic",sans-serif}
+  .c{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px}
+  h1{font-size:56px;letter-spacing:4px;margin:0}
+  p{font-size:22px;color:#9fb3c8;margin:0}
+  .bar{width:360px;height:6px;background:#26313c;border-radius:3px;overflow:hidden}
+  .bar i{display:block;height:100%;width:30%;background:#4363d8;animation:m 1.4s infinite ease-in-out}
+  @keyframes m{0%{margin-left:-30%}100%{margin-left:100%}}
+</style></head>
+<body><div class="c">
+  <h1>ARM STUDIO</h1>
+  <p id="s">시작하는 중입니다… (처음 켤 때 1~3분)</p>
+  <div class="bar"><i></i></div>
+  <p id="t" style="font-size:16px"></p>
+</div>
+<script>
+  // the server (python) loads the robot model first; poll until it answers, then open it
+  const URL_APP = "http://127.0.0.1:7900/";
+  const t0 = Date.now();
+  async function poll() {
+    try {
+      await fetch(URL_APP + "api/meta", {mode: "no-cors", cache: "no-store"});
+      document.getElementById("s").textContent = "열고 있습니다…";
+      location.replace(URL_APP);
+      return;
+    } catch (e) {}
+    document.getElementById("t").textContent = Math.round((Date.now() - t0) / 1000) + " 초";
+    setTimeout(poll, 2000);
+  }
+  poll();
+</script></body></html>

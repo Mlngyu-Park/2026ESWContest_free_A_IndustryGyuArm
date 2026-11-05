@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ARM STUDIO</title>
+<link rel="stylesheet" href="/uinew/app.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ===== 좌측 사이드바 ===== -->
+  <nav id="side">
+    <div class="logo">A</div>
+    <button class="nav on" data-tab="sim">
+      <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/>
+        <rect x="14" y="3" width="7" height="7" rx="2"/>
+        <rect x="3" y="14" width="7" height="7" rx="2"/>
+        <path d="M14 17.5h7M17.5 14v7"/></svg>
+      공정
+    </button>
+    <button class="nav" data-tab="factory">
+      <svg viewBox="0 0 24 24"><path d="M3 21h18M5 21V8l5 3V8l5 3V8l4 2v11"/>
+        <path d="M9 21v-4h3v4"/></svg>
+      공장
+    </button>
+    <button class="nav" data-tab="robot">
+      <svg viewBox="0 0 24 24"><rect x="6" y="9" width="12" height="9" rx="2"/>
+        <path d="M12 9V5M9 5h6M9.5 13h.01M14.5 13h.01M4 12v4M20 12v4"/></svg>
+      로봇
+    </button>
+    <div class="grow"></div>
+    <button class="nav" id="navLog">
+      <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+      기록
+    </button>
+  </nav>
+
+  <div id="main">
+    <!-- ===== 상단바 ===== -->
+    <header id="top">
+      <h1 id="title">공정</h1>
+      <div id="ticker" title="클릭 = 전체 기록"><span id="tickerText">준비 중…</span></div>
+      <div class="pill" id="connChip"><i></i><span>확인 중</span></div>
+      <div class="pill" id="robotChip">SIM</div>
+      <button class="btn bad" id="btnEstop">■ 정지</button>
+    </header>
+
+    <div id="body">
+      <!-- 3D -->
+      <section id="stage">
+        <iframe id="viewer" title="3D"></iframe>
+        <div class="hud">
+          <div class="hudCell">cr_7<b id="hudZ">—</b></div>
+          <div class="hudCell">로봇<b id="hudPos">—</b></div>
+        </div>
+      </section>
+
+      <!-- 우측 패널 -->
+      <section id="panel">
+
+        <!-- ========== 공정 (시뮬레이션) ========== -->
+        <div class="pane on" id="pane-sim">
+
+          <div class="card hero">
+            <h3>말로 만들기
+              <span class="q" title="말하거나 입력하면 블록이 생기고 바로 미리보기가 됩니다">?</span>
+            </h3>
+            <div class="row">
+              <button class="btn" id="btnMic">🎤</button>
+              <input id="sayTxt" type="text" class="grow"
+                     placeholder="펜 잡아서 3번 도킹에 꽂아">
+              <button class="btn main" id="btnSay">전송</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>블록
+              <span class="q" title="끌어서 아래 공정에 놓으세요. 사물 알약은 블록 위에 떨어뜨리면 교체됩니다">?</span>
+            </h3>
+            <div id="blkPalette" class="chips"></div>
+          </div>
+
+          <div class="card">
+            <h3>공정
+              <span class="q" title="블록 우클릭 = 이 자세로 이동 · 자세 등록 · 삭제">?</span>
+              <span class="r">
+                <button class="btn sm" id="btnBlkUp">▲</button>
+                <button class="btn sm" id="btnBlkDn">▼</button>
+                <button class="btn sm bad" id="btnBlkClear">비우기</button>
+              </span>
+            </h3>
+            <div id="pipeline"></div>
+            <div id="blkTrash">여기로 끌면 삭제</div>
+            <div class="row" style="margin-top:9px">
+              <button class="btn grow" id="btnSuggest">로봇 자리 추천</button>
+              <button class="btn main hidden" id="btnSuggestGo">이 자리로</button>
+            </div>
+          </div>
+
+          <div class="card" id="timebar">
+            <div class="lab"><b id="tbNow">대기</b><span id="tbTime"></span></div>
+            <input id="tbRange" type="range" min="0" max="0" value="0" step="1">
+            <div id="tbTicks"></div>
+          </div>
+
+          <div class="card">
+            <div class="row">
+              <label class="lbl">속도</label>
+              <select id="speed" class="grow"></select>
+              <label class="chk"><input id="loop" type="checkbox">반복</label>
+            </div>
+            <div class="row">
+              <button class="btn main grow" id="btnPreview">▶ 미리보기</button>
+              <button class="btn grow" id="btnRun">실물 실행</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ========== 공장 꾸미기 ========== -->
+        <div class="pane" id="pane-factory">
+          <div class="card">
+            <h3>설비
+              <span class="q" title="썸네일을 3D 화면으로 끌어다 놓으면 그 자리에 배치됩니다. 우클릭 = 삭제">?</span>
+              <span class="r">
+                <label class="btn sm" style="cursor:pointer">＋STL
+                  <input id="upStl" type="file" accept=".stl" multiple hidden></label>
+              </span>
+            </h3>
+            <div id="envList" class="thumbs"></div>
+          </div>
+
+          <div class="card">
+            <h3>배치 저장 / 불러오기</h3>
+            <div class="row">
+              <input id="fpName" type="text" class="grow" placeholder="이름 (예: 1번공정)">
+              <button class="btn main" id="btnFpSave">저장</button>
+            </div>
+            <div class="row">
+              <select id="fpSel" class="grow"></select>
+              <button class="btn" id="btnFpLoad">불러오기</button>
+              <button class="btn bad" id="btnFpDel">삭제</button>
+            </div>
+            <div class="row"><button class="btn wide" id="btnFpReset">새 공장 (플레이트만)</button></div>
+          </div>
+
+          <div class="card">
+            <h3>이름 · 색
+              <span class="q" title="3D에서 물체를 클릭해 고른 뒤 입력하면 바로 적용됩니다">?</span>
+            </h3>
+            <div class="row"><span class="lbl">대상</span>
+              <span id="nmCur" class="mono grow">3D에서 클릭</span></div>
+            <div class="row">
+              <input id="nmText" type="text" class="grow" placeholder="예: 1번 도색 챔버" disabled>
+              <input id="nmColor" type="color" value="#e6194b" list="pal6" disabled>
+              <datalist id="pal6">
+                <option value="#e6194b"></option><option value="#f58231"></option>
+                <option value="#ffe119"></option><option value="#3cb44b"></option>
+                <option value="#4363d8"></option><option value="#911eb4"></option>
+              </datalist>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>바닥 플레이트
+              <span class="q" title="3D에서 플레이트를 더블클릭 → 초록 자리 클릭 = 확장">?</span>
+            </h3>
+            <div class="row">
+              <select id="plateSel" class="grow"></select>
+              <button class="btn bad" id="btnPlateDel">삭제</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>로봇 위치
+              <span class="q" title="주황 핀 클릭 → 바닥 목심 클릭 → 하늘색 목심 클릭">?</span>
+            </h3>
+            <label class="chk"><input id="robotMove" type="checkbox">로봇 이동 모드</label>
+            <div class="row" style="margin-top:8px">
+              <span id="robotPos" class="mono grow"></span>
+              <button class="btn" id="btnRobotHome">원점</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ========== 로봇 (연동) ========== -->
+        <div class="pane" id="pane-robot">
+          <div class="card">
+            <h3>실행 로봇</h3>
+            <div class="row">
+              <select id="execSel" class="grow"></select>
+              <button class="btn" id="btnRStat">상태</button>
+            </div>
+            <div id="robotStat" class="mono" style="margin-top:8px"></div>
+          </div>
+
+          <div class="card">
+            <h3>자세
+              <span class="q" title="자세를 고르고 [이 자세로]를 누르면 실물이 이동합니다. × = 삭제">?</span>
+            </h3>
+            <div id="poseList" class="poses"></div>
+            <div class="row" style="margin-top:10px">
+              <button class="btn main grow" id="btnFtGo">로봇을 이 자세로</button>
+            </div>
+            <div id="sliders" style="margin-top:11px"></div>
+          </div>
+
+          <div class="card">
+            <h3>미세조정
+              <span class="q" title="실물만 보정합니다. 3D는 정답 자세를 유지합니다">?</span>
+            </h3>
+            <div class="row"><span class="lbl">로봇</span>
+              <span id="calRobot" class="jog grow"></span></div>
+            <div class="row"><span class="lbl">관절</span>
+              <span id="ftJoints" class="jog grow"></span></div>
+            <div class="row">
+              <span class="lbl">스텝</span>
+              <select id="ftStep" class="grow"></select>
+              <button class="btn" id="btnFtMinus">−</button>
+              <button class="btn" id="btnFtPlus">＋</button>
+            </div>
+            <div class="row">
+              <button class="btn grow" id="btnFtReset">보정 초기화</button>
+              <button class="btn main grow" id="btnFtSave">보정 저장</button>
+            </div>
+            <div id="ftOff" class="mono" style="margin-top:8px"></div>
+          </div>
+
+          <div class="card">
+            <h3>영점(base) 손으로 맞추기
+              <span class="q" title="토크를 풀고 손으로 자세를 잡은 뒤 저장합니다. 그리퍼가 지면과 수평이 되게">?</span>
+            </h3>
+            <div class="row">
+              <button class="btn grow" id="btnCalOff">① 토크 해제</button>
+              <button class="btn main grow" id="btnCalCap">② base 저장</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>매크로</h3>
+            <div id="macroBtns" class="chips"></div>
+            <div class="row" style="margin-top:8px">
+              <select id="macroSlot" class="grow"></select>
+              <button class="btn" id="btnMRec">현재 위치 기록</button>
+              <button class="btn bad" id="btnMClr">비우기</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>그리퍼</h3>
+            <div class="row">
+              <button class="btn grow" id="btnGripOpen">열기 ✋</button>
+              <button class="btn grow" id="btnGripClose">닫기 ✊</button>
+              <button class="btn bad" id="btnToff">토크 해제</button>
+            </div>
+          </div>
+        </div>
+
+      </section>
+    </div>
+  </div>
+</div>
+
+<!-- 전체 기록 -->
+<div id="logWrap">
+  <div id="logBox">
+    <div class="hd">전체 기록
+      <button class="btn sm" style="margin-left:auto" id="logClose">닫기</button></div>
+    <div class="bd" id="console"></div>
+  </div>
+</div>
+
+<script src="/uinew/app.js"></script>
+</body>
+</html>

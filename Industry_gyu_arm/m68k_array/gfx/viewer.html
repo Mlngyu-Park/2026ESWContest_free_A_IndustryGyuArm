@@ -1,0 +1,659 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>M68K-GPU · 공장 3D</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet"
+  href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap">
+<style>
+  /* ── 매킨토시 128K (1984) ─────────────────────────────────
+     그 시절 화면은 512x342 흑백 1비트였다. 회색조차 없어서
+     명암은 점을 성기게 찍어(디더) 흉내냈다. 여기서도 같은 방법을 쓴다.
+     글꼴은 Chicago(시스템 글꼴) 가 원본이지만 없으니
+     같은 계열의 각진 산세리프로 대신한다. */
+  :root{
+    --ink:#000;              /* 검정 = 켜진 점 */
+    --paper:#fff;            /* 흰색 = 꺼진 점 */
+    --desk:#888;             /* 바탕화면 = 50% 디더 */
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    /* Silkscreen = Chicago(매킨토시 시스템 글꼴) 계열 픽셀 글꼴.
+       다만 한글 글자가 없어서, 한글은 시스템 글꼴로 넘어간다.
+       그래서 영문·숫자만 픽셀로 나오고 한글은 또렷하게 읽힌다. */
+    font:12px/1.5 "Silkscreen","Noto Sans KR","Malgun Gothic",
+         -apple-system,sans-serif;
+    /* 바탕화면: 1픽셀 체크무늬 = 그 시절 50% 회색 */
+    background-image:
+      repeating-conic-gradient(var(--ink) 0% 25%, var(--paper) 0% 50%);
+    background-size:4px 4px;
+    -webkit-font-smoothing:none;
+    image-rendering:pixelated;
+    min-height:100vh; padding:0 0 30px;
+  }
+
+  /* ── 메뉴바 ── */
+  .menubar{
+    background:var(--paper); border-bottom:1px solid var(--ink);
+    padding:2px 8px; display:flex; gap:18px; align-items:center;
+    position:sticky; top:0; z-index:50;
+  }
+  .menubar .apple{font-size:14px}
+  .menubar span{cursor:default}
+  .menubar .clock{margin-left:auto;font-variant-numeric:tabular-nums}
+
+  /* ── 창(window) ── */
+  .win{
+    background:var(--paper); border:1px solid var(--ink);
+    margin:14px; box-shadow:2px 2px 0 rgba(0,0,0,.55);
+  }
+  .titlebar{
+    border-bottom:1px solid var(--ink);
+    display:flex; align-items:center; gap:6px; padding:2px 5px;
+    /* 제목줄의 가로줄무늬 — 매킨토시의 상징 */
+    background:repeating-linear-gradient(
+      to bottom, var(--ink) 0 1px, var(--paper) 1px 2px);
+  }
+  .titlebar .box{
+    width:11px; height:11px; border:1px solid var(--ink);
+    background:var(--paper); flex:0 0 auto;
+  }
+  .titlebar h1,.titlebar h2{
+    margin:0; font-size:12px; font-weight:400; letter-spacing:0;
+    background:var(--paper); padding:0 7px;
+  }
+  .titlebar .grow{flex:1}
+  .body{padding:11px 13px}
+
+  /* ── 배치 ── */
+  .wrap{display:flex;flex-wrap:wrap;gap:0;align-items:flex-start}
+  .stage{flex:0 0 auto}
+  .side{flex:1 1 330px;min-width:310px;max-width:430px}
+
+  canvas{
+    background:var(--paper); display:block;
+    image-rendering:pixelated; cursor:crosshair;
+    border:1px solid var(--ink);
+  }
+  canvas.drag{cursor:move}
+
+  .hint{font-size:11px;line-height:1.5;margin:7px 0 0}
+
+  /* ── 컨트롤 ── */
+  label{display:flex;align-items:center;gap:8px;margin:7px 0;font-size:12px}
+  label>span:first-child{width:62px;flex:0 0 auto}
+  select{
+    flex:1; font:inherit; font-size:12px; padding:1px 3px;
+    background:var(--paper); color:var(--ink);
+    border:1px solid var(--ink); border-radius:0;
+    box-shadow:1px 1px 0 var(--ink);
+  }
+  button{
+    font:inherit; font-size:12px; padding:3px 13px;
+    background:var(--paper); color:var(--ink);
+    border:1px solid var(--ink); border-radius:9px;
+    box-shadow:1px 1px 0 var(--ink); cursor:pointer;
+  }
+  button:active{background:var(--ink);color:var(--paper);box-shadow:none;
+                transform:translate(1px,1px)}
+  button:disabled{opacity:.45;cursor:default}
+  button.default{border-width:3px;border-radius:11px}
+
+  /* ── 숫자판 ── */
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:0;
+        border:1px solid var(--ink);border-width:1px 0 0 1px}
+  .tile{border:1px solid var(--ink);border-width:0 1px 1px 0;padding:6px 9px}
+  .tile b{display:block;font-size:15px;font-weight:700;
+          font-variant-numeric:tabular-nums}
+  .tile i{font-style:normal;font-size:10px}
+
+  /* ── 표 ── */
+  table{width:100%;border-collapse:collapse;font-size:11.5px}
+  th,td{text-align:right;padding:3px 5px;border-bottom:1px solid var(--ink)}
+  th:first-child,td:first-child{text-align:left}
+  th{font-weight:400;border-bottom-width:2px}
+  tr.on td{background:var(--ink);color:var(--paper)}
+
+  /* ── 조각 목록 ── */
+  #chatlog{height:120px;overflow:auto;border:1px solid var(--ink);
+           padding:5px 7px;background:var(--paper);font-size:12px}
+  #chatin:focus{outline:2px solid var(--ink);outline-offset:-2px}
+  .swatch{width:9px;height:9px;border:1px solid var(--ink);flex:0 0 auto}
+
+  .err{padding:9px;font-size:12px;line-height:1.6}
+  code{font-family:Monaco,"Courier New",monospace;font-size:11px;
+       background:var(--paper);border:1px solid var(--ink);padding:0 3px}
+</style>
+
+<div class="menubar">
+  <span class="apple">&#63743;</span>
+  <span>File</span><span>Edit</span><span>View</span><span>Special</span>
+  <span class="clock" id="clock"></span>
+</div>
+
+<div class="wrap">
+  <div class="stage">
+    <div class="win" style="margin-right:7px">
+      <div class="titlebar">
+        <div class="box"></div>
+        <div class="grow"></div>
+        <h1>M68K-GPU</h1>
+        <div class="grow"></div>
+        <div class="box"></div>
+      </div>
+      <div class="body" style="padding:9px">
+        <canvas id="cv" width="320" height="240"
+                style="width:640px;height:480px"></canvas>
+        <div class="hint">
+          끌기 = 돌리기 &nbsp; 휠 = 확대 &nbsp; 두 번 누르기 = 처음 시점<br>
+          모토로라 68000 정수 연산만으로 그립니다. 나눗셈·곱셈 사이클까지 셉니다.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="side">
+    <div class="win">
+      <div class="titlebar">
+        <div class="box"></div><div class="grow"></div>
+        <h2>Hardware</h2><div class="grow"></div><div class="box"></div>
+      </div>
+      <div class="body">
+        <label><span>CPU</span>
+          <select id="cfg">
+            <option value="8,1">68000 8MHz &times; 1</option>
+            <option value="12.5,1">68000 12.5MHz &times; 1</option>
+            <option value="8,32">68000 8MHz &times; 32</option>
+            <option value="12.5,32" selected>68000 12.5MHz &times; 32</option>
+            <option value="16.67,32">68000 16.67MHz &times; 32</option>
+            <option value="12.5,64">68000 12.5MHz &times; 64</option>
+            <option value="0,0">제한 없음 (이 PC)</option>
+          </select>
+        </label>
+        <label><span>실시간</span>
+          <button id="play">&#9654; 로봇 따라가기</button>
+        </label>
+        <label><span>화면</span>
+          <button id="mono">흑백 1비트 (1984)</button>
+        </label>
+      </div>
+    </div>
+
+    <div class="win">
+      <div class="titlebar">
+        <div class="box"></div><div class="grow"></div>
+        <h2>Blocks</h2><div class="grow"></div><div class="box"></div>
+      </div>
+      <div class="body">
+        <div id="chatlog"></div>
+        <div style="display:flex;gap:6px;margin-top:8px">
+          <input id="chatin" type="text" placeholder="예: 빨간 도킹으로 옮겨줘"
+                 style="flex:1;font:inherit;font-size:12px;padding:3px 5px;
+                        background:#fff;color:#000;border:1px solid #000;
+                        border-radius:0;box-shadow:1px 1px 0 #000">
+          <button id="chatgo" class="default">보내기</button>
+        </div>
+        <div id="blocklist" style="margin-top:9px"></div>
+        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+          <button id="simgo" class="default">&#9654; 블록 시뮬레이션</button>
+          <button id="blkclear">비우기</button>
+          <button id="rebuild">배치 다시 굽기</button>
+        </div>
+        <div class="hint" id="simmsg">채팅으로 명령하면 AI 가 블록을 만듭니다.
+          [블록 시뮬레이션] 을 누르면 그 순서대로 3D 로 돌립니다.</div>
+      </div>
+    </div>
+
+    <div class="win">
+      <div class="titlebar">
+        <div class="box"></div><div class="grow"></div>
+        <h2>Performance</h2><div class="grow"></div><div class="box"></div>
+      </div>
+      <div class="body">
+        <div class="grid">
+          <div class="tile"><b id="fps">&ndash;</b><i>68000 환산 fps</i></div>
+          <div class="tile"><b id="ms">&ndash;</b><i>프레임당 ms</i></div>
+          <div class="tile"><b id="cyc">&ndash;</b><i>68000 사이클</i></div>
+          <div class="tile"><b id="tri">&ndash;</b><i>삼각형</i></div>
+          <div class="tile"><b id="realfps">&ndash;</b><i>실제 fps (이 PC)</i></div>
+          <div class="tile"><b id="realms">&ndash;</b><i>실제 그린 시간 ms</i></div>
+        </div>
+        <table id="tbl" style="margin-top:10px">
+          <tr><th>구성</th><th>프레임당</th><th>fps</th><th>체감</th></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const W = 320, H = 240;
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const img = ctx.createImageData(W, H);
+
+/* ── 팔레트 ────────────────────────────────────────────────
+   68000 은 색을 인덱스로만 다룬다 (8bit = 256색).
+   렌더러가 조각마다 16칸씩 쓴다: 앞면 8단계 + 뒷면 8단계.
+     col = 16 + (조각번호 % 15)*16 + (뒷면 ? 0 : 8) + 명암(0~7)
+   조각의 진짜 색은 /api/m68k/scene 이 알려준다 (바닥은 회색, 로봇은 링크색). */
+let PARTS = [];
+const pal = new Uint8Array(256 * 3);
+
+function buildPalette() {
+  const fallback = [[96,164,255],[255,168,92],[130,226,150],[232,124,200],
+                    [240,216,110],[150,168,255],[120,232,232]];
+  for (let i = 0; i < 256; i++) {
+    if (i < 16) { pal[i*3] = pal[i*3+1] = pal[i*3+2] = 0; continue; }
+    const part  = Math.floor((i - 16) / 8) % 29;
+    const sh    = (i - 16) % 8;              /* 0 = 그늘, 7 = 빛 정면 */
+    const base  = (PARTS[part] && PARTS[part].rgb) || fallback[part % 7];
+    /* 그늘은 30%, 빛 받는 면은 115% 까지.
+       폭을 넓게 잡아야 면끼리 구분돼서 입체로 보인다.
+       (전에는 55~104% 라 다 비슷해서 뿌옜다) */
+    const k = 0.30 + sh * 0.122;
+    pal[i*3  ] = Math.min(255, base[0] * k);
+    pal[i*3+1] = Math.min(255, base[1] * k);
+    pal[i*3+2] = Math.min(255, base[2] * k);
+  }
+}
+
+buildPalette();
+
+async function loadScene() {
+  try {
+    const r = await fetch('/api/m68k/scene', {cache: 'no-store'});
+    if (!r.ok) return;
+    const d = await r.json();
+    PARTS = d.parts || [];
+    buildPalette();
+    if (d.tri) document.getElementById('tri').textContent = d.tri.toLocaleString();
+
+  } catch (e) { /* 장면 정보가 없어도 그림은 그린다 */ }
+}
+
+/* ── 시점 (마우스가 바꾼다) ── */
+/* 처음 시점 = 본 화면(start_pro)의 카메라와 같은 각도.
+   three.js 쪽 cam.position(0.55,0.45,0.75) / target(0,0.15,0.25) 를
+   각도로 환산하면 yaw 48도, pitch -22도가 나온다. */
+let yaw = 48, pitch = -22, zoom = 160;
+const phase = 0;   /* 자세는 앱이 정한다 — 여기서 흔들지 않는다 */
+let playing = false, busy = false, pending = false;
+
+/* 매킨토시 128K 화면은 흑백 1비트였다 — 회색이 아예 없다.
+   그래서 밝기를 점의 성김으로 흉내냈다(디더링). 여기서도 같은 방법이다.
+   4x4 베이어 행렬: 그 자리의 문턱값보다 밝으면 흰 점, 아니면 검은 점. */
+const BAYER = [ 0, 8, 2,10,
+               12, 4,14, 6,
+                3,11, 1, 9,
+               15, 7,13, 5];
+let mono = true;                 /* 흑백(1984) / 컬러 전환 */
+let lastBytes = null;            /* 마지막에 받은 화면 (색만 바꿀 때 재사용) */
+let realMs = 0;                  /* 이 PC 가 실제로 한 장 그리는 데 걸린 시간 */
+
+function paint(bytes) {
+  const d = img.data;
+  for (let y = 0, i = 0, p = 0; y < H; y++) {
+    for (let x = 0; x < W; x++, i++, p += 4) {
+      const c = bytes[i] * 3;
+      const r = pal[c], g = pal[c+1], b = pal[c+2];
+      if (bytes[i] === 0) {
+        /* 안 그려진 곳 = 배경.
+           1984년 매킨토시는 바탕이 '흰 종이' 였다 (검정 바탕이 아니다).
+           컬러 모드에서는 본 화면(start_pro)과 같은 0x303030 회색. */
+        const bg = mono ? 255 : 0x30;
+        d[p] = d[p+1] = d[p+2] = bg;
+        d[p+3] = 255; continue;
+      }
+      if (mono) {
+        /* 흰 종이에 검은 잉크다 — 밝은 면일수록 점을 성기게 찍는다.
+           그래서 문턱과 견줄 값은 밝기가 아니라 '어두운 정도' 다. */
+        const dark = 1 - (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+        const th   = (BAYER[(y & 3) * 4 + (x & 3)] + 0.5) / 16;
+        const ink  = dark > th ? 0 : 255;
+        d[p] = d[p+1] = d[p+2] = ink;
+      } else {
+        d[p] = r; d[p+1] = g; d[p+2] = b;
+      }
+      d[p+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+/* 68000 한 장 그리는 데 실제로 걸리는 시간만큼 기다린다.
+   이게 없으면 브라우저가 60fps 로 매끄럽게 돌려버려서
+   "68000 으로 보면 이렇다" 가 하나도 체감되지 않는다.
+   드래그·휠·따라가기 전부 이 문을 지난다. */
+let nextFrameAt = 0;
+
+function frameBudgetMs() {
+  const [mhz, n] = document.getElementById('cfg').value.split(',').map(Number);
+  if (!(mhz > 0) || !lastCyc) return 0;      /* '제한 없음' 이면 그대로 */
+  return lastCyc / (mhz * 1e6) / n * 1000;
+}
+
+async function render() {
+  if (busy) { pending = true; return; }        /* 드래그 중 요청이 쌓이지 않게 */
+  /* 앞 프레임이 68000 기준으로 아직 안 끝났으면 그만큼 기다린다 */
+  const wait = nextFrameAt - performance.now();
+  if (wait > 0) await new Promise(r => setTimeout(r, Math.min(3000, wait)));
+  busy = true;
+  const t0 = performance.now();
+  try {
+    /* 따라가는 중이면 live=1 — 서버가 지금 로봇 자세를 먼저 밀어 넣는다.
+       장면을 다시 굽지 않고 행렬만 보내므로 훨씬 빠르다. */
+    /* 고른 구성의 노드 수를 같이 보낸다 — 렌더러가 그만큼 띠로 나눠
+       그리고, '가장 느린 노드' 시간을 돌려준다. 전체÷개수가 아니다. */
+    const [_mhz, ncpu] = document.getElementById('cfg').value.split(',').map(Number);
+    const u = `/api/m68k/frame?yaw=${yaw}&pitch=${pitch}&zoom=${zoom}`
+            + `&phase=${phase}&nodes=${ncpu > 0 ? ncpu : 1}`
+            + `${playing ? '&live=1' : ''}`;
+    const r = await fetch(u, {cache: 'no-store'});
+    if (!r.ok) throw new Error('렌더러 응답 없음 (' + r.status + ')');
+    const cyc = +r.headers.get('X-Cycles');
+    lastBytes = new Uint8Array(await r.arrayBuffer());
+    paint(lastBytes);
+    /* 실제로 걸린 시간 — 68000 환산값(계산)과 달리 이건 진짜 측정이다.
+       요청 보내고 화면에 칠할 때까지. 기다린 시간은 뺀다. */
+    realMs = realMs ? realMs * 0.7 + (performance.now() - t0) * 0.3
+                    : performance.now() - t0;
+    stats(cyc);
+    nextFrameAt = performance.now() + frameBudgetMs();
+  } catch (e) {
+    document.querySelector('.side').insertAdjacentHTML('afterbegin',
+      `<div class="win"><div class="body err">68000 렌더러를 실행하지 못했습니다.<br>${e.message}
+       <br><br>서버에서 <code>m68k_array/gfx/pl68k</code> 가 빌드돼 있어야 합니다:
+       <br><code>cd Industry_gyu_arm/m68k_array/gfx && gcc -O2 -o pl68k pl68k.c -lm</code></div></div>`);
+    throw e;
+  } finally {
+    busy = false;
+    if (pending) { pending = false; render(); }
+  }
+}
+
+const CFG = [
+  ['68000 8MHz × 1',      8,    1],
+  ['68000 12.5MHz × 1',   12.5, 1],
+  ['68000 8MHz × 32',     8,    32],
+  ['68000 12.5MHz × 32',  12.5, 32],
+  ['68000 16.67MHz × 32', 16.67,32],
+  ['68000 12.5MHz × 64',  12.5, 64],
+];
+function feel(f) {
+  if (f >= 30) return '부드럽다';
+  if (f >= 15) return '쓸 만하다';
+  if (f >= 5)  return '끊긴다';
+  if (f >= 1)  return '슬라이드쇼';
+  return '정지화면';
+}
+let lastCyc = 0;
+let BENCH = null;        /* 구성별 실측 사이클 (노드 수 -> 사이클) */
+
+function stats(cyc) {
+  lastCyc = cyc;
+  const [mhz, n] = document.getElementById('cfg').value.split(',').map(Number);
+  document.getElementById('cyc').textContent = cyc.toLocaleString();
+  if (realMs > 0) {
+    document.getElementById('realms').textContent = realMs.toFixed(0);
+    document.getElementById('realfps').textContent = (1000 / realMs).toFixed(0);
+  }
+  if (mhz > 0) {
+    const t = cyc / (mhz * 1e6);
+    document.getElementById('fps').textContent = (1/t).toFixed(t < 0.1 ? 1 : 2);
+    document.getElementById('ms').textContent  = (t*1000).toFixed(0);
+  } else {
+    document.getElementById('fps').textContent = '–';
+    document.getElementById('ms').textContent  = '–';
+  }
+  drawTable();
+}
+
+function drawTable() {
+  const cur = document.getElementById('cfg').selectedIndex;
+  const t = document.getElementById('tbl');
+  t.innerHTML = '<tr><th>구성</th><th>프레임당</th><th>fps</th><th>체감</th></tr>';
+  CFG.forEach((c, i) => {
+    /* 구성마다 실제로 그려본 사이클을 쓴다.
+       없으면 지금 사이클로 대신한다 (노드 수가 달라 부정확할 수 있다). */
+    const cyc = (BENCH && BENCH[c[2]]) || lastCyc;
+    const s = cyc / (c[1]*1e6);
+    t.insertAdjacentHTML('beforeend',
+      `<tr class="${i===cur?'on':''}"><td>${c[0]}</td>` +
+      `<td>${s < 1 ? (s*1000).toFixed(0)+'ms' : s.toFixed(2)+'초'}</td>` +
+      `<td>${(1/s).toFixed(1)}</td><td>${feel(1/s)}</td></tr>`);
+  });
+  if (realMs > 0) {
+    t.insertAdjacentHTML('beforeend',
+      `<tr><td>이 PC (실측)</td><td>${realMs.toFixed(0)}ms</td>` +
+      `<td>${(1000/realMs).toFixed(0)}</td><td>${feel(1000/realMs)}</td></tr>`);
+  }
+}
+
+/* 구성마다 진짜로 한 장씩 그려보고 사이클을 받아온다.
+   화면 띠마다 일이 몰리는 정도가 달라서, 32개라고 32배 빨라지지 않는다. */
+async function loadBench() {
+  try {
+    const d = await (await fetch('/api/m68k/bench', {cache:'no-store'})).json();
+    BENCH = {};
+    for (const r of (d.rows || [])) BENCH[r.nodes] = r.cycles;
+    drawTable();
+  } catch (e) {}
+}
+
+/* ── 마우스 조작 ────────────────────────────────────────────
+   본 화면(start_pro)의 three.js OrbitControls 와 감을 맞춘다.
+   OrbitControls 기본값:
+     회전  = 끈 거리 / 화면높이 × 2π  (세로도 같은 비율)
+     확대  = 휠 한 칸에 0.95배, 이벤트마다 곧바로 적용
+   여기서도 같은 식을 쓴다. 이렇게 해야 본 화면과 손맛이 같다. */
+let drag = null;
+cv.addEventListener('pointerdown', e => {
+  drag = {x: e.clientX, y: e.clientY, yaw, pitch};
+  cv.setPointerCapture(e.pointerId);
+  cv.classList.add('drag');
+});
+cv.addEventListener('pointermove', e => {
+  if (!drag) return;
+  /* OrbitControls: rotateLeft(2π × dx / 화면높이) — 가로도 높이가 기준이다 */
+  const h = cv.clientHeight || 480;
+  yaw   = drag.yaw   - (e.clientX - drag.x) / h * 360;
+  pitch = Math.max(-89, Math.min(89,
+          drag.pitch + (e.clientY - drag.y) / h * 360));
+  render();
+});
+addEventListener('pointerup', () => {
+  if (!drag) return;
+  drag = null; cv.classList.remove('drag');
+});
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  /* OrbitControls 는 휠 한 칸(deltaY 100)에 0.95배 한다.
+     브라우저마다 deltaY 단위가 달라(픽셀/줄/페이지) 크기를 정규화한다. */
+  let d = e.deltaY;
+  if (e.deltaMode === 1) d *= 16;        /* 줄 단위 */
+  else if (e.deltaMode === 2) d *= 400;  /* 페이지 단위 */
+  const scale = Math.pow(0.95, -d / 100);
+  zoom = Math.max(40, Math.min(600, zoom * scale));
+  render();
+}, {passive: false});
+cv.addEventListener('dblclick', () => {
+  yaw = 48; pitch = -22; zoom = 160; render();
+});
+
+document.getElementById('cfg').addEventListener('change', () => {
+  /* 노드 수가 바뀌면 사이클 자체가 달라진다 — 다시 그려야 한다 */
+  render();
+});
+document.getElementById('play').addEventListener('click', e => {
+  playing = !playing;
+  e.target.textContent = playing ? '⏸ 멈추기' : '▶ 로봇 따라가기';
+  if (playing) loop();
+});
+
+/* 실시간 따라가기 — 앱에서 로봇이 움직이면 장면을 다시 구워 그린다.
+   68000 이 한 장 그리는 데 실제로 걸리는 시간만큼 기다렸다 넘어가므로
+   "이 하드웨어로 보면 이렇게 보인다" 가 그대로 체감된다. */
+async function loop() {
+  while (playing) {
+    /* 장면을 다시 굽지 않는다 — render() 가 live=1 로 요청하면
+       서버가 링크 행렬만 렌더러에 밀어 넣는다 (다시 굽기는 1~2초). */
+    /* render() 안에서 68000 속도만큼 기다리므로 여기서 또 안 기다린다 */
+    await render();
+  }
+}
+
+document.getElementById('rebuild').addEventListener('click', async e => {
+  const b = e.target, old = b.textContent;
+  b.disabled = true; b.textContent = '굽는 중…';
+  try {
+    const r = await fetch('/api/m68k/rebuild?tri=350', {method: 'POST'});
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.msg || '실패');
+    await loadScene();
+    await render();
+    b.textContent = '다시 구웠습니다';
+  } catch (err) {
+    b.textContent = '실패: ' + err.message;
+  } finally {
+    b.disabled = false;
+    setTimeout(() => { b.textContent = old; }, 2500);
+  }
+});
+
+/* 메뉴바 시계 — 그 시절처럼 12시간제 */
+function tick() {
+  const t = new Date();
+  let h = t.getHours(), ap = h < 12 ? 'AM' : 'PM';
+  h = h % 12 || 12;
+  document.getElementById('clock').textContent =
+    `${h}:${String(t.getMinutes()).padStart(2,'0')} ${ap}`;
+}
+tick(); setInterval(tick, 20000);
+
+/* 흑백 1비트(1984) <-> 컬러(256색) 전환.
+   채팅 기능을 넣으면서 이 핸들러가 통째로 빠져 있었다 —
+   버튼은 있는데 눌러도 아무 일이 없었다. */
+document.getElementById('mono').addEventListener('click', e => {
+  mono = !mono;
+  e.target.textContent = mono ? '흑백 1비트 (1984)' : '컬러 (256색)';
+  /* 색만 바꾸는 것이라 68000 을 다시 부를 필요가 없다.
+     마지막에 받은 화면을 그대로 다시 칠한다. */
+  if (lastBytes) paint(lastBytes); else render();
+});
+
+/* ── 채팅으로 블록 만들기 ──────────────────────────────────
+   앱의 [말로 만들기] 와 같은 것을 부른다. 해석은 Spark 의 Gemma 가 하고
+   못 붙으면 규칙 파서로 넘어간다. 여기서는 글자만 보낸다. */
+function chatSay(who, text) {
+  const box = document.getElementById('chatlog');
+  const mine = who === '나';
+  box.insertAdjacentHTML('beforeend',
+    `<div style="margin:3px 0;font-size:12px">
+       <b>${mine ? '▸' : '◂'}</b> ${text.replace(/</g,'&lt;')}</div>`);
+  box.scrollTop = box.scrollHeight;
+}
+
+async function sendChat() {
+  const inp = document.getElementById('chatin');
+  const t = inp.value.trim();
+  if (!t) return;
+  inp.value = '';
+  chatSay('나', t);
+  const go = document.getElementById('chatgo');
+  go.disabled = true;
+  try {
+    const r = await fetch('/api/m68k/say', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text: t})
+    });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.msg || '실패');
+    chatSay('AI', d.msg || (d.added ? `블록 ${d.added}개 추가` : '알겠습니다'));
+    drawBlocks(d.blocks);
+    /* AI 가 "돌려보라" 고 하면 바로 시뮬을 시작한다 */
+    if (d.preview) runSim();
+  } catch (e) {
+    chatSay('AI', '오류: ' + e.message);
+  } finally {
+    go.disabled = false;
+    inp.focus();
+  }
+}
+
+function drawBlocks(bs) {
+  const el = document.getElementById('blocklist');
+  if (!bs || !bs.length) {
+    el.innerHTML = '<div class="hint" style="margin:0">블록이 없습니다</div>';
+    return;
+  }
+  el.innerHTML = '<div style="max-height:150px;overflow:auto;'
+    + 'border:1px solid #000;padding:4px 6px">'
+    + bs.map(b => `<div style="font-size:12px;margin:2px 0">`
+        + `${b.label.replace(/</g,'&lt;')}</div>`).join('')
+    + '</div>';
+}
+
+async function loadBlocks() {
+  try {
+    const d = await (await fetch('/api/m68k/blocks', {cache:'no-store'})).json();
+    drawBlocks(d.blocks);
+  } catch (e) {}
+}
+
+/* ── 블록 시뮬레이션 ────────────────────────────────────────
+   앱의 [3D 미리보기] 와 같은 것을 부른다. 계산은 전부 앱이 하고
+   여기서는 시작만 시킨 뒤, 따라가기를 켜서 그 결과를 그린다. */
+async function runSim() {
+  const msg = document.getElementById('simmsg');
+  const b = document.getElementById('simgo');
+  b.disabled = true;
+  try {
+    const d = await (await fetch('/api/m68k/sim', {method: 'POST'})).json();
+    if (d.ok === false) throw new Error(d.msg || '실행 실패');
+    if (!playing) {                 /* 안 켜면 움직여도 화면이 그대로다 */
+      playing = true;
+      document.getElementById('play').textContent = '⏸ 멈추기';
+      loop();
+    }
+    watchSim();
+  } catch (e) {
+    msg.textContent = '실행 실패: ' + e.message;
+  } finally {
+    b.disabled = false;
+  }
+}
+
+let watching = false;
+async function watchSim() {
+  if (watching) return;
+  watching = true;
+  const msg = document.getElementById('simmsg');
+  while (true) {
+    let d;
+    try {
+      d = await (await fetch('/api/m68k/simstatus', {cache:'no-store'})).json();
+    } catch (e) { break; }
+    msg.textContent = d.busy ? (d.prog || d.status || '진행 중…')
+                             : (d.status || '끝났습니다');
+    if (!d.busy) break;
+    await new Promise(r => setTimeout(r, 500));
+  }
+  watching = false;
+}
+
+document.getElementById('chatgo').addEventListener('click', sendChat);
+document.getElementById('chatin').addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendChat();
+});
+document.getElementById('simgo').addEventListener('click', runSim);
+document.getElementById('blkclear').addEventListener('click', async () => {
+  const d = await (await fetch('/api/m68k/blocks_clear', {method:'POST'})).json();
+  drawBlocks(d.blocks);
+  chatSay('AI', '블록을 비웠습니다');
+});
+
+loadBlocks();
+loadBench();
+loadScene().then(render);
+</script>

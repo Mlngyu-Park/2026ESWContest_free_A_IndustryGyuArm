@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ARM STUDIO 휴대폰 카메라</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #111; color: #eee;
+    font: 16px -apple-system, "Apple SD Gothic Neo", system-ui, sans-serif; }
+  #wrap { position: fixed; inset: 0; display: flex; flex-direction: column; }
+  video { flex: 1; width: 100%; min-height: 0; object-fit: contain; background: #000; }
+  #bar { padding: 12px 14px calc(12px + env(safe-area-inset-bottom)); background: #1b1d22; }
+  #stat { font-size: 15px; line-height: 1.45; min-height: 3em; }
+  .ok { color: #6ee7a0; } .warn { color: #ffd166; } .bad { color: #ff7b7b; }
+  button { width: 100%; padding: 14px; margin-top: 10px; font-size: 17px; font-weight: 600;
+    border: 0; border-radius: 12px; background: #3b82f6; color: #fff; }
+  button.stop { background: #ef4444; }
+  #dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #666;
+    margin-right: 6px; vertical-align: middle; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <video id="v" playsinline muted autoplay></video>
+  <div id="bar">
+    <div id="stat"><span id="dot"></span>[시작]을 누르면 카메라가 켜지고 영상을 ARM STUDIO 로 보냅니다.
+      목심판이 화면에 크게 보이게 비춰 주세요.</div>
+    <button id="go">시작</button>
+  </div>
+</div>
+<script>
+/* 휴대폰 → ARM STUDIO: 후면 카메라 프레임을 JPEG 로 /api/live/frame 에 보낸다.
+   동시에 IN_FLIGHT 장까지 보내고(서버는 최신 장만 처리), 초당 최대 MAX_FPS 장. */
+const MAX_FPS = 10, WIDTH = 1920, QUALITY = 0.75;  // 긴 변 1920 — 비스듬히 볼 때 뒤쪽 구멍도 보이게
+const IN_FLIGHT = 2;                                 // 답을 기다리지 않고 동시에 보내는 장 수
+const v = document.getElementById('v'), go = document.getElementById('go');
+const stat = document.getElementById('stat');
+let running = false, stream = null, wake = null;
+const cv = document.createElement('canvas'), cx = cv.getContext('2d');
+
+function show(html, cls) {
+  stat.innerHTML = `<span id="dot" style="background:${cls === 'ok' ? '#22c55e' : cls === 'warn' ? '#eab308' : '#ef4444'}"></span>`
+    + `<span class="${cls}">${html}</span>`;
+}
+
+async function start() {
+  if (!window.isSecureContext || !navigator.mediaDevices) {
+    show('이 주소에서는 카메라를 열 수 없습니다. <b>https://</b> 주소로 열어 주세요.', 'bad'); return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+    });
+  } catch (e) { show('카메라를 열지 못했습니다: ' + e.name + ' — 설정에서 카메라 허용을 확인해 주세요.', 'bad'); return; }
+  v.srcObject = stream; await v.play().catch(() => {});
+  try { wake = await navigator.wakeLock?.request('screen'); } catch (e) {}   // 화면 꺼짐 방지
+  running = true; go.textContent = '정지'; go.className = 'stop';
+  loop();
+}
+
+function stop() {
+  running = false; go.textContent = '시작'; go.className = '';
+  if (stream) stream.getTracks().forEach(t => t.stop()); stream = null;
+  try { wake?.release(); } catch (e) {} wake = null;
+  show('정지했습니다.', 'warn');
+}
+
+/* 앞 장의 답을 기다리지 않고 보낸다 — 동시에 IN_FLIGHT 장까지 (전송 시간이 곧 장 수가 되지 않게).
+   서버는 가장 최근 장만 처리하므로 쌓이지 않는다. */
+let inflight = 0;
+function send(blob) {
+  inflight++;
+  fetch('/api/live/frame', { method: 'POST', body: blob, headers: { 'Content-Type': 'image/jpeg' } })
+    .then(r => r.json()).then(j => {
+      if (j.tracking) {
+        const c = j.cam_mm || [0, 0, 0];
+        show(`격자 추적 중 · 카메라 높이 ${c[2]}mm · ${j.fps}fps · 처리 ${j.ms}ms`
+          + (j.hint ? `<br>${j.hint}` : ''), 'ok');
+      } else show(`${j.msg || '판을 찾는 중'} · ${j.fps}fps`, 'warn');
+    })
+    .catch(e => show('ARM STUDIO 에 보내지 못했습니다 (' + e + ') — 같은 와이파이인지 확인', 'bad'))
+    .finally(() => { inflight--; });
+}
+
+async function loop() {
+  while (running) {
+    const t0 = performance.now();
+    if (v.videoWidth && inflight < IN_FLIGHT) {
+      const s = Math.min(1, WIDTH / Math.max(v.videoWidth, v.videoHeight));
+      cv.width = Math.round(v.videoWidth * s); cv.height = Math.round(v.videoHeight * s);
+      cx.drawImage(v, 0, 0, cv.width, cv.height);
+      const blob = await new Promise(r => cv.toBlob(r, 'image/jpeg', QUALITY));
+      if (blob && running) send(blob);
+    }
+    const wait = 1000 / MAX_FPS - (performance.now() - t0);
+    await new Promise(r => setTimeout(r, Math.max(10, wait)));
+  }
+}
+
+go.onclick = () => (running ? stop() : start());
+document.addEventListener('visibilitychange', () => { if (document.hidden && running) stop(); });
+</script>
+</body>
+</html>

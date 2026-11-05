@@ -93,7 +93,7 @@ def port_of(rk):
 _SCAN0=scan_serial()
 PORT=_SCAN0['sts'] or '/dev/ttyACM0'    # Feetech STS3215 (SO-ARM101)
 BAUD=1000000
-print(f"USB 자동 인식: SO-ARM={PORT}")
+print(f"USB 자동 인식: SO-ARM={_SCAN0['sts'] or '없음 (꽂으면 연결할 때 다시 찾음)'}")
 # STS3215 레지스터
 ADDR_TORQUE=40; ADDR_P_ACCEL=41; ADDR_P_VEL=46; ADDR_GOAL=42; ADDR_PRESENT=56
 ADDR_KP=21; ADDR_KD=22; ADDR_KI=23     # 위치 PID (공장값 32/32/0 = 이 팔엔 약함)
@@ -150,7 +150,8 @@ END_TIMEOUT=8.0
 END_SETTLE=0.25        # 도착 후 진동이 가라앉기를 기다리는 시간(초)
 # 웨이포인트 간 최대 관절 변화. 크면 경로가 잘 풀리지만 급가속 위험
 JUMP_LIMIT_DEG=20
-PER_ID_VEL={6:300}; PER_ID_TQ={6:250}                 # 그리퍼는 저속에선 안 움직임
+PER_ID_VEL={5:600}; PER_ID_TQ={5:250}                 # 그리퍼(ID 5, 10-29 까지 6)는 저속에선 안 움직임 · 11-06 (사용자) 열고 닫기 2배: 300->600
+GRIP_ACCEL=40                 # 그리퍼 가속 (11-06: 10->40 — 속도 2배와 함께 올려야 걸리는 시간이 딱 절반)
 
 # ===== base URDF 자동 탐색 (하드코딩 없음) =====
 # 우선순위: 1) 환경변수 ARM_BASE_URDF  2) base_urdf.txt 에 적힌 경로
@@ -214,7 +215,16 @@ def _urdf_joints(path):
 
 JOINTS=_urdf_joints(BASE_URDF)
 NJOINT=len(JOINTS)
-J2ID=list(range(1,NJOINT+1))          # 관절 -> 모터 ID (SO-ARM 은 1:1)
+DEAD_ID=0   # 모터가 없는 관절 자리표 (버스에 보내지 않는다)
+def _make_j2id(urdf,n):
+    """관절 -> 모터 ID.
+    ★ SO-ARM 2026-10-29 재조립 ★ 실물 모터는 5개: j1~j4 = ID 1~4, 그리퍼 = ID 5.
+      URDF 는 그대로 6관절이라 5번째 관절(옛 j5)은 0도 기계 고정 — 모터 없음(DEAD_ID).
+      (j4 번호 5 -> 4, 그리퍼 번호 6 -> 5: sts_grip_id_6to5.py · 한계·위치 보정: sts_apply_1029.py)"""
+    fam=os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(urdf))))
+    if fam=='sts3215' and n==6: return [1,2,3,4,DEAD_ID,5]
+    return list(range(1,n+1))
+J2ID=_make_j2id(BASE_URDF,NJOINT)
 print(f"관절 {NJOINT}개: {', '.join(JOINTS)}")
 # 2026-07-27 STS3215 캘리브레이션
 from sts_zero import ZERO_RAW as _Z
@@ -232,7 +242,34 @@ for _i,_v in list(ZERO_RAW.items()):
 DIR={1:-1, 2:-1, 3:-1, 4:-1, 5:-1, 6:-1}
 from collections import defaultdict as _dd
 DIR=_dd(lambda:1,DIR)   # 없는 축은 +1 (다른 로봇 대비)              # 전 관절 반전 (실측)
-GRIP_ID=6
+GRIP_ID=5        # 2026-10-29 그리퍼 번호 6 -> 5 (사용자: "j5 와 5 는 둘 다 그리퍼")
+# ★ 모터가 없는 관절 (2026-10-28, 사용자 / 10-29 번호 정리) ★
+#   옛 j5 자리는 0도에 기계적으로 고정한 '연결 블록' 이다. 형상(URDF)·기구학은 그대로 6관절이고
+#   계산상 그 관절 = 0 이지만, 실물 통신에서는 아무것도 보내지 않고 읽지도 않는다 (ID = DEAD_ID).
+#   (응답 없는 ID 를 읽으면 4번 재시도 ≈ 0.36초씩 멈추고, 영점 저장은 'ID 읽기 실패' 로 막혔다)
+STS_DEAD_IDS={DEAD_ID}
+_ARM_A_GRIP=(GRIP_ID,GRIPPER_CLOSE,GRIPPER_OPEN)   # A팔 그리퍼 번호·값 (B팔로 바꿨다가 돌아올 때 쓴다)
+# ★ 2번 팔(B팔) 실물 (2026-11-02) ★ — 같은 선에 모터 11~15. 값은 sts_arm2.py (영점·범위·방향·그리퍼)
+#   모터 번호로 나뉘어 있으니 영점·범위·방향 표에 그대로 더한다 (A팔 1~5 와 안 겹친다).
+#   팔을 바꾸면(arm_switch) 관절→모터 번호(J2ID)·그리퍼 번호·그리퍼 값만 그 팔 것으로 갈아끼운다 (_arm_motors).
+try:
+    import sts_arm2 as _ARM2
+    ZERO_RAW.update(_ARM2.ZERO_RAW); LIMIT_RAW.update(_ARM2.LIMIT_RAW); DIR.update(_ARM2.DIR)
+    PER_ID_VEL.update(_ARM2.PER_ID_VEL); PER_ID_TQ.update(_ARM2.PER_ID_TQ)
+except Exception as _e:
+    _ARM2=None; print("2번 팔 값(sts_arm2.py) 없음 — B팔은 3D 만:",_e)
+def jname(k):
+    """화면·로그에 보일 관절 이름. SO-ARM 은 모터 번호와 같게 (j1~j4, 그리퍼 j5), 고정 관절은 '고정'.
+    다른 로봇은 그대로 j1, j2, ..."""
+    if J2ID==list(range(1,len(J2ID)+1)) or k>=len(J2ID): return f"j{k+1}"
+    if J2ID[k] in STS_DEAD_IDS: return '고정'
+    i=J2ID[k]
+    if _ARM2 is not None and i>_ARM2.ID_OFFSET: i-=_ARM2.ID_OFFSET   # B팔(11~15)도 j1~j4 · 그리퍼 j5 로 (11-02)
+    return f"j{i}"
+if J2ID!=list(range(1,NJOINT+1)):      # SO-ARM: URDF 이름과 모터 번호가 다르다
+    print("  실물 모터: "+', '.join(f"{jname(k)}{'(그리퍼)' if k==NJOINT-1 else ''}=ID{i}"
+                                   for k,i in enumerate(J2ID) if i not in STS_DEAD_IDS)
+          +f" · URDF {JOINTS[J2ID.index(DEAD_ID)]} 는 0도 고정 (모터 없음)")
 # 프로젝트(자세/시퀀스/보정/녹화)는 URDF 패키지 폴더 안에 저장한다.
 #   -> URDF 를 바꾸면 그 URDF 의 데이터가 따라오고, 서로 섞이지 않는다.
 #   -> SolidWorks 에서 URDF 를 재익스포트해도 calib.json 은 지워지지 않는다.
@@ -308,6 +345,12 @@ def _parse_urdf(path):
         d[j.get('name')]=dict(rpy=rpy,xyz=xyz,axis=axis)
     return d
 BASE_DEF=_parse_urdf(BASE_URDF)
+def _dead_joint(k):
+    """선을 연결하지 않은 고정 관절인가 (SO-ARM 의 j5). 관절 가동범위는 그대로 두고 IK 에서만 잠근다
+    (가동범위를 0~0 으로 하면 슬라이더·도달표 등 10여 곳이 최소=최대로 깨진다 — 시작 시 오류 실측)."""
+    fam=os.path.basename(os.path.dirname(URDF_PKG_DIR))
+    return fam=='sts3215' and k<len(J2ID) and J2ID[k] in STS_DEAD_IDS
+
 def build_chain():
     links=[OriginLink()]; active=[False]
     for k,jn in enumerate(JOINTS):
@@ -315,7 +358,7 @@ def build_chain():
         links.append(URDFLink(name=jn,origin_translation=list(b['xyz']),
                               origin_orientation=list(b['rpy']),rotation=list(b['axis']),
                               bounds=jr_limits(k),joint_type='revolute'))
-        active.append(True)
+        active.append(not _dead_joint(k))   # 선 없는 j5 는 IK 가 돌리지 않는다 (초기값 = 0 유지)
     return Chain(name='arm',links=links,active_links_mask=active)
 CHAIN=build_chain()
 # ===== 툴 중심 (axis_7) =====
@@ -1086,7 +1129,9 @@ def _maxz_key():
     # 로봇 이름을 반드시 넣는다. 안 넣으면 SO-ARM 과 UR15 가 같은 자리에서
     # 서로의 도달상한을 읽어가 엉뚱한 높이로 판단한다.
     _r=os.path.basename(URDF_PKG_DIR) if 'URDF_PKG_DIR' in globals() else '?'
-    return f"{_r}|{BASE_OFF[0]:.4f},{BASE_OFF[1]:.4f},{BASE_YAW[0]:.4f}"
+    # 관절 가동범위도 넣는다 — 영점·한계를 다시 잡으면 (10-29 j4 교체) 예전 표가 틀리므로 새로 계산
+    _lim=','.join(f"{math.degrees(a):.0f}:{math.degrees(b):.0f}" for a,b in (jr_limits(k) for k in range(NJOINT)))
+    return f"{_r}|{BASE_OFF[0]:.4f},{BASE_OFF[1]:.4f},{BASE_YAW[0]:.4f}|{_lim}"
 def _maxz_load():
     """지금 로봇 자세에 해당하는 도달상한 표를 디스크에서 불러온다."""
     k=_maxz_key()
@@ -1387,7 +1432,18 @@ def plan_simple(qa,qb,prefer='x',clear_cm=5.0,extra_cm=5.0,user_path=None,
             how=how2+'(도달범위 우회)'
     if caps is None: return None,'경로상 도달 불가 지점이 있습니다'
     # 충돌 검사: 경고만 붙이고 그대로 진행 (무시 목록 제외)
+    #   출발지·목적지 자신은 장애물이 아니다 — 그 위에서 집고 놓아야 하므로
+    #   반드시 그 자리를 지난다. 예전엔 "⚠충돌:목적지" 가 매번 떴다.
     build_obs_grid(); ign=set(ignore or ())
+    for _ep in (a,b):
+        _oid=_ep[len(GOTO_PREFIX):] if str(_ep).startswith(GOTO_PREFIX) else str(_ep)
+        ign.add(_oid)
+        for _d in docking_ids():            # 물체 이름이면 그 물체가 놓인 도킹도
+            _t=dock_socket_world(_d)
+            _bp=(BRICKS.get(_oid) or {}).get('pos')
+            if _bp is not None and _t is not None and \
+               math.hypot(_bp[0]-_t[0],_bp[1]-_t[1])<0.025:
+                ign.add(_d)
     hitn=sorted(mid for mid,mk in _OBS['ids'].items()
                 if mid not in ign and any(mk[_cell(x,y)] for x,y in pts2))
     if hitn: how+=' ⚠충돌:'+','.join(hitn)
@@ -1485,18 +1541,18 @@ def BTN(name,detail=''):
     LOG(f"\n>>> [버튼] {name}" + (f"  ({detail})" if detail else ""))
     PROG_STATE['text']=f"[{name}] {detail}" if detail else f"[{name}]" 
 def LOG_TARGET(raws,tag=''):
-    s='  '.join(f"j{J2ID.index(i)+1}:{v}" for i,v in sorted(raws.items()))
+    s='  '.join(f"{jname(J2ID.index(i))}:{v}" for i,v in sorted(raws.items()))
     LOG(f"  [목표] {tag} {s}")
 def LOG_COMPARE(want,got,tag=''):
     """목표 raw 와 실제 raw 비교 출력."""
     parts=[]
     for i in sorted(want):
         w=want[i]; g=got.get(i)
-        if g is None: parts.append(f"j{J2ID.index(i)+1}:{w}/--")
+        if g is None: parts.append(f"{jname(J2ID.index(i))}:{w}/--")
         else:
             d=g-w
             mark='' if abs(d)<=25 else ('!' if abs(d)<=100 else '!!')
-            parts.append(f"j{J2ID.index(i)+1}:{w}->{g}({d:+d}){mark}")
+            parts.append(f"{jname(J2ID.index(i))}:{w}->{g}({d:+d}){mark}")
     LOG(f"  [비교] {tag} "+'  '.join(parts))
 
 # ================= 로봇 =================
@@ -1521,6 +1577,7 @@ class Robot:
             self.port=p; self.packet=PacketHandler(0); return True
         except Exception: return False
     def _w1(self,i,addr,v):
+      if i in STS_DEAD_IDS: return True        # 선 없는 모터: 보내지 않는다 (기다림 없음)
       with IO_LOCK:
         for _ in range(3):
             try:
@@ -1529,6 +1586,8 @@ class Robot:
             time.sleep(0.03)
         return False
     def _w2(self,i,addr,v):
+      if i in STS_DEAD_IDS: return True
+      if addr==ADDR_GOAL and 'ACTIVE_ARM' in globals() and _arm_block_real(): return False   # 3D 지금 팔이 실물 팔이 아니면 움직이지 않는다 (10-30)
       with IO_LOCK:
         for _ in range(3):
             try:
@@ -1537,6 +1596,7 @@ class Robot:
             time.sleep(0.03)
         return False
     def _r2(self,i,addr):
+      if i in STS_DEAD_IDS: return None        # 선 없는 모터: 읽지 않는다 (read() 는 0도로 둔다)
       with IO_LOCK:
         for _ in range(4):
             try:
@@ -1598,6 +1658,7 @@ class Robot:
             if jidx==5 and not with_grip: continue   # j6 제외
             if only is not None and jidx not in only: continue
             raw,i=rad_to_raw(jidx,q[jidx])
+            if i in STS_DEAD_IDS: continue           # 선 없는 모터 (j5 고정)
             raws[i]=raw
         if raws:
             if only is None: self.move_gain()   # 이동 중엔 부드럽게
@@ -1626,7 +1687,7 @@ class Robot:
         secs=secs or max(0.35,mx/max(50.0,cps))
         for j in range(min(5,NJOINT)):
             i=J2ID[j]
-            if i==GRIP_ID: continue
+            if i==GRIP_ID or i in STS_DEAD_IDS: continue
             # 이 축이 secs 안에 d[j] 카운트를 가려면 필요한 속도(≈카운트/초)
             # 실측: 속도 50 -> 54카운트/초, 100 -> 297카운트/초.
             # 50~60 근처가 절벽이라 그 아래로 내려가면 급격히 느려져
@@ -1638,7 +1699,7 @@ class Robot:
         raws={}; vel={}
         for j in range(min(5,NJOINT)):
             i=J2ID[j]
-            if i==GRIP_ID: continue
+            if i==GRIP_ID or i in STS_DEAD_IDS: continue
             raws[i]=rad_to_raw(j,q_to[j])[0]
             vel[i]=int(max(120,min(1500,d[j]/max(0.05,secs))))
         if not self._sync_goal_timed(raws,vel):
@@ -1670,7 +1731,7 @@ class Robot:
         base=SAFE_VEL*SIM_SPEED[0]
         for j in range(min(5,NJOINT)):
             i=J2ID[j]
-            if i==GRIP_ID: continue
+            if i==GRIP_ID or i in STS_DEAD_IDS: continue
             # ★ 느리게 낮추지 않고, 많이 가는 축을 '올린다' ★
             #  낮추는 방식은 느린 축이 속도 50 근처(절벽 구간)에 빠져
             #  급격히 느려지고 팔을 끄는 느낌(=덜덜)이 난다.
@@ -1682,6 +1743,9 @@ class Robot:
                 self._vcache[i]=v
 
     def _sync_goal_timed(self,raws,vel):
+        if 'ACTIVE_ARM' in globals() and _arm_block_real(): return False
+        return self._sync_goal_timed0(raws,vel)
+    def _sync_goal_timed0(self,raws,vel):
         """위치+시간+속도(6바이트)를 한 패킷으로 — 예전 Gradio 방식.
 
         STS3215 는 0x2A 부터 [위치2 · 시간2 · 속도2] 를 연속으로 받는다.
@@ -1695,6 +1759,7 @@ class Robot:
                 gw=self._gsw6=GroupSyncWrite(self.port,self.packet,ADDR_GOAL,6)
             gw.clearParam()
             for i,raw in raws.items():
+                if i in STS_DEAD_IDS: continue
                 v=int(raw); sp=int(max(10,min(3000,vel.get(i,SAFE_VEL))))
                 data=bytes([v & 0xFF,(v>>8)&0xFF, 0,0, sp & 0xFF,(sp>>8)&0xFF])
                 if not gw.addParam(i,data): raise RuntimeError('addParam')
@@ -1707,6 +1772,7 @@ class Robot:
     def _sync_goal(self,raws):
         """여러 모터의 목표를 한 패킷으로 동시에 보낸다.
         실패하면 예전처럼 하나씩 보낸다(안전)."""
+        if 'ACTIVE_ARM' in globals() and _arm_block_real(): return False
         try:
             gw=getattr(self,'_gsw',None)
             if gw is None:
@@ -1714,6 +1780,7 @@ class Robot:
                 gw=self._gsw=GroupSyncWrite(self.port,self.packet,ADDR_GOAL,2)
             gw.clearParam()
             for i,raw in raws.items():
+                if i in STS_DEAD_IDS: continue
                 v=int(raw)
                 if not gw.addParam(i,bytes([v & 0xFF,(v>>8) & 0xFF])):
                     raise RuntimeError('addParam 실패')
@@ -1733,6 +1800,7 @@ class Robot:
         return q
     def _r2fast(self,i,addr):
         """빠른 1회 읽기 (추종 확인용)."""
+        if i in STS_DEAD_IDS: return None
         with IO_LOCK:
           try:
             v,r,_=self.packet.read2ByteTxRx(self.port,i,addr)
@@ -1747,6 +1815,7 @@ class Robot:
         for jidx in range(NJOINT):
             if jidx==5 and ids is None: continue   # j6 는 검사 제외 (그리퍼 블록 전용)
             raw,i=rad_to_raw(jidx,q[jidx])
+            if i in STS_DEAD_IDS: continue
             if ids is None or i in ids: want[i]=raw
         last_got={}
         while time.time()-t0<timeout:
@@ -1798,6 +1867,7 @@ class Robot:
             pushes={}
             for jidx in range(5):                      # j6 제외
                 raw,i=rad_to_raw(jidx,q[jidx])
+                if i in STS_DEAD_IDS: continue
                 p=self._r2(i,ADDR_PRESENT)
                 if p is None: continue
                 d=raw-p
@@ -1830,7 +1900,7 @@ class Robot:
                 push=raw+dpush
                 lo,hi=LIMIT_RAW[i]
                 self._w2(i,ADDR_GOAL,max(lo,min(hi,push)))
-                LOG(f"  [보정] j{jidx+1}: {dpush:+d} -> 목표 {raw}->{max(lo,min(hi,push))}")
+                LOG(f"  [보정] {jname(jidx)}: {dpush:+d} -> 목표 {raw}->{max(lo,min(hi,push))}")
             time.sleep(END_SETTLE)
         return False,(best if best is not None else 9999)
     def gripper(self,open_,tq=None):
@@ -1841,7 +1911,7 @@ class Robot:
             # -> 토크를 껐다 켜서 보호 해제 후 연다
             self._w1(i,ADDR_TORQUE,0); time.sleep(0.05)
         self._w2(i,ADDR_TORQUE_LIMIT,tq or PER_ID_TQ.get(i,TORQUE_LIMIT))
-        self._w1(i,ADDR_P_ACCEL,10)
+        self._w1(i,ADDR_P_ACCEL,GRIP_ACCEL)
         self._w2(i,ADDR_P_VEL,PER_ID_VEL.get(i,SAFE_VEL))
         self._w1(i,ADDR_TORQUE,1)
         self._w2(i,ADDR_GOAL,GRIPPER_OPEN if open_ else GRIPPER_CLOSE)
@@ -2040,6 +2110,49 @@ class RobotMux:
 ROBOT=RobotMux()
 STOP=threading.Event()
 RUNNING=threading.Event()
+# ===== 일시 정지 (11-06 사용자: 실행 도중 멈추고, 3D 에서 도킹을 옮긴 뒤 [계속] 하면 옮긴 자리로) =====
+#   멈추는 곳 = 다음 모터 목표를 보내기 직전 (_send_real · 블록 사이 · 구간 이동). 팔은 토크를 켠 채 그 자리에 선다.
+#   [계속] 때 지금 가던 목표(이동 대상 · 잡기 펜 · 놓기 도킹)가 옮겨졌으면 _TargetLost 로 그 자리에서 다시 계산한다.
+#   실물 실행 중일 때만 걸린다 (RUN_ACTIVE, h_run 이 켜고 끈다) — 미리보기·미세조정 등은 영향 없음.
+PAUSE=threading.Event()
+PAUSE_STATE={'on':False}       # 지금 실제로 멈춰 서 있는지 (화면 표시용)
+RUN_ACTIVE=[False]             # 실물 실행 중 (h_run)
+PAUSE_MOVE_TOL=0.002           # 목표가 이만큼(m) 넘게 옮겨졌으면 다시 계산
+
+def h_pause():
+    """[⏸ 일시 정지] / [▶ 계속] (같은 버튼)."""
+    if not RUN_ACTIVE[0]:
+        PAUSE.clear(); return "실물 실행 중이 아닙니다 (일시 정지는 실물 실행 중에만)"
+    if PAUSE.is_set():
+        PAUSE.clear(); BTN('계속','일시 정지 풀기')
+        return "계속 — 옮긴 도킹이 있으면 그 자리로 다시 계산해 갑니다"
+    PAUSE.set(); BTN('일시 정지','다음 걸음에서 멈춤')
+    return "일시 정지 — 팔이 지금 걸음을 마치면 그 자리에서 멈춥니다 (그리퍼가 움직이는 중이면 끝난 뒤)"
+
+def _pause_point():
+    """일시 정지면 풀릴 때까지 기다린다. 정지 버튼으로 끝나면 'stop'.
+    풀린 뒤 지금 목표가 옮겨졌으면 _TargetLost (이동·잡기·놓기가 그 자리에서 다시 계산)."""
+    if not PAUSE.is_set(): return None
+    if not RUN_ACTIVE[0]:
+        PAUSE.clear(); return None
+    PAUSE_STATE['on']=True
+    LOG("\n[일시 정지] 팔은 지금 자리에서 힘을 준 채 기다립니다 — 3D 에서 도킹을 옮겨도 됩니다. "
+        "[▶ 계속] 을 누르면 이어 갑니다")
+    try:
+        while PAUSE.is_set() and not STOP.is_set():
+            time.sleep(0.1)
+    finally:
+        PAUSE_STATE['on']=False
+    if STOP.is_set(): return 'stop'
+    LOG("[계속] 이어 갑니다")
+    g=globals().get('GOTO_GUARD') or {}
+    oid=g.get('poid')
+    if oid is not None:
+        p=goto_point(oid)
+        if p is None: raise _TargetLost('사라짐')
+        if g.get('pxy') is not None and math.hypot(float(p[0])-g['pxy'][0],float(p[1])-g['pxy'][1])>PAUSE_MOVE_TOL:
+            raise _TargetLost('옮겨짐')
+    return None
 
 # ================= 상태 =================
 S={'poses':[{'name':'base','angles':[0.0]*NJOINT}], 'seq':['base']}
@@ -2088,10 +2201,16 @@ def _pose_rec(name):
         if p['name']==name: return p
     return None
 
+def _arm_off_key(rk):
+    """보정 키: B팔 실물 보정은 A팔 것과 따로 둔다 (11-02). A팔은 예전 그대로 'sts'.
+    (자세마다 저장된 보정은 A팔 실물에 맞춘 값이라 B팔에 더하면 엉뚱한 데로 간다)"""
+    L=globals().get('ACTIVE_ARM',['A'])[0]
+    return f"{rk}_{L}" if rk=='sts' and L!='A' else rk
+
 def get_offset(name,rk=None):
     p=_pose_rec(name)
     if not p: return [0.0]*NJOINT
-    rk=rk or offset_robot()
+    rk=_arm_off_key(rk or offset_robot())
     d=p.get('offsets')
     if d is None:                      # 예전 형식 -> STS 보정으로 이관
         d={'sts':list(p.get('offset',[0.0]*NJOINT))}
@@ -2101,7 +2220,7 @@ def get_offset(name,rk=None):
 def set_offset(name,off,rk=None):
     p=_pose_rec(name)
     if not p: return
-    rk=rk or offset_robot()
+    rk=_arm_off_key(rk or offset_robot())
     d=p.setdefault('offsets',{'sts':list(p.get('offset',[0.0]*NJOINT))})
     d[rk]=list(off)
     if rk=='sts': p['offset']=list(off)     # 구버전 호환 필드도 갱신
@@ -2138,6 +2257,33 @@ DOWN_ITEM='@down'             # 하강: 현재 XY 유지, 잡는 높이까지 �
 def is_down_item(x): return x==DOWN_ITEM
 UP_ITEM='@up'                 # 상승: 하강의 반대, 접근 높이까지 수직
 def is_up_item(x): return x==UP_ITEM
+# ★ 두 팔 블록 (2026-10-30) — 더블 레이첼 출력과 같은 꼴 ★
+#   '@arm:A'  = 이 뒤의 블록은 A팔이 한다 (스크래치의 '스프라이트 고르기' 처럼)
+#   '@wait:10' = 10초 기다리기
+#   둘 다 '그 자리 동작' 이라 경로 계획(자세 사이 이동)에는 끼지 않는다.
+ARM_PREFIX='@arm:'; WAIT_PREFIX='@wait:'
+def is_arm_item(x): return isinstance(x,str) and x.startswith(ARM_PREFIX)
+def is_wait_item(x): return isinstance(x,str) and x.startswith(WAIT_PREFIX)
+def is_meta_item(x): return is_arm_item(x) or is_wait_item(x)
+def wait_secs(x):
+    try: return max(0.0,min(600.0,float(x[len(WAIT_PREFIX):])))
+    except Exception: return 0.0
+def wait_arm(x):
+    """'@wait:arm:A' → 'A' — 'A팔이 끝날 때까지' 기다리기 (11-03). 시간 기다리기면 None."""
+    r=x[len(WAIT_PREFIX):] if is_wait_item(x) else ''
+    return r[4:] if r.startswith('arm:') else None
+def wait_text(x):
+    L=wait_arm(x)
+    return f"{L}팔 끝날 때까지" if L else f"{wait_secs(x):g}초"
+ARMS_DEFAULT={'A':'빨강','B':'파랑'}       # 팔 이름 -> 색 (사용자가 색으로 부른다: 빨간 팔·파란 팔)
+REAL_ARM='A'                                # 기본 실물 팔 (영점 저장·공장 배치는 이 팔 기준)
+REAL_ARMS={'A','B'} if _ARM2 is not None else {'A'}   # 11-02: B팔(모터 11~15)도 실물 — sts_arm2.py 가 있을 때
+def arms_cfg():
+    a=S.setdefault('arms',dict(ARMS_DEFAULT))
+    return a if isinstance(a,dict) and a else dict(ARMS_DEFAULT)
+def arm_label(L):
+    c=arms_cfg().get(L)
+    return f"{L}팔 · {c} 팔" if c else f"{L}팔"
 def is_grasp_item(n): return isinstance(n,str) and n.startswith(GRASP_PREFIX)
 def is_release_item(n): return isinstance(n,str) and n.startswith(RELEASE_PREFIX)
 def is_brick_item(n): return is_grasp_item(n) or is_release_item(n)
@@ -2167,20 +2313,30 @@ def seq_fix_moves(seq=None):
     여기서 옛 파이프라인을 자동으로 고쳐 준다."""
     seq=list(S['seq'] if seq is None else seq)
     out=[]; changed=0
+    # ★ 물체 위치를 파이프라인을 따라 추적한다 (10-30) ★
+    #   예전엔 잡기마다 '물체의 지금(시작) 자리' 를 썼다 → 2단계 이송(놓은 뒤 다시 잡기)이면
+    #   두 번째 잡기 앞에 '처음 자리' 로 가는 이동을 끼워 넣어 엉뚱한 곳에서 집었다 (재시작 때마다).
+    home={}; held=None
     for n in seq:
-        need=None
+        need=None; bid=None
         if is_grasp_item(n):
-            need=_brick_home(n[len(GRASP_PREFIX):])     # 물체가 있는 도킹으로
+            bid=n[len(GRASP_PREFIX):]
+            if bid not in home: home[bid]=_brick_home(bid)
+            need=home[bid]                              # 물체가 '그 시점에' 있는 도킹으로
         elif is_release_item(n):
             need=n[len(RELEASE_PREFIX):]                # 그 도킹으로
         if need:
-            # 바로 앞이 이미 그 자리로 가는 이동이면 넣지 않는다
-            # 제자리 동작(그리퍼·하강·상승)은 건너뛰고 '진짜 이동' 을 찾는다
+            # 바로 앞이 이미 그 자리(또는 그 물체)로 가는 이동이면 넣지 않는다
+            # 제자리 동작(그리퍼·하강·상승·팔·기다리기)은 건너뛰고 '진짜 이동' 을 찾는다
             prev=next((x for x in reversed(out)
                        if not (is_grip_item(x) or is_down_item(x)
-                               or is_up_item(x))), None)
-            if not (is_goto_item(prev) and prev[len(GOTO_PREFIX):]==need):
+                               or is_up_item(x) or is_meta_item(x))), None)
+            ok_prev=is_goto_item(prev) and prev[len(GOTO_PREFIX):] in (need,bid)
+            if not ok_prev:
                 out.append(GOTO_PREFIX+need); changed+=1
+        if is_grasp_item(n): held=bid
+        elif is_release_item(n) and held:
+            home[held]=n[len(RELEASE_PREFIX):]; held=None
         out.append(n)
     return out,changed
 
@@ -2189,13 +2345,19 @@ def pose_seq():
     그리퍼·물체 블록은 자세가 아니므로 제외한다."""
     return [x for x in S['seq']
             if not is_grip_item(x) and not is_brick_item(x)
-            and not is_down_item(x) and not is_up_item(x)]
+            and not is_down_item(x) and not is_up_item(x) and not is_meta_item(x)]
 
 def seq_labels(mode_name=None):
     """파이프라인 블록: ■자세 / ┃이동 / ◆그리퍼"""
     out=[]; mv=get_moves()
     prev_pose=None; seg_i=0
     for idx,n in enumerate(S['seq']):
+        if is_arm_item(n):
+            out.append(f"◉ {idx}. 팔: {arm_label(n[len(ARM_PREFIX):])}")
+            continue
+        if is_wait_item(n):
+            out.append(f"⧗ {idx}. 기다리기 {wait_text(n)}")
+            continue
         if is_grip_item(n):
             act='열기 ✋' if n==GRIP_OPEN_ITEM else '닫기 ✊'
             out.append(f"◆ {idx}. 그리퍼 {act}")
@@ -2263,6 +2425,10 @@ def seq_index(label):
     if s.lstrip().startswith('▲'):          # 상승 블록 (그 자리 동작)
         try: return 'grip',int(s.split('.')[0].replace('▲','').strip())
         except Exception: return None,None
+    for _c in ('◉','⧗'):                     # 팔 바꾸기 · 기다리기 (그 자리 동작)
+        if s.lstrip().startswith(_c):
+            try: return 'grip',int(s.split('.')[0].replace(_c,'').strip())
+            except Exception: return None,None
     return None,None
 
 def move_seg_poses(seg_i):
@@ -2433,6 +2599,10 @@ def h_slider(name,*degs):
     """j1~j5 슬라이더. j6 는 기존 값 유지 (그리퍼 버튼으로만 변경)."""
     if name is None: return gr.update(), "먼저 자세를 선택하세요"
     cur=get_angles(name) or [0.0]*NJOINT
+    _r=_pose_rec(name)
+    if _r is not None and _is_slot_pose(_r):     # 11-06 (사용자): 보정 자세는 [보정 저장] 으로만 바뀐다
+        ros_publish(cur)
+        return gr.update(), f"'{name}' 은 보정 자세라 슬라이더로 바꾸지 않습니다 — 미세조정 후 [보정 저장] 으로만"
     q=[math.radians(d) for d in degs]+[cur[5]]
     with LOCK:
         for p in S['poses']:
@@ -2484,7 +2654,7 @@ def _add_urdf_pose(urdf_path,l6_path=None):
     for j,a in enumerate(angles):
         lo,hi=jr_limits(j)
         c=max(lo,min(hi,a))
-        if abs(c-a)>0.002: clamped.append(f"j{j+1} {math.degrees(a):+.1f}->{math.degrees(c):+.1f}deg")
+        if abs(c-a)>0.002: clamped.append(f"{jname(j)} {math.degrees(a):+.1f}->{math.degrees(c):+.1f}deg")
         angles[j]=c
     if clamped:
         warn=(warn+" | " if warn else "")+"LIMIT clamp: "+", ".join(clamped)
@@ -2624,6 +2794,12 @@ def h_duplicate(name,newname):
 def h_delete(name):
     if not name or name=='base':
         return gr.update(),gr.update(),gr.update(),"cannot delete base"
+    try:                                           # 11-06: 보정 자세가 사라진 이유를 나중에 알 수 있게 기록
+        _r=_pose_rec(name)
+        if _r is not None:
+            LOG(f"[자세 삭제] {name} (팔 {_r.get('arm') or 'A'}) — 지운 각도 "
+                +' '.join(f"j{j+1} {math.degrees(v):+.2f}°" for j,v in enumerate(list(_r.get('angles') or [])[:4])))
+    except Exception: pass
     with LOCK:
         S['poses']=[p for p in S['poses'] if p['name']!=name]
         S['seq']=[s for s in S['seq'] if s!=name]
@@ -2829,12 +3005,16 @@ def _maxz_flush():
 
 def plan_all(mode,axorder,check_coll=False):
     ps=pose_seq()                                   # 그리퍼/하강 블록 제외
+    if any(is_arm_item(x) and x!=ARM_PREFIX+'A' for x in S['seq']) and all(is_goto_item(p) for p in ps):
+        # 두 팔 (10-30): 이동 블록은 실행 시점에 '그 팔' 기준으로 다시 계산하므로 미리 계산이 필요 없다
+        #   (A팔 자리로 B팔 구간을 계산하면 엉뚱하게 '도달 불가' 가 난다)
+        return [],None,""
     if len(ps)<2:
         # 자세가 1개(또는 0개)여도 잡기/놓기/그리퍼/하강 같은 '그 자리 동작'
         # 블록이 있으면 유효한 파이프라인이다 (자세 사이 경로가 필요 없음 -
         # 첫 자세 이동은 실행기가 따로 처리한다)
         if any(is_brick_item(x) or is_grip_item(x) or is_down_item(x)
-               or is_up_item(x) for x in S['seq']) or len(ps)==1:
+               or is_up_item(x) or is_meta_item(x) for x in S['seq']) or len(ps)==1:
             return [],None,""
         return None,"시퀀스에 자세가 2개 이상 필요합니다",""
     segs=[]
@@ -2849,6 +3029,21 @@ def plan_all(mode,axorder,check_coll=False):
                          "[로봇 자리 추천]을 눌러 로봇을 옮겨보세요"),""
         if carry is not None:
             qa=list(carry)          # 이전 구간에서 실제로 끝난 자세에서 출발
+        # ★ 같은 자리로의 이동은 제자리 (2026-11-04) ★
+        #   [이동 #2 → 잡기 → 이동 #2] 처럼 같은 대상이 이어지면 출발=도착이라 간편 이동이
+        #   '시작/도착이 금지 영역' 으로 실패해 파이프라인 전체가 막혔다. 이동 블록은 실행 때
+        #   어차피 다시 계산하므로(미리 계산분은 버림) 여기서는 빈 구간으로 둔다.
+        # ★ 이동 블록으로 가는 구간은 미리 풀지 않는다 (11-04) ★
+        #   미리보기·실물 둘 다 이동 블록은 실행하는 순간 goto_move 로 다시 풀고 여기 계산은 버린다.
+        #   그런데 이 버려질 계산이 '시작/도착이 금지 영역' 으로 실패해 (#2 -> #2, 펜이 꽂힌 #2 -> #8)
+        #   파이프라인 전체를 막았다. 실행 시점 계산(goto_move)은 같은 구간을 문제없이 간다.
+        #   도달 여부는 위 get_angles(=도달 IK) 와 블록의 ! 표시(seq_reach)가 미리 알려 준다.
+        if is_goto_item(b):
+            PROG(f"[경로 계산 {si}/{ntot}] {a} -> {b} · 실행 때 계산")
+            si+=1
+            segs.append((f'{a} -> {b} [실행 때 계산]',[list(qa),list(qb)],0.05,
+                         get_offset(a),get_offset(b)))
+            carry=list(qb); continue
         used=""
         mode=seg_mode(a,b,mode0)          # 구간별 이동 방식 (없으면 전역값)
         PROG(f"[경로 계산 {si}/{ntot}] {a} -> {b} · {mode}")
@@ -2999,7 +3194,11 @@ def h_preview(kind,mode,axorder,speed,loop,coll=False,end_base=True):
     box={}
     def _work():
         try: box['r']=plan_all(mode,axorder,coll)
-        except Exception as e: box['e']=e
+        except Exception as e:
+            box['e']=e
+            import traceback as _tb
+            LOG("  [경로 계산 예외] "+repr(e))
+            _tb.print_exc()
     th=threading.Thread(target=_work,daemon=True); th.start()
     t0=time.time()
     while th.is_alive():
@@ -3020,6 +3219,13 @@ def h_preview(kind,mode,axorder,speed,loop,coll=False,end_base=True):
     _snap_pos={b:v.get('pos') for b,v in BRICKS.items()}
     _snap_held=HELD.get('brick')
     try:
+        # 11-05 충돌 방지: 쉬는 팔은 기본 자세에서 시작한다
+        _bq_all=get_angles('base')
+        if _bq_all is not None:
+            for _Lr in arms_cfg():
+                if _Lr!=ACTIVE_ARM[0]:
+                    _st=ARM_STATE.setdefault(_Lr,{}); _st['q']=list(_bq_all)
+                    _st.setdefault('grip',GRIP_STATE['rad'])        # arm_switch 가 q·grip 을 같이 읽는다
         # 시작은 무조건 base 자세 (블록으로 표시하진 않지만 반드시 거친다)
         _bq=get_angles('base')
         if _bq is not None:
@@ -3053,6 +3259,34 @@ def h_preview(kind,mode,axorder,speed,loop,coll=False,end_base=True):
                     if ('오류' in msg or '없습니다' in msg or '불가' in msg
                             or '아닙니다' in msg):
                         yield gr.update(),pre+f"미리보기 중단: {msg}"; return
+                    continue
+                if is_meta_item(item):                 # 두 팔 블록 (10-30) — 3D 는 아직 한 대
+                    if is_arm_item(item):
+                        _L=item[len(ARM_PREFIX):]
+                        if _L!=ACTIVE_ARM[0]:
+                            # ★ 충돌 방지 (11-05 사용자) ★ 다른 팔이 움직이기 전에 지금 팔을 기본 자세로.
+                            #   기본 자세의 팔은 다른 팔이 절대 건드릴 수 없다 (B팔이 놓고 떠나야 A팔이 그 도킹에 간다)
+                            _bq=get_angles('base')
+                            if _bq is not None:
+                                yield gr.update(),pre+f"미리보기: {arm_label(ACTIVE_ARM[0])} 기본 자세로 (다른 팔이 움직이기 전에)"
+                                _g0=CURRENT_Q[GRIP_IDX]
+                                _way,_dt=plan_joint_all(list(CURRENT_Q),_bq,steps=30)
+                                for _q in _way:
+                                    if STOP.is_set(): yield gr.update(),pre+"미리보기 정지"; return
+                                    _q=list(_q); _q[GRIP_IDX]=_g0
+                                    ros_publish(_q); time.sleep(_dt/sp)
+                        arm_switch(_L)
+                        yield gr.update(),pre+f"미리보기: 팔 {arm_label(item[len(ARM_PREFIX):])}"
+                    else:
+                        if wait_arm(item):     # 'A팔 끝날 때까지' (11-03): 블록을 차례대로 하므로 그 팔 블록은 이미 끝났다
+                            yield gr.update(),pre+f"미리보기: 기다리기 — {wait_text(item)} (끝났음 → 다음으로)"
+                            continue
+                        _w=wait_secs(item)
+                        yield gr.update(),pre+f"미리보기: 기다리기 {_w:g}초"
+                        _t0=time.time()
+                        while time.time()-_t0<_w/max(sp,0.1):
+                            if STOP.is_set(): break
+                            time.sleep(0.1)
                     continue
                 if is_down_item(item):
                     yield gr.update(),"하강: 그 자리에서 수직으로"
@@ -3131,6 +3365,9 @@ def h_preview(kind,mode,axorder,speed,loop,coll=False,end_base=True):
         FORCE_SIM[0]=False; SIM_SPEED[0]=1.0
         _run_end()
         RUNNING.clear()
+        if ACTIVE_ARM[0]!='A':
+            try: arm_switch('A')              # 미리보기가 끝나면 A팔이 다시 지금 팔
+            except Exception as e: LOG(f"  [팔] A팔로 돌아가기 실패: {e}")
         # 시뮬이 옮긴 물체/잡음 상태 원위치 (화면 시뮬 != 실제 배치)
         for _b,_p in _snap_pos.items():
             if _b in BRICKS: BRICKS[_b]['pos']=_p
@@ -3171,13 +3408,21 @@ def h_run(kind,mode,axorder,speed,loop,coll=False):
     _ok,_why=real_robot_ok()          # 고른 로봇과 실물이 다르면 시작조차 막는다
     if not _ok:
         yield gr.update(),'실물 실행 불가 — '+_why; return
+    _other=sorted({x[len(ARM_PREFIX):] for x in S['seq'] if is_arm_item(x)}-REAL_ARMS)
+    if _other:                        # 두 팔 (10-30): 실물이 연결되지 않은 팔은 3D 미리보기만
+        yield gr.update(),('실물 실행 불가 — '+', '.join(arm_label(L) for L in _other)
+                           +' 는 아직 실물이 연결되지 않았습니다 (3D 미리보기는 됩니다)'); return
     if RUNNING.is_set():
         yield gr.update(),"다른 동작 실행 중"; return
     # 계산은 스레드에서 돌리고, 진행 상황을 실시간으로 흘려보낸다
     box={}
     def _work():
         try: box['r']=plan_all(mode,axorder,coll)
-        except Exception as e: box['e']=e
+        except Exception as e:
+            box['e']=e
+            import traceback as _tb
+            LOG("  [경로 계산 예외] "+repr(e))
+            _tb.print_exc()
     th=threading.Thread(target=_work,daemon=True); th.start()
     t0=time.time()
     while th.is_alive():
@@ -3193,7 +3438,23 @@ def h_run(kind,mode,axorder,speed,loop,coll=False):
     if not ROBOT.connect():
         yield gr.update(),f"로봇 연결 실패 ({PORT})"; return
     sp=float(speed.replace('x','')); STOP.clear(); RUNNING.set()
+    PAUSE.clear(); RUN_ACTIVE[0]=True           # 11-06 일시 정지 가능
     try:
+        # 두 팔 (11-02): 첫 이동은 아래에서 블록 루프보다 먼저 가므로, 그 앞의 팔 블록대로 팔(=모터 번호)을 먼저 정한다
+        _f0=next((i for i,x in enumerate(S['seq']) if not is_grip_item(x) and not is_brick_item(x)
+                  and not is_down_item(x) and not is_up_item(x) and not is_meta_item(x)),len(S['seq']))
+        _lead=[x[len(ARM_PREFIX):] for x in S['seq'][:_f0] if is_arm_item(x)]
+        # ★ 충돌 방지 (11-05 사용자) ★ 첫 팔이 움직이기 전에 나머지 실물 팔은 기본 자세로
+        #   (지난 실행이 끝난 자리 — 도킹 위 등 — 에 남아 있으면 첫 팔과 부딪힐 수 있다)
+        _lead_arm=_lead[-1] if _lead else ACTIVE_ARM[0]
+        for _Lp in sorted((set(arms_cfg())&REAL_ARMS)-{_lead_arm}):
+            if _Lp!=ACTIVE_ARM[0]: arm_switch(_Lp)
+            ROBOT.time_profile(True,sp); ROBOT.torque(True)
+            LOG(f"\n[충돌 방지] {arm_label(_Lp)} 먼저 기본 자세로 (실행 시작 전)")
+            yield gr.update(),f"{arm_label(_Lp)} — 기본 자세로 (다른 팔이 움직이기 전에)"
+            _real_arm_to_base(sp)
+        if _lead_arm!=ACTIVE_ARM[0]:
+            arm_switch(_lead_arm); LOG(f"\n[팔] {arm_label(_lead_arm)} (첫 이동 전)")
         ROBOT.time_profile(True,sp); ROBOT.torque(True)
         _run_begin(len(S['seq']),sp)            # 타임바 시작 (실물)
         ps=pose_seq()
@@ -3205,7 +3466,7 @@ def h_run(kind,mode,axorder,speed,loop,coll=False):
         # 첫 블록이 '사물로 이동' 이면 실행 시점 재계산으로 간다 (미리보기와 동일).
         # 관절 보간으로 대충 보내면 축이 어긋나 뒤의 잡기가 "축 위가 아닙니다"로
         # 실패한다 (실물에서만 나던 버그).
-        if is_goto_item(ps[0]):
+        if ps and is_goto_item(ps[0]):
             oid0=ps[0][len(GOTO_PREFIX):]
             # 실물도 미리보기처럼 '기본 자세'에서 출발한다 (어느 자세에서
             # 눌러도 같은 경로가 나오게 — 접힌 자세에서 상승 불가 방지)
@@ -3237,40 +3498,44 @@ def h_run(kind,mode,axorder,speed,loop,coll=False):
             first_done=True
         else:
             first_done=False
-        first=get_angles(ps[0]); off1=get_offset(ps[0])
-        if first is None:
-            raise RuntimeError(f"'{ps[0]}' 에 도달할 자세를 만들 수 없습니다"
-                               " — [로봇 자리 추천]을 눌러보세요")
-        first_c=[a+o for a,o in zip(first,level_offset(off1))]
-        first_c[GRIP_IDX]=q0[GRIP_IDX]                           # 그리퍼는 현재 상태 유지
-        # 등록 자세로 갈 때는 그 자세의 j5 를 써야 한다 (현재값에 묶으면
-        # 그 자세에 영영 못 간다 — base 로 갔는데 j5 가 어긋나던 버그)
-        way,dt=plan_joint_seq(q0,first_c)          # 실물은 보정 적용 목표로
-        for f in way: f[GRIP_IDX]=q0[GRIP_IDX]                   # 그리퍼 고정
-        if LEVEL_ALWAYS: ramp_j5(way,q0,first_c)   # j5 는 목표까지 부드럽게
-        way,dt=densify(way,dt,sp)                  # 모터가 따라올 만큼 잘게
-        if not first_done:                         # 등록 자세만 관절 보간으로
-            ros_publish(first)                     # 3D 뷰는 정답(이상 자세) 표시
-            LOG(f"\n[첫 자세로 이동] {ps[0]}  ({len(way)}점)")
-            yield gr.update(),"첫 자세로 이동 중..."
-            for q in way:
-                if STOP.is_set(): raise KeyboardInterrupt
-                ROBOT.send(q); time.sleep(dt/sp)
-            ok,err_raw=_settle_or_rest(first_c)    # 구형: 쉬기만
-            LOG_COMPARE(ROBOT.last_want,ROBOT.last_got,
-                        f"{ps[0]} {'도착' if ok else '타임아웃'}")
-            yield gr.update(),(f"첫 자세 도착 (오차 {err_raw})" if ok
-                               else f"첫 자세 근접 (오차 {err_raw}, 타임아웃)")
+        # 이동 블록이 하나도 없어도 된다 (11-04: 잡기·놓기가 스스로 대상 위로 간다)
+        if ps:
+            first=get_angles(ps[0]); off1=get_offset(ps[0])
+            if first is None:
+                raise RuntimeError(f"'{ps[0]}' 에 도달할 자세를 만들 수 없습니다"
+                                   " — [로봇 자리 추천]을 눌러보세요")
+            first_c=[a+o for a,o in zip(first,level_offset(off1))]
+            first_c[GRIP_IDX]=q0[GRIP_IDX]                           # 그리퍼는 현재 상태 유지
+            # 등록 자세로 갈 때는 그 자세의 j5 를 써야 한다 (현재값에 묶으면
+            # 그 자세에 영영 못 간다 — base 로 갔는데 j5 가 어긋나던 버그)
+            way,dt=plan_joint_seq(q0,first_c)          # 실물은 보정 적용 목표로
+            for f in way: f[GRIP_IDX]=q0[GRIP_IDX]                   # 그리퍼 고정
+            if LEVEL_ALWAYS: ramp_j5(way,q0,first_c)   # j5 는 목표까지 부드럽게
+            way,dt=densify(way,dt,sp)                  # 모터가 따라올 만큼 잘게
+            if not first_done:                         # 등록 자세만 관절 보간으로
+                ros_publish(first)                     # 3D 뷰는 정답(이상 자세) 표시
+                LOG(f"\n[첫 자세로 이동] {ps[0]}  ({len(way)}점)")
+                yield gr.update(),"첫 자세로 이동 중..."
+                for q in way:
+                    if STOP.is_set(): raise KeyboardInterrupt
+                    ROBOT.send(q); time.sleep(dt/sp)
+                ok,err_raw=_settle_or_rest(first_c)    # 구형: 쉬기만
+                LOG_COMPARE(ROBOT.last_want,ROBOT.last_got,
+                            f"{ps[0]} {'도착' if ok else '타임아웃'}")
+                yield gr.update(),(f"첫 자세 도착 (오차 {err_raw})" if ok
+                                   else f"첫 자세 근접 (오차 {err_raw}, 타임아웃)")
         while True:
             seg_i=0
             # 첫 자세는 위에서 이미 이동함 -> 그 '자세 블록' 하나만 건너뛰고
             # 나머지는 전부 순서대로 (첫 자세 앞의 그리퍼 블록도 실행되어야 함)
-            first_pose_i=next(i for i,x in enumerate(S['seq'])
+            first_pose_i=next((i for i,x in enumerate(S['seq'])
                               if not is_grip_item(x) and not is_brick_item(x)
-                              and not is_down_item(x) and not is_up_item(x))
+                              and not is_down_item(x) and not is_up_item(x)
+                              and not is_meta_item(x)),None)
             items=[(i,x) for i,x in enumerate(S['seq']) if i!=first_pose_i]
             for _bi,item in items:
                 if STOP.is_set(): raise KeyboardInterrupt
+                if _pause_point()=='stop': raise KeyboardInterrupt     # 11-06 블록 사이 일시 정지
                 _run_at(_bi)                    # 타임바/하이라이트용 위치
                 if is_brick_item(item):
                     # 잡기/놓기 블록: 상승 -> 축 일치 -> 하강 -> 그리퍼 순으로
@@ -3290,6 +3555,35 @@ def h_run(kind,mode,axorder,speed,loop,coll=False):
                     if ('오류' in msg or '없습니다' in msg or '불가' in msg
                             or '아닙니다' in msg):
                         raise RuntimeError(msg)
+                    continue
+                if is_meta_item(item):                 # 두 팔 블록 (10-30)
+                    if is_arm_item(item):
+                        _L=item[len(ARM_PREFIX):]
+                        LOG(f"\n[팔] {arm_label(_L)}")
+                        if _L not in REAL_ARMS:
+                            raise RuntimeError(f"{arm_label(_L)} 는 아직 앱에 실물로 연결되지 않았습니다 "
+                                               "— 3D 미리보기는 됩니다")
+                        if _L!=ACTIVE_ARM[0]:          # 두 팔 (11-02): 그 팔 모터로 바꾸고, 그 팔도 기본 자세에서 출발
+                            # ★ 충돌 방지 (11-05 사용자) ★ 먼저 지금 팔을 기본 자세로 — 기본 자세의 팔은 다른 팔이 건드릴 수 없다
+                            LOG(f"\n[충돌 방지] {arm_label(ACTIVE_ARM[0])} 먼저 기본 자세로 (다른 팔이 움직이기 전에)")
+                            yield gr.update(),f"팔: {arm_label(ACTIVE_ARM[0])} — 기본 자세로 (다른 팔이 움직이기 전에)"
+                            _real_arm_to_base(sp)
+                            arm_switch(_L)             #   (쉬는 팔은 기본 자세에서 토크를 켠 채 기다린다)
+                            ROBOT.time_profile(True,sp); ROBOT.torque(True)
+                            yield gr.update(),f"팔: {arm_label(_L)} — 기본 자세로"
+                            _real_arm_to_base(sp)
+                        yield gr.update(),f"팔: {arm_label(_L)}"
+                    else:
+                        if wait_arm(item):     # 'A팔 끝날 때까지' (11-03): 지금은 블록을 차례대로 하므로 이미 끝났다
+                            LOG(f"\n[기다리기] {wait_text(item)} — 끝났음 (블록을 차례대로 한다)")   #   두 팔을 동시에 돌리게 되면 여기서 기다린다
+                            yield gr.update(),f"기다리기 — {wait_text(item)} (끝났음)"
+                            continue
+                        _w=wait_secs(item); LOG(f"\n[기다리기] {_w:g}초")
+                        yield gr.update(),f"기다리기 {_w:g}초"
+                        _t0=time.time()
+                        while time.time()-_t0<_w:
+                            if STOP.is_set(): raise KeyboardInterrupt
+                            time.sleep(0.1)
                     continue
                 if is_down_item(item):
                     yield gr.update(),"하강: 그 자리에서 수직으로"
@@ -3369,6 +3663,7 @@ def h_run(kind,mode,axorder,speed,loop,coll=False):
                     if STOP.is_set(): raise KeyboardInterrupt
                     t=k/n
                     qc=[v+oa+(ob-oa)*t for v,oa,ob in zip(q,offa,offb)]
+                    if _pause_point()=='stop': raise KeyboardInterrupt   # 11-06 일시 정지
                     ROBOT.send(qc)                 # 실물: 보정 적용
                     # 실물이 이 웨이포인트에 충분히 근접할 때까지 대기
                     # 고속일수록 허용치를 넓혀 부드럽게 (정지-출발 반복 방지)
@@ -3398,6 +3693,7 @@ def h_run(kind,mode,axorder,speed,loop,coll=False):
         ROBOT.estop(); yield gr.update(),f"ERROR: {e} - torque off"
     finally:
         RUNNING.clear()
+        RUN_ACTIVE[0]=False; PAUSE.clear()
 
 # ===== 미세조정 (실물 보정) — 3D 뷰는 정답 유지, 실물만 움직임 =====
 FT={'pose':None}
@@ -3406,14 +3702,29 @@ _CAL_KEYS={'SO-ARM (STS3215)':'sts','Dynamixel':'dxl'}
 def _off_str(off,rk=None):
     rk=rk or offset_robot()
     n=robot_njoints(rk)
-    body='  '.join(f"j{j+1}:{math.degrees(o):+.1f}" for j,o in enumerate(off[:n]))
+    body='  '.join(f"{jname(j) if rk!='dxl' else f'j{j+1}'}:{math.degrees(o):+.1f}"
+                   for j,o in enumerate(off[:n]) if rk=='dxl' or not _dead_joint(j))
     return f"[{ROBOT_LABEL.get(rk,rk)}] "+body
+def _ensure_pose_arm(name):
+    """11-05 (사용자): 자세는 자기 팔이 있다 — 그 자세를 고르거나 보내기 전에 지금 팔을 그 팔로 맞춘다.
+    (B팔 자세를 A팔이 걸린 채 [로봇을 이 자세로] 하면 B팔 각도가 A팔 모터로 갈 수 있었다)
+    base 는 두 팔 공통이라 바꾸지 않는다 (화면의 'A팔 base / B팔 base' 로 고른다). 팔 표시가 없는 예전 자세는 A팔.
+    바꿨으면 그 팔 이름."""
+    if not name or name=='base' or RUNNING.is_set(): return None
+    rec=_pose_rec(name)
+    if rec is None: return None
+    L=rec.get('arm') or 'A'
+    if L!=ACTIVE_ARM[0] and (L=='A' or L in arms_cfg()):
+        arm_switch(L); return L
+    return None
+
 def h_ft_goto(name):
     """[자세] 탭의 '로봇을 이 자세로'.
     [이동] 탭의 실행 로봇이 아니라 이 탭에서 고른 '보정할 로봇' 으로 보낸다
     (같은 탭의 미세조정 +/- 와 같은 로봇이어야 보정 작업이 성립한다)."""
     if not name: return "왼쪽 [자세] 탭에서 자세를 먼저 선택하세요"
     if RUNNING.is_set(): return "다른 동작 실행 중 - [정지] 후 다시"
+    _ensure_pose_arm(name)                     # 11-05: 그 자세의 팔 모터로
     rk=offset_robot(); dev=ROBOT_DXL if rk=='dxl' else ROBOT_STS
     if rk=='dxl' and not DXL_OK: return "Dynamixel 프로필이 없습니다"
     if not dev.connect():
@@ -3437,7 +3748,7 @@ def h_ft_goto(name):
                 ros_publish(gq,with_grip=True); q0=list(CURRENT_Q)
             except Exception: pass
         off_raw=get_offset(name)
-        off=level_offset(off_raw) if LEVEL_ALWAYS else off_raw
+        off=_off_for_send(name,off_raw)            # 11-06: 자리 보정 자세는 사용자가 맞춘 기울기 그대로
         tgt=[a+o for a,o in zip(get_angles(name),off)]
         tgt[GRIP_IDX]=q0[GRIP_IDX]                           # 그리퍼는 현재 상태 유지
         # !! j5 고정(물컵 규칙)은 '경로 중 자세가 기울지 않게' 하는 장치다.
@@ -3493,7 +3804,10 @@ def h_ft_step(pose_name,joint_label,step_deg,sign):
     name=FT['pose'] or pose_name
     if not name: return "왼쪽 [자세] 탭에서 자세를 먼저 선택하세요"
     FT['pose']=name
+    _ensure_pose_arm(name)                     # 11-05: 그 자세의 팔 보정·모터로
     j=int(joint_label[1])-1
+    if CAL.get('robot','sts')=='sts' and j<len(J2ID) and J2ID[j] in STS_DEAD_IDS:
+        return f"{joint_label} 는 선을 연결하지 않은 고정 관절입니다 (0도 고정, 미세조정 없음)"
     off=get_offset(name)
     off[j]+=math.radians(float(step_deg))*sign
     set_offset(name,off)
@@ -3549,6 +3863,7 @@ def _seq_pose_at(pos):
         it=seq[i]
         if is_goto_item(it):
             oid=it[len(GOTO_PREFIX):]
+            # 트윈은 이론 각도 (자리 보정은 실물 전송 때 _ik_off 가 더한다)
             qq=goto_q(oid)
             if qq is None: return None,f'{disp_name(oid)} 접근점 도달 불가'
             q=list(qq); what=f'이동 → {disp_name(oid)}'
@@ -3593,6 +3908,9 @@ def _seq_pose_at(pos):
             q=list(qq); what='하강' if is_down_item(it) else '상승'
         elif is_grip_item(it):
             what='그리퍼 '+('열기' if it==GRIP_OPEN_ITEM else '닫기')
+        elif is_meta_item(it):
+            what=(arm_label(it[len(ARM_PREFIX):]) if is_arm_item(it)
+                  else f'기다리기 {wait_text(it)}')
         else:
             qq=get_angles(it)
             if qq is None: return None,f"'{it}' 자세를 만들 수 없습니다"
@@ -3602,6 +3920,8 @@ def _seq_pose_at(pos):
 def h_seq_seek(pos):
     """타임바를 끌었을 때: **처음부터 재생하지 않고** 그 블록의 자세로
     바로 점프한다. 화면에서는 그 블록이 강조된다."""
+    try: _switch_to_block_arm(int(pos))       # 11-05: 그 블록의 팔로 (B팔 블록을 A팔로 풀지 않게)
+    except Exception: pass
     q,what=_seq_pose_at(pos)
     if q is None:
         SEQ_SEEK['blk']=-1
@@ -3750,6 +4070,7 @@ def _reload_robot(urdf_path):
     global J2ID, URDF_LIMITS, BASE_DEF
     global ROBOT_LINKS, ROBOT_COLORS, ROBOT_COLOR_MAP, _LINK_MESH, _COLL_LINKS
 
+    if ACTIVE_ARM[0]!='A': arm_switch('A')   # 두 팔 (11-02): 로봇을 바꾸기 전에 A팔 번호로 돌려놓는다
     BASE_URDF=urdf_path
     URDF_PKG_DIR=os.path.dirname(os.path.dirname(BASE_URDF))
     PROJECT_FILE=os.path.join(URDF_PKG_DIR,'calib.json')
@@ -3758,7 +4079,8 @@ def _reload_robot(urdf_path):
     BASE_DEF=_parse_urdf(BASE_URDF)     # 관절 기하(위치·축) — 로봇마다 다르다
     JOINTS=_urdf_joints(BASE_URDF)
     NJOINT=len(JOINTS)
-    J2ID=list(range(1,NJOINT+1))        # 관절 -> 모터 ID (축 수가 바뀌면 같이 바뀐다)
+    J2ID=_make_j2id(BASE_URDF,NJOINT)   # 관절 -> 모터 ID (축 수가 바뀌면 같이 바뀐다)
+    _ARM_A['j2id']=list(J2ID)           # 두 팔 (11-02): 새 로봇의 A팔 번호 (바꾸기 전에 A팔로 돌려놨다)
     URDF_LIMITS=_urdf_limits(BASE_URDF) # 가동범위도 이 URDF 것으로
     CHAIN=build_chain()
     TOOL_OFF=_tool_offset()
@@ -3817,7 +4139,7 @@ def _reload_robot(urdf_path):
         S['seq']=d.get('seq') or ['base']
         for _k in ('moves','axorders','rotmodes','macros','names','brick_pos',
                    'env_clones','env_removed','env_vis','factory_presets',
-                   'plates_added','env_off','slot_off'):
+                   'plates_added','env_off','slot_off','arm_pose','arms','level_trim'):   # 11-05: 두 팔 자리·이름·수평 보정도
             if d.get(_k): S[_k]=d[_k]
         if d.get('robot_xy'): S['robot_xy']=d['robot_xy']
         if d.get('robot_yaw') is not None: S['robot_yaw']=d['robot_yaw']
@@ -3887,10 +4209,18 @@ def h_robot_pick(name):
                     f"  조종표: {'있음' if os.path.exists(_JOY_TBL_FILE) else '없음'}")
     return f"그런 로봇이 없습니다: {name}"
 
-def h_home_zero():
+def h_home_zero(preset=''):
     """로봇을 URDF 기본 자세(전 관절 0도)로 되돌린다.
     조이콘 조종 등으로 자세가 꼬였을 때 기준으로 돌아오는 용도.
-    3D 만 움직인다 (실물은 안 나감)."""
+    3D 만 움직인다 (실물은 안 나감).
+
+    ★ 물체(펜)도 배치 프리셋 위치로 (2026-10-20, 사용자) ★
+      실물 실행이 펜을 다른 도킹에 놓고 끝나면 트윈 속 펜이 거기 남아,
+      손으로 펜을 되돌려 놓아도 트윈은 옛 자리를 믿었다 (말로 만들기가 엉뚱해짐).
+      -> [불러오기] 를 누르면 나오는 그 배치(화면에서 고른 것, 없으면 마지막으로
+         불러온 것)의 물체 위치로 되돌린다. 설비·로봇 위치는 건드리지 않는다."""
+    _pn=str(preset or '') or LAST_PRESET[0]
+    _nb=_bricks_to_preset(_pn) if _pn else None
     q=[0.0]*NJOINT
     if 'GRIP_STATE' in globals():
         q[GRIP_IDX]=GRIP_STATE.get('rad',0.0)      # 그리퍼 상태는 유지
@@ -3901,8 +4231,11 @@ def h_home_zero():
         JOY['tgt']=[float(p[0]),float(p[1]),float(p[2])]
     BTN('로봇 원위치','전 관절 0도')
     p=tool_pos(q)
+    _bm=(f" · 물체 {_nb}개를 배치 '{_pn}' 위치로" if _nb is not None
+         else (f" · 배치 '{_pn}' 를 찾지 못해 물체는 그대로" if _pn
+               else " · 불러온 배치가 없어 물체는 그대로"))
     return (f"로봇 원위치 (URDF 기본 자세) — 툴 "
-            f"({p[0]*1000:.0f},{p[1]*1000:.0f},{p[2]*1000:.0f})mm")
+            f"({p[0]*1000:.0f},{p[1]*1000:.0f},{p[2]*1000:.0f})mm"+_bm)
 
 def h_joy_start():
     """조이콘 조종 시작 — 지금 3D 자세의 툴 위치를 출발점으로 삼는다.
@@ -4377,128 +4710,6 @@ def _joy_warp_step(q0,tgt_q):
     return [a+x*r for a,x in zip(list(q0)[:NJOINT],d)]
 
 
-# ================= 도색 시뮬레이션 =================
-# end(7번) 의 길쭉한 주둥이에서 스프레이가 나온다. 주둥이는 l7 로컬 -Y 로
-# 406mm 뻗어 있다 (TOOL_OFF 도 -Y). 분사 방향 = 그 연장선.
-SPRAY={'on':False,'kind':'보통','hits':[],'target':None,'cone':True}
-# 스프레이 종류: 퍼짐각(도) · 도달거리(m) · 초당 도료량
-SPRAY_KINDS={
-    '얇게':  {'ang': 8.0,'reach':0.45,'rate':0.6},
-    '보통':  {'ang':16.0,'reach':0.35,'rate':1.0},
-    '두껍게':{'ang':26.0,'reach':0.40,'rate':1.8},
-    '멀리':  {'ang':10.0,'reach':0.70,'rate':0.7},
-}
-SPRAY_DIR_LOCAL=np.array([0.0,-1.0,0.0])   # l7 로컬에서 주둥이가 향하는 쪽
-# 주둥이 '끝' 위치 (l7 로컬). STL 실측: 얇은 원통(15x15mm)이 y -0.356~-0.406
-# 구간에 있고 그 끝이 -0.4057. 여기서 도료가 나와야 한다
-# (프레임 원점에서 쏘면 팔 중간에서 뿜는 것처럼 보인다).
-SPRAY_TIP_LOCAL=np.array([0.0,-0.4057,0.0])
-
-def spray_ray(q=None):
-    """지금 자세에서 (분사 시작점, 방향) 을 월드 좌표로."""
-    q=list(q if q is not None else CURRENT_Q)
-    T_ALL=CHAIN.forward_kinematics([0]+q[:len(CHAIN.links)-1],full_kinematics=True)
-    F=np.array(T_ALL[HEAD_FRAME[0]],dtype=float)     # l7 프레임 (방향 기준)
-    R=F[:3,:3]
-    # ★ 분사 시작점 = axis_end 원점 그대로 ★
-    #   l7 프레임 원점은 '관절 연결 중심' 이라 실제 주둥이보다 107mm 아래다.
-    #   end 좌표계가 곧 주둥이 끝이므로 그 원점을 쓴다.
-    o=np.array(T_ALL[-1][:3,3],dtype=float)
-    d=R@SPRAY_DIR_LOCAL
-    n=float(np.linalg.norm(d)) or 1.0
-    return l2w(o), (d/n)
-
-def h_spray(on=None,kind=None):
-    """분사 켜기/끄기 · 종류 바꾸기. on 을 안 주면 토글."""
-    if kind and kind in SPRAY_KINDS: SPRAY['kind']=kind
-    SPRAY['on']=(not SPRAY['on']) if on is None else bool(on)
-    k=SPRAY_KINDS[SPRAY['kind']]
-    return {'on':SPRAY['on'],'kind':SPRAY['kind'],'kinds':list(SPRAY_KINDS),
-            'hits':len(SPRAY['hits'])}, \
-           (f"분사 {'ON' if SPRAY['on'] else 'OFF'} · {SPRAY['kind']} "
-            f"(퍼짐 {k['ang']:.0f}도 · 사거리 {k['reach']*100:.0f}cm)")
-
-def h_spray_cone(on=None):
-    """분사 꼬깔(원뿔) 표시 켜고 끄기."""
-    SPRAY['cone']=(not SPRAY.get('cone',True)) if on is None else bool(on)
-    return {'cone':SPRAY['cone']}, f"꼬깔 {'보임' if SPRAY['cone'] else '숨김'}"
-
-def h_spray_laser(on=None):
-    """조준선(레이저 포인터) 켜고 끄기."""
-    SPRAY['laser']=(not SPRAY.get('laser',True)) if on is None else bool(on)
-    return {'laser':SPRAY['laser']}, \
-           f"조준선 {'보임' if SPRAY['laser'] else '숨김'}"
-
-def h_spray_clear():
-    """칠한 것 지우기."""
-    SPRAY['hits']=[]; _SPRAY_SENT[0]=0
-    return {'hits':0},'도색 지움'
-
-def _spray_state():
-    """분사 상태 + '지금 어디를 겨누고 있는지' (레이저 포인터).
-
-    분사 중이 아니어도 늘 보낸다. 노즐과 표면이 어떤 관계인지 미리 보여야
-    뿌리기 전에 자세를 잡을 수 있다."""
-    k=SPRAY_KINDS[SPRAY['kind']]
-    try:
-        o,d=spray_ray()
-        aim={'o':[round(float(v),4) for v in o],
-             'd':[round(float(v),4) for v in d],
-             'ang':k['ang'],'reach':k['reach']}
-    except Exception:
-        aim=None
-    return {'on':SPRAY['on'],'kind':SPRAY['kind'],
-            'cone':SPRAY.get('cone',True),
-            'laser':SPRAY.get('laser',True),
-            'aim':aim}
-
-_SPRAY_SENT=[0]
-
-def _spray_take():
-    """뷰어가 아직 안 받아간 분사 광선만 넘긴다 (한 번만 그리면 되므로)."""
-    i=_SPRAY_SENT[0]
-    out=SPRAY['hits'][i:]
-    _SPRAY_SENT[0]=len(SPRAY['hits'])
-    return out[-60:]          # 한 번에 너무 많이 보내지 않는다
-
-_SPRAY_T=[0.0]
-
-def spray_tick(dt=None):
-    """분사 중이면 이번에 도료가 닿은 자리를 기록한다.
-    표면 판정은 뷰어(three.js)가 하므로, 여기서는 '어디서 어느 방향으로
-    얼마나' 뿌렸는지만 남긴다. 뷰어가 그 광선을 벽에 쏴서 칠한다.
-
-    ★ dt 는 '지난번 이후 실제로 흐른 시간' 이다.
-      예전에는 0.05 로 고정이라, 움직일 때만 부르면 가만히 서서 뿌려도
-      도료가 안 쌓였다. 실제 스프레이는 서 있어도 계속 나온다."""
-    if not SPRAY['on']:
-        _SPRAY_T[0]=0.0
-        return None
-    now=time.time()
-    if dt is None:
-        dt=(now-_SPRAY_T[0]) if _SPRAY_T[0] else 0.05
-        dt=max(0.0,min(0.25,dt))        # 한참 쉬었다 와도 한 번에 왕창 X
-    _SPRAY_T[0]=now
-    if dt<=0.0: return SPRAY['hits'][-1] if SPRAY['hits'] else None
-    o,d=spray_ray()
-    k=SPRAY_KINDS[SPRAY['kind']]
-    SPRAY['hits'].append({'o':[round(float(v),4) for v in o],
-                          'd':[round(float(v),4) for v in d],
-                          'ang':k['ang'],'reach':k['reach'],
-                          'amt':round(k['rate']*dt,4)})
-    if len(SPRAY['hits'])>4000: del SPRAY['hits'][:1000]
-    return SPRAY['hits'][-1]
-
-def _spray_loop():
-    """분사 중에는 가만히 서 있어도 도료가 쌓이게 계속 뿌린다.
-    조종 명령이 없어도 도는 유일한 곳이라 여기서 시간을 흘려보낸다."""
-    while True:
-        try:
-            if SPRAY['on']: spray_tick()
-        except Exception: pass
-        time.sleep(0.05)                # 20Hz
-
-
 _HEAD_CACHE={}          # (칸) -> 자세 (닭 머리 IK 결과 캐시)
 
 def _head_cache_file():
@@ -4774,7 +4985,7 @@ def h_joy_chunk(cx=None,cy=None,cz=None,r=8):
 def h_joy_apply(q,px=None,py=None,pz=None):
     """브라우저가 '주변 표'로 직접 찾은 자세를 그대로 반영한다.
 
-    브라우저는 60Hz 로 즉시 그리고, 여기는 3D 상태 동기화와 분사 기록만
+    브라우저는 60Hz 로 즉시 그리고, 여기는 3D 상태 동기화만
     한다. 왕복을 기다리지 않으므로 화면이 끊기지 않는다.
     안전: 관절 수·한계를 확인하고, 손목(닭 머리)이 깨진 자세는 거른다.
     """
@@ -4791,7 +5002,6 @@ def h_joy_apply(q,px=None,py=None,pz=None):
         JOY['tgt']=[float(px),float(py),float(pz)]
     else:
         p=tool_pos(q); JOY['tgt']=[float(p[0]),float(p[1]),float(p[2])]
-    spray_tick()
     p=JOY['tgt']
     return ({'ok':True,'pos':[round(v,4) for v in p]},
             f"조이콘: ({p[0]*1000:.0f},{p[1]*1000:.0f},{p[2]*1000:.0f})mm")
@@ -4900,7 +5110,6 @@ def h_joy_move(dx,dy,dz,grip=None):
         else:
             ros_publish(q)
         JOY['tgt']=want; JOY['warp']=None
-        spray_tick()                    # 분사 중이면 이 자세에서 뿌린 걸 기록
         return ({'ok':True,'pos':[round(v,4) for v in want],
                  'blocked':locals().get('blocked') or [],
                  'head':round(head_err_deg(q),2)},
@@ -5025,6 +5234,21 @@ def h_seq_clear():
     return (gr.update(choices=seq_labels(),value=None),
             f"블록 {n}개 전부 삭제 (Ctrl+Z 로 되돌리기)")
 
+def _arm_of_block(idx):
+    """파이프라인 idx 번 블록을 하는 팔 (그 앞 마지막 팔 블록, 없으면 A)."""
+    L='A'
+    for x in S['seq'][:int(idx)+1]:
+        if is_arm_item(x): L=x[len(ARM_PREFIX):]
+    return L
+
+def _switch_to_block_arm(idx):
+    """11-05: 블록 우클릭(자세 등록·이 자세로)은 '그 블록의 팔' 기준 — 지금 팔이 다르면 바꾼다. 바꿨으면 그 팔 이름."""
+    L=_arm_of_block(idx)
+    if L!=ACTIVE_ARM[0] and (L=='A' or L in arms_cfg()):
+        arm_switch(L)
+        return L
+    return None
+
 def h_block_to_pose(label):
     """파이프라인 블록(➜이동 / ◈잡기·놓기 / ▼하강 / ▲상승)이 가리키는 자리를
     '자세'로 등록한다. 등록되면 기존 미세조정 기능(+/- , 보정 저장)을 그
@@ -5037,6 +5261,7 @@ def h_block_to_pose(label):
     if idx is None or idx>=len(S['seq']):
         return gr.update(),"블록을 먼저 선택하세요 (이동/잡기/놓기/하강/상승)"
     item=S['seq'][idx]
+    _sw=_switch_to_block_arm(idx)              # 11-05: B팔 블록은 B팔로 (예전엔 지금 팔(A)로 풀어 '도달 불가' — 반응 없음처럼 보였다)
     # ★ 잡기·놓기는 자세로 등록하지 않는다 ★
     #   좌표를 가진 블록은 [이동] 하나뿐이다. 잡기/놓기를 자세로 등록하면
     #   그 자세가 좌표를 갖게 되어 이동과 두 개가 된다(팔이 두 자리 사이를
@@ -5082,7 +5307,7 @@ def h_block_to_pose(label):
     else:
         return gr.update(),f"'{item}' 은 자세로 등록할 수 없는 블록입니다"
     if q is None:
-        return gr.update(),("그 블록의 자세를 만들 수 없습니다 (도달 불가) — "
+        return gr.update(),(f"그 블록의 자세를 만들 수 없습니다 ({arm_label(ACTIVE_ARM[0])} 자리에서 도달 불가) — "
                             "[로봇 자리 추천]을 눌러보세요")
     # URDF 자세 등록(_add_urdf_pose)과 완전히 같은 절차로 넣는다
     angles=[float(v) for v in q]
@@ -5091,18 +5316,37 @@ def h_block_to_pose(label):
         lo,hi=jr_limits(j)
         c=max(lo,min(hi,a))
         if abs(c-a)>0.002:
-            clamped.append(f"j{j+1} {math.degrees(a):+.1f}->{math.degrees(c):+.1f}도")
+            clamped.append(f"{jname(j)} {math.degrees(a):+.1f}->{math.degrees(c):+.1f}도")
         angles[j]=c
     # 이름에 위치를 넣어 목록에서 어떤 자세인지 바로 알 수 있게 한다
     _tp0=tool_pos(angles)
-    tag=f"{tag}({_tp0[0]*1000:.0f},{_tp0[1]*1000:.0f},{_tp0[2]*1000:.0f})"
-    name=tag; k=2
-    while name in pose_names(): name=f'{tag}_{k}'; k+=1
+    _slot=is_goto_item(item)
+    if _slot:
+        # ★ 이동 블록의 보정 = '로봇 기준 자리' 하나 (2026-11-04, 사용자) ★
+        #   이름은 로봇 기준 좌표(mm)만. 로봇을 옮겨도 로봇 기준 같은 점이면 같은 이름·같은 보정이라
+        #   새로 만들지 않고 그 보정을 연다 → 보정 자세 수는 팔이 닿는 점의 수를 넘지 않는다.
+        _rel=w2l(np.asarray(_tp0,float))
+        _old=_slot_find(ACTIVE_ARM[0],_rel)
+        if _old is not None:
+            FT['pose']=_old['name']
+            return (gr.update(choices=pose_names(),value=_old['name']),
+                    f"'{_old['name']}' — 로봇 기준 같은 자리의 보정이 이미 있어 그것을 엽니다 "
+                    "(로봇을 옮겨도 같은 자리입니다)\n  ③연동 탭에서 [로봇을 이 자세로] -> +/- 로 "
+                    "미세조정 -> [보정 저장]")
+        name=_slot_name(ACTIVE_ARM[0],_rel)
+    else:
+        tag=f"{tag}({_tp0[0]*1000:.0f},{_tp0[1]*1000:.0f},{_tp0[2]*1000:.0f})"
+        name=tag; k=2
+        while name in pose_names(): name=f'{tag}_{k}'; k+=1
     off,src,dist=nearest_offset(angles)        # 가까운 보정 자동 적용
+    if ACTIVE_ARM[0]!='A': off,src,dist=None,None,None   # 11-06: base 보정은 A팔 값 — B팔 자세에 복사하지 않는다
+    rec={'name':name,'angles':angles,
+         'offset':off if off else [0.0]*NJOINT,
+         'offsets':{'sts':off if off else [0.0]*NJOINT}}
+    if _slot:
+        rec.update(rel=[round(float(v),5) for v in _rel],arm=ACTIVE_ARM[0])
     with LOCK:
-        S['poses'].append({'name':name,'angles':angles,
-                           'offset':off if off else [0.0]*NJOINT,
-                           'offsets':{'sts':off if off else [0.0]*NJOINT}})
+        S['poses'].append(rec)
     _macro_save()
     FT['pose']=name                            # 미세조정 대상으로 바로 선택
     tp=tool_pos(angles)
@@ -5115,6 +5359,7 @@ def h_block_to_pose(label):
         msg+=("\n  * 상승 전 자리입니다 (잡는 높이). 이동 전에 그리퍼를 "
               "열어두세요 — 닫힌 채로 가면 물체에 부딪힙니다")
     if clamped: msg+="\n  관절 한계 조정: "+", ".join(clamped)
+    if _sw: msg+=f"\n  지금 팔을 {arm_label(_sw)} 로 바꿨습니다 (이 블록의 팔 — 미세조정·보정 저장도 이 팔)"
     if off: msg+=f"\n  base 보정 자동 적용 (관절각 차이 {dist:.1f}도)"
     return gr.update(choices=pose_names(),value=name),msg
 
@@ -5200,14 +5445,17 @@ def h_ft_save(pose_name):
       -> 저장할 때 보정을 각도에 녹여 넣고 보정은 0 으로 되돌린다."""
     name=FT['pose'] or pose_name
     if not name: return "자세를 먼저 선택하세요"
+    _ensure_pose_arm(name)                     # 11-05: 그 자세의 팔 보정으로 저장
     rec=_pose_rec(name)
     off=get_offset(name)
     merged=False
+    _before=list((rec or {}).get('angles') or [])[:4]     # 11-06: 저장 전후 기록
+    if rec is not None: rec['tuned']=True           # 보정 지도: [보정 저장] 해야 초록 (11-04)
     if rec is not None and any(abs(v)>1e-9 for v in off):
         try:
             a=list(rec.get('angles') or [])
             a=(a+[0.0]*NJOINT)[:NJOINT]
-            o=level_offset(off) if LEVEL_ALWAYS else list(off)
+            o=_off_for_send(name,off)              # 11-06: 자리 보정 자세는 기울기까지 그대로 (예전: 합 0 으로 지움)
             # 보정을 각도에 더하고, 관절 한계 안으로 자른다
             for j in range(min(NJOINT,len(a))):
                 lo,hi=jr_limits(j)
@@ -5217,11 +5465,37 @@ def h_ft_save(pose_name):
             merged=True
         except Exception as e:
             print('보정 합치기 실패:',e)
+    # ★ 같은 자리 보정은 하나만 (덮어쓰기, 2026-10-20) ★
+    #   보정의 주인은 XY 자리라, 같은 자리를 다시 보정하면 예전 것은 지운다.
+    #   등록할 때가 아니라 '저장할 때' 지운다 — 등록만 하고 저장 안 하면 예전 보정이 남는다.
+    #   11-04: '같은 자리' 는 로봇 기준 자리다 (_pose_slot — 같은 팔의 보정끼리만, 지금 로봇 자리로 바꿔 비교)
+    replaced=[]
+    me=_pose_slot(rec) if rec is not None else None
+    if me is not None:
+        px,py=me[0],me[1]
+        dup=[]
+        for p in list(S['poses']):
+            if p['name']==name: continue
+            s2=_pose_slot(p)
+            if s2 is not None and math.hypot(s2[0]-px,s2[1]-py)<=SLOT_TOL: dup.append(p)
+        with LOCK:
+            for p in dup:
+                if p in S['poses']: S['poses'].remove(p); replaced.append(p['name'])
     with open(PROJECT_FILE,'w') as f: json.dump(S,f,indent=1)
+    try:
+        _after=list((rec or {}).get('angles') or [])[:4]
+        LOG(f"[보정 저장] {name} (팔 {(rec or {}).get('arm') or 'A'}): "
+            +' '.join(f"j{j+1} {math.degrees(a):+.2f}→{math.degrees(b):+.2f}°" for j,(a,b) in enumerate(zip(_before,_after)))
+            +(f" · 같은 자리 예전 보정 지움: {', '.join(replaced)}" if replaced else ""))
+    except Exception: pass
+    rep=(f"\n  같은 자리의 예전 보정을 덮어썼습니다: {', '.join(replaced)}"
+         if replaced else "")
+    if replaced:
+        print(f"[보정 저장] 같은 자리 예전 보정 덮어씀: {', '.join(replaced)} -> {name}")
     if merged:
         return (f"'{name}' 저장됨 — 미세조정을 자세 각도에 반영했습니다 "
-                f"(보정값은 0 으로, 이제 값이 하나뿐입니다)")
-    return f"'{name}' 보정 저장됨: "+_off_str(get_offset(name))+"  (그 로봇에만 적용)"
+                f"(보정값은 0 으로, 이제 값이 하나뿐입니다)"+rep)
+    return f"'{name}' 보정 저장됨: "+_off_str(get_offset(name))+"  (그 로봇에만 적용)"+rep
 
 # ===== 텔레오퍼레이션: 손으로 움직여 녹화 -> 재생 =====
 REC={'on':False,'frames':[],'thread':None}
@@ -5380,6 +5654,7 @@ def h_rec_load():
 def h_stop():
     BTN('정지','토크 해제')
     STOP.set()
+    PAUSE.clear()                # 일시 정지 중이어도 바로 정지 (11-06)
     REC['on']=False              # 녹화 중이면 함께 정지
     if ROBOT.port: ROBOT.estop()
     return "정지 - 토크 해제됨"
@@ -5445,6 +5720,8 @@ def h_zero_diag():
     if not ROBOT_STS.connect(): return f"SO-ARM 연결 실패 ({PORT})"
     rows=[]
     for k,i in enumerate(J2ID[:6]):
+        if i in STS_DEAD_IDS:
+            rows.append(f"  고정 관절(URDF {k+1}번째): 모터 없음 — 0도 고정 (통신 안 함)"); continue
         got=[]
         for _ in range(9):
             v=ROBOT_STS._r2(i,ADDR_PRESENT)
@@ -5468,6 +5745,9 @@ def h_zero_diag():
 
 def h_cal_capture_zero(rlabel):
     """지금 손으로 잡아둔 자세를 그 로봇의 영점(base)으로 저장."""
+    if ACTIVE_ARM[0]!=REAL_ARM:       # 두 팔 (10-30): 실물 A팔 모터를 읽어 저장하므로, B팔을 잡고 누르면 A 영점이 망가진다
+        return (f"영점 저장 막음 — 3D 지금 팔이 {arm_label(ACTIVE_ARM[0])} 입니다. 영점은 실물 팔"
+                f"({arm_label(REAL_ARM)})만 저장합니다. '3D 에서 옮길 팔' 을 {REAL_ARM}팔로 바꾸세요")
     rk=_CAL_KEYS.get(rlabel,'sts'); CAL['robot']=rk
     BTN('base 저장',rlabel)
     here=os.path.dirname(os.path.abspath(__file__))
@@ -5478,9 +5758,11 @@ def h_cal_capture_zero(rlabel):
         path=os.path.join(here,'dxl_zero.py'); title='Dynamixel'
     else:
         if not ROBOT_STS.connect(): return f"SO-ARM 연결 실패 ({PORT})"
-        ids=sorted(set(J2ID)); rd=lambda i: ROBOT_STS._r2(i,ADDR_PRESENT)
+        ids=sorted(set(J2ID)-STS_DEAD_IDS); rd=lambda i: ROBOT_STS._r2(i,ADDR_PRESENT)
         path=os.path.join(here,'sts_zero.py'); title='SO-ARM'
     vals={}
+    if rk!='dxl':                     # 선 없는 모터(j5 고정)는 읽지 않고 예전 영점을 그대로 둔다
+        vals.update({i:ZERO_RAW[i] for i in STS_DEAD_IDS if i in ZERO_RAW})
     for i in ids:
         got=[]
         for _ in range(30):
@@ -5495,8 +5777,9 @@ def h_cal_capture_zero(rlabel):
     #     j4 가 3971 로 저장돼 base 0도가 가동범위 밖이 되는 사고가 났다.)
     if rk!='dxl':
         bad=[]; tight=[]
-        grip_id=J2ID[5] if len(J2ID)>5 else 6
+        grip_id=GRIP_ID
         for i,v in vals.items():
+            if i in STS_DEAD_IDS: continue
             # 그리퍼(j6)는 '자세'가 아니라 여닫기다. 완전히 닫으면 한계 끝을
             # 살짝 벗어난 값이 읽히는데, 그것 때문에 영점 저장이 막히면 안 된다.
             if i==grip_id: continue
@@ -5535,12 +5818,14 @@ def h_cal_capture_zero(rlabel):
             lo,hi=dxl_jr_limits(k)
             rng.append(f"j{k+1} {math.degrees(lo):+.0f}~{math.degrees(hi):+.0f}")
     else:
-        ZERO_RAW.clear(); ZERO_RAW.update(vals)
+        _keep={k:v for k,v in ZERO_RAW.items() if _ARM2 is not None and k in _ARM2.ZERO_RAW}   # B팔 영점(sts_arm2.py)은 지우지 않는다 (11-02)
+        ZERO_RAW.clear(); ZERO_RAW.update(vals); ZERO_RAW.update(_keep)
         globals()['CHAIN']=build_chain(); globals()['_CHAIN_L']=None
         _AN['done']=False                            # 해석 파라미터 재산출
         for k in range(nj):
+            if _dead_joint(k): continue
             lo,hi=jr_limits(k)
-            rng.append(f"j{k+1} {math.degrees(lo):+.0f}~{math.degrees(hi):+.0f}")
+            rng.append(f"{jname(k)} {math.degrees(lo):+.0f}~{math.degrees(hi):+.0f}")
     # !! 영점을 새로 잡으면 '지금 이 자세 = 0도' 가 된다.
     #    이때 예전 보정값을 그대로 두면 base 로 보낼 때 그만큼 엉뚱한 곳으로
     #    간다 (손으로 맞춘 자세와 다른 곳 -> 실제 부상 사고 발생).
@@ -5737,6 +6022,10 @@ try:
     if _d.get('env_vis'): S['env_vis']=_d['env_vis']            # 표시 여부
     if _d.get('factory_presets'): S['factory_presets']=_d['factory_presets']
     if _d.get('plates_added'): S['plates_added']=_d['plates_added']  # 추가 플레이트
+    if _d.get('calmap_ok'): S['calmap_ok']=_d['calmap_ok']            # ✅ 보정 성공 자리 (11-04)
+    if _d.get('arm_pose'): S['arm_pose']=_d['arm_pose']               # 11-05: B팔 자리 (빠져 있어 B팔이 사라졌다)
+    if _d.get('arms'): S['arms']=_d['arms']                           # 11-05: 팔 이름·색
+    if _d.get('level_trim'): S['level_trim']=_d['level_trim']         # 11-05: 팔별 그리퍼 수평 보정 (j4 영점, 실물만)
     if not any(p['name']=='base' for p in S['poses']):
         S['poses'].insert(0,{'name':'base','angles':[0.0]*NJOINT,'offset':[0.0]*NJOINT})
     print(f"  자세 {len(S['poses'])}개, 녹화 {len(S['moves'])}건 불러옴")
@@ -5794,6 +6083,15 @@ def tile_of(ox,oy):
 def tile_origin(t):
     return (GRID_ORG[0]+t[0]*PLATE_SIZE, GRID_ORG[1]+t[1]*PLATE_SIZE)
 
+# ★ 기본 바닥판 = 2×4 (사용자, 11-03) ★ 앱 처음 화면 기준 가로(x) 2장 × 세로(y) 4장, 흰·파 체크무늬.
+#   로봇 판(칸 0,0)이 왼쪽 위(안쪽) = 흰, 앞쪽(-y, 팔이 향하는 쪽)으로 늘린다.  흰 파 / 파 흰 / 흰 파 / 파 흰
+#   실행할 때마다 이 배치로 맞춘다 (부팅 끝 '기본 바닥판' 참고). 카메라도 판이 이 모양이라고 안다 (cam_grid/grid.py BI·BJ).
+PLATE_LAYOUT=[(ix,iy) for iy in (0,-1,-2,-3) for ix in (0,1)]
+PLATE_WHITE='#f2f2f2'; PLATE_BLUE='#2f6fd6'
+def plate_color(t):
+    """칸 (ix,iy) 의 판 색 — (0,0) 이 흰, 이웃은 번갈아."""
+    return PLATE_WHITE if (int(t[0])+int(t[1]))%2==0 else PLATE_BLUE
+
 # 기존 플레이트들의 타일 좌표(정수 격자) 파악
 PLATES={}                 # (ix,iy) -> {'id','origin'(m), 'src'}
 def _register_existing_plates():
@@ -5803,7 +6101,7 @@ def _register_existing_plates():
         ox,oy=b[0][0],b[0][1]                    # 좌하단(원점)
         ix,iy=tile_of(ox,oy)
         PLATES[(ix,iy)]={'id':e['id'],'origin':(ox,oy),'added':False}
-        e['tile']=(ix,iy)
+        e['tile']=(ix,iy); e['color']=plate_color((ix,iy))
 _register_existing_plates()
 
 PLATE_EDIT={'on':False,'sel':None}    # 편집 모드 / 선택 타일
@@ -5895,8 +6193,186 @@ def set_robot_pose(x,y,yaw,save=True):
     if 'PEG_VIEW' in globals(): PEG_VIEW['dirty']=True
     if save:
         with LOCK:
-            S['robot_xy']=[float(x),float(y)]; S['robot_yaw']=float(yaw)
+            if 'ACTIVE_ARM' in globals() and ACTIVE_ARM[0]!='A':     # B팔을 옮기는 중 (10-30)
+                S.setdefault('arm_pose',{})[ACTIVE_ARM[0]]=[float(x),float(y),float(yaw)]
+            else:
+                S['robot_xy']=[float(x),float(y)]; S['robot_yaw']=float(yaw)
         _macro_save()
+
+def _arm_block_real():
+    """3D '지금 팔' 이 실물로 연결된 팔(REAL_ARM)이 아니면 실물 목표 쓰기를 막는다 (10-30).
+    B팔을 3D 에서 고르고 실물 버튼을 누르면, B팔 자리·자세로 계산한 값이 A팔 모터로 가기 때문."""
+    if ACTIVE_ARM[0] not in REAL_ARMS:
+        if not _ARM_BLOCK_LOGGED[0]:
+            LOG(f"  ⚠ 실물 전송 막음 — 3D 지금 팔이 {arm_label(ACTIVE_ARM[0])} 입니다 "
+                f"(실물은 {', '.join(sorted(REAL_ARMS))}팔). 블록 팔레트에서 '3D 에서 옮길 팔' 을 바꾸세요")
+            _ARM_BLOCK_LOGGED[0]=True
+        return True
+    _ARM_BLOCK_LOGGED[0]=False
+    return False
+_ARM_BLOCK_LOGGED=[False]
+
+# ===== 두 팔 실물 (2026-11-02) — 팔마다 모터 번호·그리퍼 값이 다르다 (A 1~5, B 11~15) =====
+_ARM_A={'j2id':None}            # A팔 관절→모터 번호 (팔을 바꾸기 직전 값). 그리퍼 번호·값은 _ARM_A_GRIP
+def _arm_motors(L):
+    """실물 모터 번호·그리퍼 값·IK 체인을 L 팔 것으로. SO-ARM(sts3215) 이고 sts_arm2.py 가 있을 때만.
+    영점·범위·방향은 모터 번호로 나뉜 표에 두 팔 것이 다 들어 있어서, 번호만 바꾸면 따라 바뀐다."""
+    global J2ID,GRIP_ID,GRIPPER_CLOSE,GRIPPER_OPEN,CHAIN,_CHAIN_L
+    if _ARM2 is None or os.path.basename(os.path.dirname(URDF_PKG_DIR))!='sts3215': return
+    if _ARM_A['j2id'] is None: _ARM_A['j2id']=list(J2ID)
+    a=_ARM_A['j2id']; g,c,o=_ARM_A_GRIP
+    if L=='B':
+        k=_ARM2.ID_OFFSET
+        J2ID=[i if i in STS_DEAD_IDS else i+k for i in a]; GRIP_ID=g+k
+        GRIPPER_CLOSE,GRIPPER_OPEN=_ARM2.GRIPPER_CLOSE,_ARM2.GRIPPER_OPEN
+    else:                                    # A (그 밖의 팔은 3D 만이라 A 번호 그대로 — 실물 전송은 _arm_block_real 이 막는다)
+        J2ID=list(a); GRIP_ID,GRIPPER_CLOSE,GRIPPER_OPEN=g,c,o
+    CHAIN=build_chain(); _CHAIN_L=None       # 관절 범위가 팔마다 달라서 IK 체인을 다시 만든다
+    globals()['_ARM_REACH']=None; _AN['done']=False
+    LOG(f"  [팔] 모터 번호: {', '.join(jname(k)+'='+str(i) for k,i in enumerate(J2ID) if i not in STS_DEAD_IDS)}")
+
+# ===== 그리퍼 수평 맞추기 (11-05 사용자: 화면은 수평인데 실물 B팔이 기운다) =====
+#   원인 = 그 팔의 영점(손으로 잡고 잰 기본 자세)이 정확히 수평이 아니었다 → 어느 자세에서나 같은 각도로 기운다.
+#   미세조정은 기울기를 j4 로 되돌리게(level_offset) 돼 있어 이걸 못 고친다.
+#   -> 팔마다 'j4 영점' 만 몇 도 옮긴다 (S['level_trim'] = {팔: 도}). 실물 각도↔모터값 변환이 모두 ZERO_RAW 를
+#      쓰므로 보내기·읽기가 같이 맞는다. 3D(이론)는 그대로.
+_J4_ZERO0={}                     # 모터 번호 -> 수평 보정 전 원래 영점
+def _j4_motor(L):
+    """그 팔의 j4 모터 번호 (SO-ARM 두 팔만). 없으면 None."""
+    if _ARM2 is None or os.path.basename(os.path.dirname(URDF_PKG_DIR))!='sts3215': return None
+    a=_ARM_A['j2id'] if _ARM_A['j2id'] is not None else (list(J2ID) if ACTIVE_ARM[0]=='A' else None)
+    if a is None or len(a)<4: return None
+    return a[3]+(_ARM2.ID_OFFSET if L=='B' else 0)
+def _apply_level_trim():
+    for L,deg in (S.get('level_trim') or {}).items():
+        mid=_j4_motor(L)
+        if mid is None or mid not in ZERO_RAW: continue
+        z0=_J4_ZERO0.setdefault(mid,ZERO_RAW[mid])
+        ZERO_RAW[mid]=z0+DIR[mid]*math.radians(float(deg))*2048.0/math.pi
+def _level_trim_msg(L,extra=''):
+    v=float((S.get('level_trim') or {}).get(L,0.0))
+    return f"{arm_label(L)} 그리퍼 수평 보정 {v:+.1f}° (실물 j4 영점만 · 3D 는 그대로){extra}"
+def h_level_trim(cmd='status'):
+    """미세조정 칸의 [−0.5°]/[+0.5°]/[0으로]: 지금 팔의 j4 영점을 옮기고, 실물이 연결돼 있으면 지금 자세를
+    새 영점으로 다시 보내 그리퍼가 바로 바뀌게 한다 (j4 만 그만큼 움직인다)."""
+    L=ACTIVE_ARM[0]
+    if _j4_motor(L) is None: return f"{arm_label(L)}: 그리퍼 수평 보정은 SO-ARM 두 팔에서만 됩니다"
+    cmd=str(cmd if cmd is not None else 'status').strip()
+    if cmd in ('','status'): return _level_trim_msg(L)
+    if cmd!='reset':                         # 11-06 (사용자): 보정 자세의 모터값을 바꾸므로 막는다 (0 으로 되돌리기만 허용)
+        return (f"{arm_label(L)}: 그리퍼 수평 보정은 쓰지 않습니다 — 보정 자세 전부의 j4 모터값이 같이 바뀌기 때문"
+                " (보정은 [보정 저장] 으로만 바뀝니다)")
+    d=S.setdefault('level_trim',{})
+    cur=float(d.get(L,0.0))
+    new=0.0 if cmd=='reset' else cur+float(cmd)
+    new=max(-10.0,min(10.0,round(new,2)))
+    if RUNNING.is_set(): return "실행 중에는 바꿀 수 없습니다"
+    q_now=None                               # 옛 영점으로 읽은 지금 관절값
+    if not ROBOT._sim():
+        try:
+            if ROBOT.connect(): q_now=ROBOT.read()
+        except Exception: q_now=None
+    with LOCK: d[L]=new
+    _apply_level_trim()
+    _macro_save()
+    extra=''
+    if q_now is not None:
+        try:
+            ROBOT.time_profile(True); ROBOT.torque(True)
+            ROBOT.send(list(q_now))           # 같은 관절값 · 새 영점 -> j4 만 그만큼
+            extra=' · 실물 j4 를 바로 움직였습니다'
+        except Exception as e:
+            extra=f' · 실물 전송 실패: {e}'
+    else:
+        extra=' · 실물이 연결되지 않아 값만 저장 (다음 실물 동작부터)'
+    LOG(f"  [수평 보정] {arm_label(L)} {cur:+.1f}° -> {new:+.1f}°")
+    return _level_trim_msg(L,extra)
+
+def _real_arm_to_base(sp):
+    """실물: 지금 팔을 기본 자세(base)로 (실행 시작 때와 같은 방법). 두 팔 실행에서 팔을 바꾼 직후에 쓴다 (11-02)."""
+    q0=ROBOT.read(); bq=get_angles('base')
+    if q0 is None or bq is None: return
+    bqc=[a+o for a,o in zip(bq,level_offset(get_offset('base')))]   # B팔 보정은 따로 (없으면 0)
+    bqc[GRIP_IDX]=q0[GRIP_IDX]
+    if LEVEL_ALWAYS: bqc[J5_IDX]=q0[J5_IDX]
+    LOG(f"  [시작] {arm_label(ACTIVE_ARM[0])} 기본 자세(base)로")
+    w,dt=plan_joint_all(list(q0),bqc,steps=30)
+    for q in w: q[GRIP_IDX]=q0[GRIP_IDX]
+    if LEVEL_ALWAYS: lock_j5(w,q0)
+    ros_publish(bq)                          # 3D 는 이론 자세
+    for q in w:
+        if STOP.is_set(): raise KeyboardInterrupt
+        ROBOT.send(q); time.sleep(dt/sp)
+    _settle_or_rest(bqc)
+
+# ===== 두 팔 디지털 트윈 (2026-10-30) — B팔은 A팔 복제 (같은 URDF·같은 도달표) =====
+#   '지금 팔'(ACTIVE_ARM) 의 자리·자세가 전역(BASE_OFF·CURRENT_Q)에 들어 있고, 나머지 팔은 ARM_STATE 에 쉰다.
+#   팔을 바꾸면 전역을 갈아끼우므로 이동·잡기·놓기·도달 계산이 그대로 그 팔 기준이 된다.
+#   A팔 자리 = S['robot_xy'/'robot_yaw'] (예전 그대로), 다른 팔 자리 = S['arm_pose'][L] = [x,y,yaw].
+ACTIVE_ARM=['A']
+ARM_STATE={}                     # 쉬는 팔: L -> {'q':관절, 'grip':그리퍼}
+def arm_pose_of(L):
+    """그 팔의 자리 (x,y,yaw)."""
+    if L==ACTIVE_ARM[0]: return float(BASE_OFF[0]),float(BASE_OFF[1]),float(BASE_YAW[0])
+    if L=='A':
+        st=ARM_STATE.get('A',{})
+        if st.get('pose'): return tuple(st['pose'])
+        xy=S.get('robot_xy') or [0.0,0.0]
+        return float(xy[0]),float(xy[1]),float(S.get('robot_yaw',0.0))
+    p=S.setdefault('arm_pose',{}).get(L)
+    if not p:                    # 처음 쓰는 팔: A팔 옆 30cm 에 둔다 (3D 에서 옮기면 된다)
+        ax,ay,ayaw=arm_pose_of('A'); p=[ax,ay+0.30,ayaw]; S['arm_pose'][L]=p
+    return float(p[0]),float(p[1]),float(p[2])
+def arms_shown():
+    """3D 에 그릴 팔: 설정된 팔 전부 (11-05 사용자: 기본이 두 팔 — 예전엔 자리를 정한 팔만 그렸다).
+    자리를 아직 안 정한 팔은 arm_pose_of 가 A팔 옆 30cm 에 둔다."""
+    out=['A']
+    for L in arms_cfg():
+        if L!='A': out.append(L)
+    return out
+def arm_switch(L):
+    """지금 팔을 L 로 (3D·계산 기준). 같은 팔이면 아무것도 안 한다."""
+    cur=ACTIVE_ARM[0]
+    if L==cur: return
+    if L not in arms_cfg() and L!='A': raise ValueError(f'설정에 없는 팔: {L}')
+    ARM_STATE[cur]={'q':list(CURRENT_Q),'grip':GRIP_STATE['rad'],
+                    'pose':(float(BASE_OFF[0]),float(BASE_OFF[1]),float(BASE_YAW[0]))}
+    if cur=='A': _ARM_A['j2id']=list(J2ID)        # A팔 번호 (로봇을 바꾸면 달라질 수 있어 떠날 때마다 적어 둔다)
+    x,y,yaw=arm_pose_of(L)
+    ACTIVE_ARM[0]=L
+    _arm_motors(L)                               # 실물 모터 번호·그리퍼 값도 그 팔 것으로 (11-02)
+    set_robot_pose(x,y,yaw,save=False)
+    st=ARM_STATE.get(L) or {'q':list(get_angles('base') or [0.0]*NJOINT),'grip':GRIP_STATE['rad']}
+    GRIP_STATE['rad']=st['grip']; ros_publish(st['q'],with_grip=True)
+    LOG(f"  [팔] 지금 팔: {arm_label(L)}")
+def _frames_at(q,off,yaw):
+    c,si=math.cos(yaw),math.sin(yaw); R=np.array([[c,-si,0],[si,c,0],[0,0,1]])
+    fr=[]
+    for f in CHAIN.forward_kinematics([0]+list(q),full_kinematics=True):
+        g=f.copy(); g[:3,:3]=R@g[:3,:3]; g[:3,3]=R@g[:3,3]+np.asarray(off,float); fr.append(g)
+    return fr
+_ARM_TINT={'빨강':'#d9534f','주황':'#f0a030','노랑':'#e8d44d','초록':'#5cb85c','파랑':'#3d7fd9','보라':'#9b59b6'}
+ARM_GRAY='#9097a1'               # 두 팔일 때 팔 몸 색 (그리퍼 턱만 팔 색) — 11-03
+def arm_links():
+    """3D 링크 목록 — 팔마다. A팔은 예전 이름 그대로(l1…), 다른 팔은 'B~l1'."""
+    out=[]
+    for L in arms_shown():
+        if L==ACTIVE_ARM[0]:
+            q=list(CURRENT_Q); off=BASE_OFF; yaw=BASE_YAW[0]
+        else:
+            st=ARM_STATE.get(L) or {}
+            q=st.get('q') or list(get_angles('base') or [0.0]*NJOINT)
+            x,y,yaw=arm_pose_of(L); off=np.array([x,y,0.0])
+        fr=_frames_at(q,off,yaw)
+        c,si=math.cos(yaw),math.sin(yaw)
+        B=np.eye(4); B[:3,:3]=np.array([[c,-si,0],[si,c,0],[0,0,1]]); B[:3,3]=off
+        for k,ln in enumerate(ROBOT_LINKS):
+            T=B if k==0 else fr[k]
+            # 두 팔 (11-03, 사용자): 몸은 전부 회색, 그리퍼의 움직이는 턱(마지막 링크)만 그 팔 색
+            col=(_ARM_TINT.get(arms_cfg().get(L)) or ROBOT_COLOR_MAP[ln]) if k==len(ROBOT_LINKS)-1 else ARM_GRAY
+            out.append({'id':ln if L=='A' else f'{L}~{ln}','color':col,
+                        'm':[float(x) for x in T[:3,:].flatten()]+[0,0,0,1]})
+    return out
 
 def rmove_reset():
     ROBOT_MOVE.update(phase=0,pin=None,g1=None,cands=[])
@@ -5943,8 +6419,9 @@ def rmove_click_peg(x,y):
         set_robot_pose(off[0],off[1],yaw)
         rmove_reset()
         ROBOT_MOVE['on']=False               # 배치 완료 -> 이동 모드 자동 종료
-        print(f"[로봇 배치] 핀{a+1}->({g1[0]*1000:.0f},{g1[1]*1000:.0f}) "
+        print(f"[로봇 배치] {arm_label(ACTIVE_ARM[0])} 핀{a+1}->({g1[0]*1000:.0f},{g1[1]*1000:.0f}) "
               f"yaw={math.degrees(yaw):.0f}도 -> {_robot_pos_str()} (이동 모드 자동 꺼짐)")
+        _arm_move_back()                     # 우클릭으로 옮긴 팔이 B 면 A팔로 돌아온다 (11-03)
         return True
     return False
 
@@ -6177,7 +6654,7 @@ _AUTO_COLORS=['#e6194b',   # 빨강
               '#4363d8',   # 파랑
               '#911eb4']   # 보라
 
-def _sync_name_colors():
+def _sync_name_colors(keep=()):
     """설비 색(3D/카드)과 이름표 색(알약/음성 호칭)을 하나로 맞춘다.
     기준 = 공장에 보이는 설비 색. 전부 표준 6색으로 정착.
     (예전엔 불러오기가 설비 색만 복원해 알약/음성과 어긋났다)"""
@@ -6189,13 +6666,26 @@ def _sync_name_colors():
     taken={}                       # 원본이름 -> 그 종류가 쓰는 색들
     def _take(kind):
         return taken.setdefault(kind,set())
-    for e in ENV_SHOW:
-        if _is_floor_plate(e['id']): continue
+    # 고정 배정(빨강#8·주황#9·노랑#12)을 먼저 자리잡게 한 뒤 나머지를 채운다.
+    #   순서가 뒤죽박죽이면 원본이 복제본의 색을 선점해 같은 색 두 개가 남는다
+    #   ("파란색으로 옮겨" 가 어느 쪽인지 못 정하는 사고).
+    _fix={n:c for c,n in DOCK_FIXED}
+    keep=set(keep or ())            # 11-05: 저장된 색(사용자가 고른 색)이 있는 것 — 그 색을 먼저 지킨다
+    def _prio(e):
+        i=e['id']; n=i.split('#')[-1]
+        if i in keep: return (0,0)
+        return (1,int(n)) if ('#' in i and n.isdigit() and int(n) in _fix) else (2,0)
+    for e in sorted([x for x in ENV_SHOW if not _is_floor_plate(x['id'])],key=_prio):
         k=_clone_base(e['id']); t=_take(k)
-        c=_snap_color(e.get('color') or _AUTO_COLORS[0])
-        if c in t:
-            free=[x for x in _AUTO_COLORS if x not in t]
-            if free: c=free[0]
+        n=e['id'].split('#')[-1]
+        if e['id'] not in keep and 'docking' in k.lower() and '#' in e['id'] and n.isdigit() \
+           and int(n) in _fix and _fix[int(n)] not in t:
+            c=_fix[int(n)]                     # 번호가 지정한 색 우선 (저장된 색이 없을 때만)
+        else:
+            c=_snap_color(e.get('color') or _AUTO_COLORS[0])
+            if c in t:
+                free=[x for x in _AUTO_COLORS if x not in t]
+                if free: c=free[0]
         t.add(c)
         e['color']=c
         nm.setdefault(e['id'],{})['color']=c
@@ -6437,14 +6927,33 @@ def _reach_at(off2,yaw,p):
     return any(a-0.5<=h<=b+0.5 for a,b in sp)
 
 def _seq_targets():
-    """파이프라인에서 '세상에 고정된' 타깃: [(블록 라벨, [x,y,z] or None)]"""
+    """파이프라인에서 '세상에 고정된' 타깃: [(블록 라벨, [x,y,z] or None)]
+    11-05 (사용자): 물체는 파이프라인 순서대로 따라간다 — 앞 블록이 '잡기 → 놓기(도킹)' 로 옮겨 놓았으면
+    그 뒤의 '이동: 물체'·'잡기' 는 지금 자리가 아니라 그 도킹 자리로 검사한다 (B팔이 놓은 펜을 A팔이 받는 경우).
+    예전에는 늘 지금 자리로 봐서 '도달 범위 밖' 이 잘못 떴다."""
     out=[]
+    moved={}                    # 물체 id -> 이 순서에서 놓인 도킹 id
+    held=None                   # 지금 잡고 있는 물체 (잡기 ~ 놓기 사이)
     for lab in seq_labels():
         mm_=re.match(r'^[◈➜]\s*(\d+)\.',lab)
         if not mm_: continue
         i=int(mm_.group(1))
         if not 0<=i<len(S['seq']): continue
         item=S['seq'][i]
+        if item.startswith(GOTO_PREFIX) and item[len(GOTO_PREFIX):] in moved:
+            dk=moved[item[len(GOTO_PREFIX):]]       # 앞에서 옮겨 놓은 물체 → 그 도킹 위로
+            p=goto_point(dk); t2=dock_socket_world(dk)
+            if p is None or t2 is None:
+                out.append((lab,None)); continue
+            gz=float(t2[2])+GRASP_FACE_DZ+GRASP_DZ_DEFAULT
+            out.append((lab,[float(p[0]),float(p[1]),float(p[2])]))
+            out.append((lab,[float(p[0]),float(p[1]),gz]))
+            out.append((lab,[float(p[0]),float(p[1]),(float(p[2])+gz)/2.0]))
+            continue
+        if item.startswith(GOTO_PREFIX) and held:
+            _gp=goto_point(item[len(GOTO_PREFIX):])   # 11-05: 펜을 들고 가는 이동 — 안전 높이(펜이 늘어진 만큼)로 그 위에 닿아야
+            if _gp is not None:
+                out.append((lab,[float(_gp[0]),float(_gp[1]),max(float(_gp[2]),_clear_z_holding(held,moved))]))
         if item.startswith(GOTO_PREFIX):
             oid=item[len(GOTO_PREFIX):]
             e2=_env_ent(oid)
@@ -6469,39 +6978,97 @@ def _seq_targets():
                 out.append((lab,[float(p[0]),float(p[1]),
                                  (float(p[2])+gz)/2.0]))   # 하강 중간 높이
         elif item.startswith(GRASP_PREFIX):
-            p=brick_grasp_point(item[len(GRASP_PREFIX):])
+            bid=item[len(GRASP_PREFIX):]
+            held=bid
+            if bid in moved:                         # 앞에서 옮겨 놓은 물체 → 그 도킹에서 잡는다
+                t=dock_socket_world(moved[bid])
+                p=None if t is None else [float(t[0]),float(t[1]),float(t[2])+GRASP_FACE_DZ+GRASP_DZ_DEFAULT]
+            else:
+                p=brick_grasp_point(bid)
             out.append((lab,None if p is None else
                         [float(p[0]),float(p[1]),float(p[2])]))
+            if p is not None:                        # 11-05: 잡은 뒤 상승 높이도 (실제 잡기와 같은 식)
+                _top=(_pen_top_seated(bid,moved[bid]) if bid in moved else _pen_top_now(bid))
+                _zu=max(float(p[2])+GRASP_LIFT,(_top+0.02) if _top is not None else 0.0)
+                out.append((lab,[float(p[0]),float(p[1]),_zu]))
         elif item.startswith(RELEASE_PREFIX):
             did=item[len(RELEASE_PREFIX):]
+            if held:                                 # 이 순서에서 그 물체는 이제 이 도킹에 있다
+                moved[held]=did; moved['__last_rel__']=held; held=None
+            else:
+                moved.pop('__last_rel__',None)
             e3=_env_ent(did)
             if e3 is not None and not e3.get('visible',True):
                 out.append((lab,None)); continue    # 숨겨진 도킹 = 미배치
             t=dock_socket_world(did)
             if t is None: out.append((lab,None)); continue
-            out.append((lab,[float(t[0]),float(t[1]),
-                             float(t[2])+GRASP_FACE_DZ+GRASP_DZ_DEFAULT]))
+            _zg=float(t[2])+GRASP_FACE_DZ+GRASP_DZ_DEFAULT
+            out.append((lab,[float(t[0]),float(t[1]),_zg]))
+            _rb=moved.get('__last_rel__')            # 방금 놓은 물체 (위에서 moved 에 적어 둠)
+            _top=_pen_top_seated(_rb,did) if _rb else None
+            _zu=max(_zg+GRASP_LIFT,(_top+0.02) if _top is not None else 0.0)   # 11-05: 놓기③ 상승 높이
+            out.append((lab,[float(t[0]),float(t[1]),_zu]))
     return out
 
+def _clear_z_holding(hb,moved=None):
+    """_clear_z 와 같은 식 — 물체 hb 를 들고 있을 때 수평 이동 안전 고도 (파이프라인 검사용)."""
+    hz=PLATE_TOP
+    moved=moved or {}
+    for b,v in BRICKS.items():
+        if b==hb or v.get('pos') is None: continue
+        top=_pen_top_seated(b,moved[b]) if b in moved else float(v['pos'][2])+float(v.get('h',0.0))
+        if top is not None: hz=max(hz,top)
+    for dk in docking_ids():
+        e=_env_ent(dk)
+        if e is not None and not e.get('visible',True): continue
+        t=docking_top(dk)
+        if t: hz=max(hz,float(t[2]))
+    bb=BRICKS.get(hb) or BRICKS.get(_clone_base(hb))
+    return hz+0.02+(float(bb.get('grasp_dz',GRASP_DZ_DEFAULT)) if bb else 0.0)
+
+def _pen_top_now(bid):
+    """물체의 지금 꼭대기 높이 (배치 안 됐으면 None)."""
+    b=BRICKS.get(bid) or BRICKS.get(_clone_base(bid))
+    if not b or b.get('pos') is None: return None
+    return float(b['pos'][2])+float(b.get('h',0.0))
+
+def _pen_top_seated(bid,did):
+    """물체를 그 도킹에 꽂았을 때의 꼭대기 높이 (place_brick_on_docking 과 같은 규칙)."""
+    b=BRICKS.get(bid) or BRICKS.get(_clone_base(bid))
+    t=docking_top(did)
+    if not b or t is None: return None
+    m=_dock_mate()
+    zb=float(t[2])-(m['seat_dz_mm']/1000.0 if (m and _clone_base(bid)==m.get('brick')) else 0.0)
+    return zb+float(b.get('h',0.0))
+
 def seq_reach():
-    """현재 로봇 위치 기준 블록별 도달 판정: {라벨:{'ok','why'}}"""
+    """현재 로봇 위치 기준 블록별 도달 판정: {라벨:{'ok','why'}}
+    두 팔 (10-30): 블록마다 '그 블록을 하는 팔' 의 자리로 판정한다."""
     out={}
+    arm_at={}; L='A'
+    for i,x in enumerate(S['seq']):
+        if is_arm_item(x): L=x[len(ARM_PREFIX):]
+        arm_at[i]=L
     for lab,p in _seq_targets():
+        _m=re.match(r'^[◈➜]\s*(\d+)\.',lab)
+        _L=arm_at.get(int(_m.group(1)),'A') if _m else 'A'
+        if _L!=ACTIVE_ARM[0]:
+            _x,_y,_yw=arm_pose_of(_L); _off=np.array([_x,_y,0.0])
+        else: _off,_yw=BASE_OFF,BASE_YAW[0]
         if p is None:
             out[lab]={'ok':False,
                       'why':'대상이 공장에 배치되어 있지 않습니다 — '
                             '①공장 꾸미기에서 끌어다 놓으세요'}
             continue
-        r=_reach_at(BASE_OFF,BASE_YAW[0],p)
+        r=_reach_at(_off,_yw,p)
         if r is None: continue                     # 도달표 없음 - 보류
         ok=bool(r)
         prev=out.get(lab)
         if prev is not None: ok=ok and prev['ok']  # 접근+잡는높이 둘 다 AND
         out[lab]={'ok':ok,
                   'why':'' if ok else
-                  '현재 로봇 위치에서 도달 범위 밖 — 로봇 자리 추천을 눌러보세요'}
+                  f'{arm_label(_L)} 자리에서 도달 범위 밖 — 로봇 자리 추천을 눌러보세요'}
     return out
-
 SUGGEST={'pose':None}
 def h_robot_suggest():
     """파이프라인 전체를 수행할 수 있는 로봇 자리 중 최소 이동인 곳 추천."""
@@ -6563,12 +7130,15 @@ def h_robot_apply_suggest():
 
 # ===== 공장 배치 프리셋 (저장/불러오기/새 공장) =====
 def factory_snapshot():
-    """현재 공장 배치(설비/물체/로봇)를 저장용 dict 로."""
+    """현재 공장 배치(설비/물체/로봇)를 저장용 dict 로.
+    11-05 (사용자): 색을 바꾼 내역도 함께 — 설비·물체의 이름표(이름·색)를 'names' 로 저장한다."""
+    _ids={e['id'] for e in ENV_SHOW}|set(BRICKS)
     return {'env':[dict(e) for e in ENV_SHOW],
             'env_clones':dict(S.get('env_clones') or {}),
             'bricks':{bid:{'pos':(list(b['pos']) if b.get('pos') else None)}
                       for bid,b in BRICKS.items()},
-            'robot':[float(BASE_OFF[0]),float(BASE_OFF[1]),float(BASE_YAW[0])]}
+            'robot':[float(BASE_OFF[0]),float(BASE_OFF[1]),float(BASE_YAW[0])],
+            'names':{i:dict(d) for i,d in (S.get('names') or {}).items() if i in _ids and isinstance(d,dict)}}
 
 def _factory_apply(snap):
     """스냅샷을 현재 상태로 적용 (설비/복제본/물체/로봇)."""
@@ -6577,6 +7147,8 @@ def _factory_apply(snap):
     ENV_SHOW[:]=[]
     for e in (snap.get('env') or []):
         oid=e['id']; base=_clone_base(oid)
+        if oid.startswith('plate_tile') and tuple(e.get('tile') or ()) not in set(PLATE_LAYOUT):
+            continue                                # 옛 프리셋의 배치 밖 판은 안 되살린다 (바닥판은 늘 2×4, 11-03)
         if oid not in MESH_REG and base in MESH_REG:
             MESH_REG[oid]=MESH_REG[base]
         if oid in MESH_REG or oid.startswith('plate_tile'):
@@ -6595,11 +7167,25 @@ def _factory_apply(snap):
             if PLATE_MESH_PATH: MESH_REG.setdefault(e['id'],(PLATE_MESH_PATH,0.001))
             PLATES.setdefault(_t4,{'id':e['id'],
                                    'origin':tile_origin(_t4),'added':True})
+    try:         # ★ 바닥판은 늘 기본 2×4 (11-03) ★ 프리셋에 없는 칸은 채운다
+        for _t4 in PLATE_LAYOUT:
+            if _t4 not in PLATES: add_plate(_t4)
+    except NameError: pass          # 부팅 초기(add_plate 정의 전) — 부팅 끝 '기본 바닥판' 이 채운다
     with LOCK:   # 저장 목록도 현재 장부와 일치 (재시작 시 되살아남 방지)
         S['plates_added']=[list(t) for t,i in PLATES.items() if i.get('added')]
     try: _peg_layout_changed()
     except NameError: pass          # 부팅 초기(정의 전)에 불릴 수 있음
-    _sync_name_colors()             # 3D 색과 알약/음성 색 동기화
+    # 11-05 (사용자): 저장된 색 그대로 — 이름표(이름·색)를 되살리고, 저장된 색이 있는 것은 정리할 때 그 색을 지킨다
+    _keep=set()
+    for _i,_d in (snap.get('names') or {}).items():
+        if isinstance(_d,dict):
+            with LOCK: S.setdefault('names',{})[_i]=dict(_d)
+            if _d.get('color'): _keep.add(_i)
+    for _e in ENV_SHOW:
+        _c=((snap.get('names') or {}).get(_e['id']) or {}).get('color')
+        if _c: _e['color']=_c
+        if _e.get('color') and not _is_floor_plate(_e['id']): _keep.add(_e['id'])
+    _sync_name_colors(_keep)        # 3D 색과 알약/음성 색 동기화
     keep=set()
     for bid,info in (snap.get('bricks') or {}).items():
         base=_clone_base(bid)
@@ -6642,6 +7228,11 @@ def _factory_apply(snap):
     try:
         _m=0
         for _p in S['poses']:
+            # ★ 11-06 (사용자: "왜 계속 보정값이 바뀌냐") ★ 자리 보정 자세(rel)는 절대 건드리지 않는다.
+            #   예전엔 지금 팔(A, 불러오기는 A팔로 함)의 'sts' 보정을 B팔 자세에도 합쳐서, B팔 자세를 만들 때 복사돼
+            #   들어간 A팔 base 보정(j2+1 j3-2)이 각도에 녹아 B팔 보정이 j2+1 j3-2 j4+1 바뀌었다 (X+430,Y-43 실측).
+            #   자리 보정은 [보정 저장] 때 이미 각도에 합쳐지므로 여기서 할 일이 없다.
+            if _p.get('rel') is not None or _p.get('arm') not in (None,'A'): continue
             _o=get_offset(_p['name'])
             if not any(abs(v)>1e-9 for v in _o): continue
             _a=(list(_p.get('angles') or [])+[0.0]*NJOINT)[:NJOINT]
@@ -6658,8 +7249,10 @@ def _factory_apply(snap):
     except Exception as _e:
         print('보정 정리 실패:',_e)
     # 옛 파이프라인 고치기: 잡기/놓기 앞에 [이동] 이 없으면 넣어 준다
+    # ★ 11-04: 끔 ★ 잡기·놓기가 스스로 대상 위로 가므로(_goto_before) 더는 필요 없다.
+    #   켜 두면 재시작할 때마다 사용자가 만든 파이프라인에 이동 블록이 몰래 끼어든다.
     try:
-        _fx,_n=seq_fix_moves()
+        _fx,_n=(None,0)
         if _n:
             with LOCK: S['seq']=_fx
             print(f"[파이프라인 정리] 잡기/놓기 앞에 [이동] {_n}개를 넣었습니다 "
@@ -6691,19 +7284,79 @@ def factory_default():
             'robot':[0.0,0.0,0.0]}
 
 def h_factory_save(name):
-    name=str(name or '').strip()
-    if not name: return '배치 이름을 입력하세요'
-    with LOCK:
-        S.setdefault('factory_presets',{})[name]=factory_snapshot()
+    """배치 저장. 11-05 (사용자): 이름을 비우면 '지금 배치'(마지막으로 불러온·저장한 이름)에 덮어쓴다."""
+    name=str(name or '').strip() or LAST_PRESET[0]
+    if not name: return '배치 이름을 입력하세요 (아직 불러온 배치가 없습니다)'
+    _prev=ACTIVE_ARM[0]
+    if _prev!='A': arm_switch('A')          # 11-05: 공장 배치는 A팔 자리로 저장 (불러오기와 같게 — B팔 자리가 저장되던 문제)
+    try:
+        with LOCK:
+            _old=name in (S.get('factory_presets') or {})
+            S.setdefault('factory_presets',{})[name]=factory_snapshot()
+    finally:
+        if _prev!='A': arm_switch(_prev)
+    LAST_PRESET[0]=name
     _macro_save()
-    return f'공장 배치 저장: {name}'
+    return f"공장 배치 {'덮어쓰기' if _old else '저장'}: {name}"
+
+LAST_PRESET=['']        # 마지막으로 [불러오기] 한 배치 이름 (원위치 때 물체를 되돌릴 기준)
 
 def h_factory_load(name):
+    if ACTIVE_ARM[0]!='A': arm_switch('A')        # 공장 배치는 A팔 자리로 저장·복원한다 (10-30)
+    return _h_factory_load(name)
+def _h_factory_load(name):
     p=(S.get('factory_presets') or {}).get(str(name))
     if not p: return f'저장된 배치가 없습니다: {name}'
     _undo_snapshot('배치 불러오기')
-    _factory_apply(p); _macro_save()
+    _factory_apply(p)
+    # ★ 불러온 로봇 자리도 저장 (11-04) ★ _factory_apply 는 save=False 라 화면만 옮기고 S['robot_xy'] 는
+    #   그대로였다 -> 다시 켜면 로봇이 옛 자리(0,0 등)로 복원되고, 그 자리로 '이전 배치' 까지 덮어썼다.
+    with LOCK:
+        S['robot_xy']=[float(BASE_OFF[0]),float(BASE_OFF[1])]; S['robot_yaw']=float(BASE_YAW[0])
+    _macro_save()
+    LAST_PRESET[0]=str(name)
     return f'공장 배치 불러옴: {name}'
+
+def _bricks_to_preset(name):
+    """물체(펜 등)만 배치 프리셋의 위치로 되돌린다. 설비·로봇 위치는 그대로.
+    반환: 되돌린 물체 수, 프리셋이 없으면 None."""
+    p=(S.get('factory_presets') or {}).get(str(name))
+    if not p: return None
+    old={b:v.get('pos') for b,v in BRICKS.items()}    # 도킹 없는 자리면 이걸로 되돌린다 (11-04)
+    keep=set()
+    for bid,info in (p.get('bricks') or {}).items():
+        base=_clone_base(bid)
+        if bid not in BRICKS and base in BRICKS:
+            BRICKS[bid]=dict(BRICKS[base]); MESH_REG[bid]=MESH_REG[base]
+        if bid in BRICKS:
+            BRICKS[bid]['pos']=(tuple(info['pos']) if info.get('pos') else None)
+            keep.add(bid)
+    for bid in list(BRICKS):
+        if bid not in keep:
+            if '#' in bid: BRICKS.pop(bid,None); MESH_REG.pop(bid,None)
+            else: BRICKS[bid]['pos']=None
+    HELD['brick']=None
+    # 프리셋 불러오기와 같은 규칙으로 도킹에 다시 꽂는다 (결합 정규화)
+    # ★ 펜은 도킹 위에만 있다 (2026-11-04, 사용자) ★
+    #   프리셋 자리에 지금 도킹이 없으면 (도킹을 옮겼거나 숨김) 펜이 판 위 허공에 서 버렸다.
+    #   -> 그런 펜은 프리셋으로 옮기지 않고 원래 자리(도킹 위)에 그대로 둔다.
+    for bid,b in list(BRICKS.items()):
+        bp=b.get('pos')
+        if not bp: continue
+        for dk in docking_ids():
+            e=_env_ent(dk)
+            if e is None or not e.get('visible',True): continue
+            t=dock_socket_world(dk)
+            if t and math.hypot(bp[0]-t[0],bp[1]-t[1])<0.03:
+                place_brick_on_docking(bid,dk); break
+        else:
+            if old.get(bid):
+                b['pos']=old[bid]
+                print(f"[원위치] {disp_name(bid)}: 프리셋 자리에 도킹이 없어 지금 자리(도킹 위)에 그대로 둡니다")
+    with LOCK:
+        S['brick_pos']={bid:list(b['pos']) for bid,b in BRICKS.items() if b.get('pos')}
+    _macro_save()
+    return len([b for b in keep if BRICKS.get(b,{}).get('pos')])
 
 def h_factory_reset():
     _undo_snapshot('새 공장')
@@ -7200,7 +7853,23 @@ def h_peg_save_pose(name,height_mm,newname):
             gr.update(choices=pose_names(),value=nm),
             f"자세 '{nm}' 등록 — [이동] 탭에서 파이프라인 블록으로 쓸 수 있습니다")
 
+def arm_move_start(L):
+    """3D 에서 팔을 우클릭 → '이 팔 위치 옮기기' (11-03, 사용자). 그 팔로 바꾸고 로봇 이동 모드를 켠다.
+    다른 팔(B)을 옮겼으면, 다 옮기거나 끄면 A팔로 돌아온다 — 안 그러면 팔 블록 없는 프로그램을 실물로 돌릴 때 B팔이 움직인다."""
+    if RUNNING.is_set(): return False,'동작 실행 중 - [정지] 후 다시'
+    L=str(L).strip().upper()
+    if L not in arms_cfg(): return False,f'설정에 없는 팔: {L}'
+    if L!=ACTIVE_ARM[0]: arm_switch(L)
+    _,msg=h_robot_move_mode(True)
+    ROBOT_MOVE['back']='A' if L!='A' else None
+    msg=f"{arm_label(L)} 위치 옮기기 — "+msg.split('— ',1)[-1]
+    LOG(msg); return True,msg
+def _arm_move_back():
+    L=ROBOT_MOVE.pop('back',None)
+    if L and ACTIVE_ARM[0]!=L: arm_switch(L)
+
 def h_robot_move_mode(on):
+    if not on: _arm_move_back()             # 우클릭으로 B팔을 옮기다 끄면 A팔로 (11-03)
     ROBOT_MOVE['on']=bool(on); rmove_reset(); emove_reset()
     if on: PLATE_EDIT['on']=False          # 두 클릭 모드 동시 금지
     msg=('로봇 이동 모드 ON — ① 로봇의 주황 핀 클릭 ② 꽂을 목심 클릭 '
@@ -7287,9 +7956,9 @@ try:
 except Exception as _e:
     print(f"물체 배치 복원 실패: {_e}")
 
-# ===== 시작은 항상 '깨끗한 공장' =====
-# 위에서 복원한 마지막 배치는 프리셋 '이전 배치' 로 남기고, 화면은
-# 플레이트 4장만 있는 기본 상태로 시작한다 (로봇/설비는 사용자가 배치).
+# ===== 시작: 마지막 배치 = 시작 배치 하나 (11-06) =====
+# 위에서 복원한 마지막 배치를 시작 배치 이름으로 저장해 두고, 화면은 잠깐 플레이트만으로 비운 뒤
+# 모듈 끝에서 그 시작 배치를 불러온다 (불러오기 절차를 거쳐야 결합·이름·색이 모두 맞는다).
 try:
     # '의미 있는 배치'가 있었을 때만 보존한다. (초기화 상태에도 env_off 에
     # 0 값들이 남아 있어서, 단순 존재 여부로 보면 매 부팅마다 빈 배치가
@@ -7299,12 +7968,19 @@ try:
           or any(e.get('visible',True) and not _is_floor_plate(e['id'])
                  for e in ENV_SHOW)
           or abs(BASE_OFF[0])+abs(BASE_OFF[1])>1e-6)
-    if _had:
-        S.setdefault('factory_presets',{})['이전 배치']=factory_snapshot()
+    # ★ 배치는 하나만 (11-06 사용자: "배치 여러 개 안 하고 저거 하나 쓸 거다, '이전 배치' 같은 거 치워라") ★
+    #   껐다 켜도 마지막 화면 그대로 — 직전 배치를 시작 배치(esw_contest_drboom)에 덮어쓰고, 모듈 끝에서 그걸 불러온다.
+    #   '이전 배치' 프리셋은 더 만들지 않고, 남아 있던 것도 지운다.
+    _one=os.environ.get('ARM_START_LAYOUT','esw_contest_drboom')
+    _fp=S.setdefault('factory_presets',{})
+    _fp.pop('이전 배치',None)
+    if _had and _one:
+        _fp[_one]=factory_snapshot()
     _factory_apply(factory_default())
     _macro_save()
     print("공장 초기화: 플레이트만 표시"
-          +(" (마지막 배치는 '이전 배치' 프리셋에 저장)" if _had else ""))
+          +(f" (마지막 배치를 '{_one}' 에 그대로 저장 — 배치는 하나)" if (_had and _one) else "")
+          +" — 시작 배치는 모듈 끝에서 불러온다")
 except Exception as _e:
     print(f"공장 초기화 실패: {_e}")
 
@@ -7489,32 +8165,868 @@ def _clear_z():
     if hb in BRICKS: hang=float(BRICKS[hb].get('grasp_dz',GRASP_DZ_DEFAULT))
     return hz+0.02+hang
 
-def _goto_pose_q(oid):
-    """그 대상의 '이동' 등록 자세 (없으면 None).
+SAME_SPOT_XY=0.003      # 이동 목표가 지금 자리와 이만큼 안이면 '같은 자리' — 움직이지 않는다 (11-04)
+SAME_SPOT_Z=0.005
+SLOT_TOL=0.003          # 같은 자리로 보는 XY 거리 (m)
+#   11-04: 10mm -> 3mm. 도킹을 90° 씩 돌려 꽂으면 소켓이 다리 중심에서 7.5mm 떨어져 돌아서, 서로 다른 소켓 자리가
+#   5mm 까지 가까워진다 (0° 와 한 칸 아래 180°). 같은 소켓이면 등록 좌표가 0.5mm 안으로 같으므로 3mm 로 충분.
+SLOT_SAME_Z=0.005       # 높이가 이만큼 안이면 보정 각도를 그대로 쓴다 (m)
+_POSE_XYZ=re.compile(r'_이동\((-?\d+),(-?\d+),(-?\d+)\)(?:_\d+)?$')
 
-    ★ 보정한 자세가 정답이다 ★
-      우클릭 [자세 등록(미세조정용)] 으로 만든 자세를 미세조정하고
-      [보정 저장] 하면 그 각도가 정답이 된다. 그런데 실행은 goto_point()
-      로 소켓 좌표를 매번 새로 풀어서, 보정한 자세를 아예 안 봤다
-      (사용자: "보정했는데 계속 자세 A 로 간다").
-      -> 등록 자세가 있으면 그 각도로 간다.
-      이름 형식: "<대상이름>_이동(x,y,z)"  (h_block_to_pose 가 만든다)"""
+# ★ 보정 자리는 '로봇 기준' 좌표다 (2026-11-04, 사용자) ★
+#   예전엔 이름 속 판 좌표(월드)로 자리를 찾아서, 로봇을 옮기면 (a) 로봇 기준 같은 자리의
+#   도킹은 보정을 못 찾고 (b) 우연히 예전 판 자리에 있는 도킹이 엉뚱한 각도를 받았다.
+#   보정의 실체(관절 각도)는 원래 로봇 몸에 붙은 값이므로, 자리 열쇠도 로봇 기준으로 둔다.
+#     p['rel']  = 등록할 때의 이론 목표점을 로봇 기준으로 (m, [x,y,z])
+#     p['arm']  = 그 보정을 잰 팔 ('A'/'B'). 팔마다 따로 쓴다.
+#   지금 로봇 자리에서의 판 좌표는 l2w(rel) 로 매번 다시 구한다 → 로봇을 옮기거나 돌려도
+#   '로봇 기준 X+2칸, Y+3칸' 의 보정은 그대로 따라간다. 이름 속 숫자는 등록 당시 판 좌표(표시용).
+#   rel 이 없는 예전 자세: 지금 로봇 자리에서 각도와 이름이 맞으면(차이 ≤ SLOT_XY_MAX) 그 자리에서
+#   등록한 것으로 보고 rel 을 붙여 준다(한 번). 안 맞으면 쓰지 않는다 (엉뚱한 각도 방지).
+_SLOT_ADOPT={}                  # (자세이름, 로봇 자리) -> 판정 (예전 자세 rel 붙이기 시도 기록)
+
+def _is_slot_pose(p):
+    """자리 보정 자세인가 (로봇 기준 rel 이 있거나, 예전 이름 '…_이동(x,y,z)')."""
+    return p.get('rel') is not None or bool(_POSE_XYZ.search(p['name']))
+
+def _slot_name(arm,rel):
+    """보정 자세 이름 = 팔 + 로봇 기준 좌표 (mm). 예: 'A팔 보정 (X+130, Y+2)'.
+    로봇 몸에 붙은 좌표라 로봇을 어디로 옮기든 같은 점이면 같은 이름이다 (2026-11-04)."""
+    return f"{arm}팔 보정 (X{float(rel[0])*1000:+.0f}, Y{float(rel[1])*1000:+.0f})"
+
+def _slot_find(arm,rel,exclude=None):
+    """그 팔의 로봇 기준 같은 자리(XY SLOT_TOL 안) 보정 자세. 여럿이면 가장 최근 것."""
+    hit=None
+    for p in S['poses']:
+        r=p.get('rel')
+        if r is None or p is exclude or p.get('arm','A')!=arm: continue
+        if math.hypot(float(r[0])-float(rel[0]),float(r[1])-float(rel[1]))<=SLOT_TOL: hit=p
+    return hit
+
+def _rename_slot_poses():
+    """rel 이 있는 보정 자세 이름을 '로봇 기준' 형식으로 맞추고, 같은 팔·같은 자리가 둘 이상이면
+    가장 최근 것 하나만 남긴다 (시작할 때 한 번, 11-04)."""
+    keep=[]; drop=[]
+    for p in reversed(S['poses']):                # 뒤(최근)부터 — 같은 자리 먼저 본 것을 남긴다
+        r=p.get('rel')
+        if r is not None and any(q.get('rel') is not None and q.get('arm','A')==p.get('arm','A')
+                                 and math.hypot(float(q['rel'][0])-float(r[0]),
+                                                float(q['rel'][1])-float(r[1]))<=SLOT_TOL for q in keep):
+            drop.append(p['name']); continue
+        keep.append(p)
+    keep.reverse()
+    ren={}
+    for p in keep:
+        if p.get('rel') is None: continue
+        new=_slot_name(p.get('arm','A'),p['rel'])
+        if new!=p['name'] and not any(q['name']==new for q in keep if q is not p):
+            ren[p['name']]=new; p['name']=new
+    if not drop and not ren: return False
+    if drop: print(f"[자세 정리] 같은 팔·같은 자리(3mm) 보정이 둘 이상이라 예전 것을 지움: {', '.join(drop)}")   # 11-06 기록
+    S['poses']=keep
+    def _r(n): return ren.get(n,n)
+    S['seq']=[_r(x) if isinstance(x,str) else x for x in S.get('seq',[])]
+    for k in ('moves','axorders','modes','rotmodes','simple_seg','ignore_obs','paths2d'):
+        d=S.get(k)
+        if isinstance(d,dict):
+            S[k]={('=>'.join(_r(a) for a in kk.split('=>')) if isinstance(kk,str) else kk):v
+                  for kk,v in d.items()}
+    for a,b in ren.items(): print(f"[자리 보정] 이름 바꿈: {a} -> {b}")
+    if drop: print(f"[자리 보정] 로봇 기준 같은 자리 중복 정리 (최근 것만 남김): {', '.join(drop)}")
+    return True
+
+def _pose_slot(p):
+    """보정 자세 p 의 자리를 '지금 로봇 자리 기준 판 좌표'로 (px,py,pz). 지금 팔 것이 아니거나
+    쓸 수 없으면 None."""
+    L=ACTIVE_ARM[0] if 'ACTIVE_ARM' in globals() else 'A'
+    rel=p.get('rel')
+    if rel is not None:
+        if p.get('arm','A')!=L: return None
+        w=l2w(np.array([float(rel[0]),float(rel[1]),float(rel[2])]))
+        return float(w[0]),float(w[1]),float(w[2])
+    m=_POSE_XYZ.search(p['name'])
+    if not m: return None
+    if L!='A': return None                        # 예전 자세는 모두 A팔로 잰 것
+    px,py,pz=(int(m.group(i))/1000.0 for i in (1,2,3))
+    key=(p['name'],round(float(BASE_OFF[0]),4),round(float(BASE_OFF[1]),4),round(float(BASE_YAW[0]),4))
+    ok=_SLOT_ADOPT.get(key)
+    if ok is None:
+        try:
+            a=get_angles(p['name']); o=get_offset(p['name'])
+            cal=[u+v for u,v in zip(list(a)[:NJOINT],(list(o)+[0.0]*NJOINT)[:NJOINT])]
+            fk=tool_pos(cal)
+            ok=math.hypot(float(fk[0])-px,float(fk[1])-py)<=SLOT_XY_MAX
+        except Exception:
+            ok=False
+        _SLOT_ADOPT[key]=ok
+        if ok:
+            # 실물 전송 중에도 불리므로 LOCK·파일 저장은 여기서 하지 않는다 (다음 자동 저장 때 같이 저장된다.
+            #   저장 전에 꺼져도 다음에 같은 규칙으로 다시 붙는다)
+            r=w2l(np.array([px,py,pz]))
+            p['rel']=[round(float(v),5) for v in r]; p['arm']='A'
+            print(f"[자리 보정] 예전 자세 {p['name']} -> 로봇 기준 "
+                  f"({r[0]*1000:+.0f},{r[1]*1000:+.0f},{r[2]*1000:.0f})mm 로 옮겨 적음")
+        else:
+            print(f"[자리 보정] 예전 자세 {p['name']}: 지금 로봇 자리에서 등록한 것이 아니라 안 씀 "
+                  "(로봇을 등록 때 자리로 돌리면 로봇 기준으로 옮겨 적습니다)")
+    return (px,py,pz) if ok else None
+
+SLOT_ADOPT_TOL=0.030            # 예전 자세의 등록 당시 로봇 자리를 찾을 때 허용 오차 (= 보정 상한 SLOT_XY_MAX). 후보가 딱 하나여야 한다
+
+def _adopt_legacy_slots():
+    """rel 이 없는 예전 보정 자세에 '등록 당시 로봇 자리'를 찾아 로봇 기준 rel 을 붙인다 (시작할 때 한 번).
+    후보 = 지금 자리 · 저장된 배치 프리셋들의 로봇 자리 · 원점. 보정 각도가 실제로 가리키는 점이
+    이름의 판 좌표와 SLOT_ADOPT_TOL 안에 맞는 후보가 '딱 하나' 일 때만 붙인다 (애매하면 그대로 —
+    그때는 로봇을 등록 때 자리에 두면 _pose_slot 이 붙인다)."""
+    cands=[(float(BASE_OFF[0]),float(BASE_OFF[1]),float(BASE_YAW[0])),(0.0,0.0,0.0)]
+    if S.get('robot_xy'):
+        cands.append((float(S['robot_xy'][0]),float(S['robot_xy'][1]),float(S.get('robot_yaw') or 0.0)))
+    for _pp in (S.get('factory_presets') or {}).values():
+        r=(_pp or {}).get('robot')
+        if r and len(r)>=3: cands.append((float(r[0]),float(r[1]),float(r[2])))
+    uniq=[]
+    for c in cands:
+        if not any(abs(c[0]-u[0])<1e-4 and abs(c[1]-u[1])<1e-4
+                   and abs(((c[2]-u[2]+math.pi)%(2*math.pi))-math.pi)<1e-3 for u in uniq):
+            uniq.append(c)
+    n=0
+    for p in S['poses']:
+        m=_POSE_XYZ.search(p['name'])
+        if not m or p.get('rel') is not None: continue
+        N=np.array([int(m.group(i))/1000.0 for i in (1,2,3)])
+        try:
+            a=get_angles(p['name']); o=get_offset(p['name'],'sts')
+            cal=[u+v for u,v in zip(list(a)[:NJOINT],(list(o)+[0.0]*NJOINT)[:NJOINT])]
+            loc=w2l(tool_pos(cal))                     # 보정 각도가 가리키는 점 (로봇 기준) — 로봇 자리와 무관
+        except Exception:
+            continue
+        hits=[]; best=None
+        for (bx,by,byaw) in uniq:
+            c,si=math.cos(byaw),math.sin(byaw)
+            wx=c*loc[0]-si*loc[1]+bx; wy=si*loc[0]+c*loc[1]+by
+            r=math.hypot(wx-N[0],wy-N[1])
+            if best is None or r<best[0]: best=(r,bx,by,byaw)
+            if r<=SLOT_ADOPT_TOL: hits.append((bx,by,byaw))
+        if len(hits)!=1:
+            print(f"[자리 보정] 예전 자세 {p['name']}: 등록 당시 로봇 자리를 못 정함 (맞는 후보 {len(hits)}개, "
+                  f"가장 가까운 후보 x={best[1]*1000:+.0f} y={best[2]*1000:+.0f} 회전={math.degrees(best[3]):.0f}도 "
+                  f"오차 {best[0]*1000:.0f}mm) — 그대로 둠 (이 자세는 그 자리를 다시 보정해 주세요)")
+            continue
+        bx,by,byaw=hits[0]; c,si=math.cos(byaw),math.sin(byaw)
+        dx,dy=N[0]-bx,N[1]-by
+        p['rel']=[round(c*dx+si*dy,5),round(-si*dx+c*dy,5),round(float(N[2]),5)]; p['arm']='A'
+        n+=1
+        print(f"[자리 보정] 예전 자세 {p['name']} -> 로봇 기준 ({p['rel'][0]*1000:+.0f},{p['rel'][1]*1000:+.0f})mm "
+              f"(등록 당시 로봇 x={bx*1000:+.0f} y={by*1000:+.0f} 회전={math.degrees(byaw):.0f}도)")
+    return n
+
+def _slot_pose(x,y):
+    """판 위 XY 자리 (x,y) 의 '이동' 보정 자세. (이름, 관절값, 자리 좌표 m) 또는 None.
+    자리 좌표는 로봇 기준 rel 을 지금 로봇 자리로 바꾼 값 (_pose_slot).
+    같은 자리에 여럿이면 가장 최근에 등록한 것(목록 뒤쪽)."""
+    hit=None
+    for p in S['poses']:
+        s=_pose_slot(p)
+        if s is None: continue
+        px,py,pz=s
+        if math.hypot(px-x,py-y)>SLOT_TOL: continue
+        a=get_angles(p['name'])
+        if a is None: continue
+        o=get_offset(p['name'])
+        if any(abs(v)>1e-9 for v in o):
+            o=level_offset(o) if LEVEL_ALWAYS else o
+            a=[u+v for u,v in zip(list(a)[:NJOINT],list(o)[:NJOINT])]
+        hit=(p['name'],list(a)[:NJOINT],(px,py,pz))
+    return hit
+
+try:                                            # 시작할 때 한 번: 예전 보정 자세 -> 로봇 기준 (11-04)
+    _ch=_adopt_legacy_slots()
+    # 보정량이 0 인 채 남은 자리 보정 자세 = 등록만 하고 미세조정 안 한 것 -> 보정 지도에서 아직(빨강)으로 보인다 (11-04, 표시만)
+    for _p in S['poses']:
+        if _p.get('rel') is None or 'calmap' in _p or _p.get('tuned'): continue
+        try:
+            _a=get_angles(_p['name']); _o=get_offset(_p['name'],'sts')
+            _cal=[u+v for u,v in zip(list(_a)[:NJOINT],(list(_o)+[0.0]*NJOINT)[:NJOINT])]
+            _fk=tool_pos(_cal); _w=l2w(np.asarray(_p['rel'],float))
+            if math.hypot(float(_fk[0])-float(_w[0]),float(_fk[1])-float(_w[1]))<0.00005:
+                _p['calmap']=True; _ch=True
+                print(f"[자리 보정] {_p['name']}: 보정량 0 (미세조정 전) — 보정 지도에 '아직' 으로 표시 (저장하면 초록)")
+        except Exception:
+            pass
+    if _rename_slot_poses() or _ch: _macro_save()
+except Exception as _e:
+    print('[자리 보정] 예전 자세 옮겨 적기 실패:',_e)
+
+SLOT_FADE_XY=(0.005,0.010)   # 자리 중심에서 이 XY 거리(m) 사이에서 보정량이 1 -> 0
+#   ★ 11-04: 30mm -> 10mm ★ 목심 간격이 20mm 라, 30mm 면 도킹을 한 칸 옮겼을 때 옆 칸의 보정이 40% 쯤
+#   섞여 들어갔다 (보정한 적 없는 자리가 엉뚱하게 틀어짐). 이제 보정은 '그 자리' 에만, 안 한 칸은 이론값.
+SLOT_FADE_Z=(0.020,0.080)    # 등록 높이보다 이만큼(m) 위로 갈수록 1 -> 0 (높이 이동 중엔 안 붙게)
+SLOT_XY_MAX=0.030            # 이보다 큰 XY 보정은 보정이 아니라 잘못 저장된 것 -> 안 씀
+_SLOT_XY={}                  # (자세이름, 각도) -> (dx,dy) 캐시
+_SLOT_Q={}                   # (반올림 목표, j5, j6) -> 실물 관절값 캐시
+
+def _slot_xy(p,px,py):
+    """보정 자세가 실제로 가리키는 XY - 자리 XY = 그 자리의 XY 보정량 (m, 지금 판 좌표 방향)."""
+    a=get_angles(p['name'])
+    if a is None: return None
+    o=get_offset(p['name'])
+    cal=[u+v for u,v in zip(list(a)[:NJOINT],(list(o)+[0.0]*NJOINT)[:NJOINT])]
+    key=(p['name'],tuple(round(v,6) for v in cal),        # 로봇을 돌리면 판 좌표 방향도 돈다 -> 자리도 열쇠에
+         round(float(BASE_OFF[0]),4),round(float(BASE_OFF[1]),4),round(float(BASE_YAW[0]),4))
+    hit=_SLOT_XY.get(key)
+    if hit is None:
+        fk=tool_pos(cal)
+        hit=(float(fk[0])-px,float(fk[1])-py,float(fk[2]))
+        _SLOT_XY[key]=hit
+        print(f"[자리 보정] {p['name']}: 실물에만 XY {hit[0]*1000:+.1f},{hit[1]*1000:+.1f}mm "
+              f"(높이는 쓰지 않음 — 저장 각도의 실제 높이 {hit[2]*1000:.1f}mm)")
+    return hit
+
+# ★ 물병 규칙 = '직전 보정 자세의 수평' (2026-11-06, 사용자) ★
+#   손으로 보정해 저장한 자세의 그리퍼 기울기가 그 자리의 '수평' 이다. 그 다음 하강·잡기·놓기·상승은
+#   그 기울기를 그대로 지키며 실물 기준으로 똑바로 움직여야 한다 (계산상 수평 j2+j3+j4=0 으로 되돌리면 안 된다).
+#   B팔처럼 영점이 기운 팔은 계산상 수평 ≠ 실물 수평이라, 예전 방식(자리 XY 만 옮기고 계산상 수평으로 다시 풀기)은
+#   보정 자리에서도 내려갈수록 기울고 수직이 아니었다.
+#   -> 그 자리의 보정량 = '보정 자세 각도 − 그 자리의 이론 자세 각도' (관절 차이, 기울기 포함) 를 그대로 더한다.
+#      실물 오차가 관절 영점 차이라면 이 값 하나로 모든 높이에서 정확히 수직·같은 기울기가 된다.
+SLOT_JOINT_DELTA=True          # False = 예전 방식 (XY 만 옮기고 계산상 수평)
+_SLOT_DQ={}                    # (자세이름, 보정각도, 로봇 자리) -> 관절 차이 (보정 − 이론)
+
+def _off_for_send(name,off):
+    """보정값을 실물로 보낼 때: 자리 보정 자세는 사용자가 맞춘 그대로 (j5 만 0 — 모터 없음), 그 밖(base 등)은
+    예전처럼 계산상 수평(level_offset)."""
+    rec=_pose_rec(name)
+    if rec is not None and _is_slot_pose(rec) and LEVEL_ALWAYS:
+        o=list(off); o[J5_IDX]=0.0
+        return o
+    return level_offset(off) if LEVEL_ALWAYS else list(off)
+
+SLOT_DQ_MAX_DEG=25.0           # 11-06: 손으로 맞춘 보정이 이론 자세와 이만큼 넘게 다르면 다른 해로 보고 안 쓴다 (예전 15° — 말없이 버렸다)
+_SLOT_LAST=[None]              # 마지막으로 기록에 알린 보정 자리 (같은 자리에서는 한 번만 알린다)
+
+def _slot_dq(p,slot,q_hint=None):
+    """보정 자세 p 의 '보정 − 이론' 관절 차이. slot = 그 자리의 이론 목표점 (월드).
+    11-06: 이론 자세는 지금 트윈 자세(q_hint)에서 먼저 풀고(같은 해), 안 되면 보정 자세에서 푼다.
+           못 쓰게 되면 말없이 버리지 않고 기록에 이유를 남긴다 (False 와 함께 이유를 캐시)."""
+    a=get_angles(p['name'])
+    if a is None: return None
+    o=_off_for_send(p['name'],get_offset(p['name']))
+    cal=[u+v for u,v in zip(list(a)[:NJOINT],(list(o)+[0.0]*NJOINT)[:NJOINT])]
+    key=(p['name'],tuple(round(v,6) for v in cal),tuple(round(float(v),4) for v in slot),
+         round(float(BASE_OFF[0]),4),round(float(BASE_OFF[1]),4),round(float(BASE_YAW[0]),4))
+    hit=_SLOT_DQ.get(key)
+    _newB=(p.get('arm','A')!='A')              # 11-06 (사용자: A팔에는 적용하지 마) 새 방식은 B팔만 — A팔은 예전 그대로
+    if hit is None:
+        why='그 자리의 이론 자세를 풀 수 없음'
+        seeds=([list(q_hint)] if (_newB and q_hint is not None) else [])+[cal]
+        lim=1e9 if _newB else 15.0                # 11-06 (사용자: 보정한 값을 그대로 써라) B팔은 크기와 상관없이 쓴다 — 큰 값은 아래에서 경고만
+        for sd in seeds:
+            th=ik_tool((float(slot[0]),float(slot[1]),float(slot[2])),_seed_list(sd),cal[4],cal[GRIP_IDX])
+            if th is None: continue
+            bo=_ik_off_base(list(th))                    # 실물 = 이론 + base 보정 + 이 값 -> 그 자리에서 정확히 보정 자세
+            d=[u-v-w for u,v,w in zip(cal,list(th),list(bo)+[0.0]*NJOINT)]
+            d[GRIP_IDX]=0.0
+            d[J5_IDX]=0.0
+            mx=max(abs(math.degrees(v)) for v in d[:4])
+            if mx<=lim:
+                hit=d; break
+            why=f"이론 자세와 {mx:.1f}° 차이 (한도 {lim:.0f}°)"
+        if not hit: hit=('x',why)
+        if len(_SLOT_DQ)>2000: _SLOT_DQ.clear()
+        _SLOT_DQ[key]=hit
+        if isinstance(hit,list) and _newB and max(abs(math.degrees(v)) for v in hit[:4])>SLOT_DQ_MAX_DEG:
+            LOG(f"  ⚠ [자리 보정] {p['name']}: 계산값과 {max(abs(math.degrees(v)) for v in hit[:4]):.1f}° 차이 — 손으로 맞춘 값이라 그대로 씁니다")
+        if isinstance(hit,list):
+            print(f"[자리 보정] {p['name']}: 관절 차이 "
+                  +' '.join(f"j{j+1}:{math.degrees(hit[j]):+.2f}°" for j in range(4))
+                  +f" (기울기 j2+j3+j4 {math.degrees(hit[1]+hit[2]+hit[3]):+.2f}° — 이 자리의 수평)")
+        elif _newB:
+            print(f"[자리 보정] {p['name']}: 못 씀 — {why}")
+    return hit if isinstance(hit,list) else None
+
+# ★ B팔 수직선 (11-06 사용자: "B팔 수직 하강 확인해봐, 수직이 아니라 밀지?") ★
+#   보정 차이(관절 각도)를 높이와 상관없이 똑같이 더하면, 그 차이가 '관절 영점 오차' 가 아니라 자리 오차일 때
+#   손끝이 내려가며 옆으로 밀린다 (실측 기록: 잡기 47mm 하강에 약 10mm, B팔 #2 j2 +13.5 j4 -20.5).
+#   -> 보정 자세가 실제로 가리키는 점(팔 모형)을 지나는 수직선 위로, 그 자세의 기울기(j2+j3+j4)를 지키며 푼다.
+#      보정한 높이에서는 손으로 맞춘 모터값 그대로 (보정 값은 절대 바꾸지 않는다), 위·아래는 그 점의 수직선.
+#   풀이가 안 되면(한계 등) 예전처럼 보정 차이를 그대로 더한다.
+SLOT_VERTICAL_B=True
+
+def _slot_cal(p):
+    """보정 자세의 실물 각도 (저장 각도 + 아직 저장 안 한 미세조정)."""
+    a=get_angles(p['name'])
+    if a is None: return None
+    o=_off_for_send(p['name'],get_offset(p['name']))
+    return [u+v for u,v in zip(list(a)[:NJOINT],(list(o)+[0.0]*NJOINT)[:NJOINT])]
+
+def _tilt_ik(target,tilt,seed,j5,j6):
+    """툴 중심이 target(월드)에 오고 j2+j3+j4=tilt 인 j1~j4 (뉴턴법, seed 근처 해). 안 되면 None."""
+    tgt=np.asarray(target,float)
+    def qf(x):
+        q=[float(x[0]),float(x[1]),float(x[2]),float(tilt-x[1]-x[2])]+[0.0]*(NJOINT-4)
+        q[J5_IDX]=j5; q[GRIP_IDX]=j6
+        return q
+    x=np.array([seed[0],seed[1],seed[2]],float)
+    for _ in range(25):
+        p0=np.asarray(tool_pos(qf(x)),float); r=p0-tgt
+        if np.linalg.norm(r)<2e-6: break
+        J=np.zeros((3,3))
+        for i in range(3):
+            d=np.zeros(3); d[i]=1e-5
+            J[:,i]=(np.asarray(tool_pos(qf(x+d)),float)-p0)/1e-5
+        try: x=x-np.linalg.solve(J,r)
+        except Exception: return None
+    q=qf(x)
+    if float(np.linalg.norm(np.asarray(tool_pos(q),float)-tgt))>0.0005: return None
+    for k in range(4):
+        lo,hi=jr_limits(k)
+        if not (lo-1e-6<=q[k]<=hi+1e-6): return None
+    return q
+
+_SLOT_VFAIL=[None]
+GRASP_EXTRA_DEFAULT={'B':0.020}   # 11-06: 보정 자리에서 잡기·놓기 바닥을 3D 잡는 높이보다 더 내리는 양 (m). S['grasp_extra'] 로 바꿀 수 있다
+
+def _slot_floor_z(sl):
+    """보정 자리 아래 도킹의 잡는 높이 (소켓 + 10 + 37). 20mm 안에 보이는 도킹이 없으면 None."""
+    best=None
+    for d in docking_ids():
+        e=_env_ent(d)
+        if e is not None and not e.get('visible',True): continue
+        t=dock_socket_world(d)
+        if not t: continue
+        dd=math.hypot(float(t[0])-float(sl[0]),float(t[1])-float(sl[1]))
+        if dd<0.02 and (best is None or dd<best[0]):
+            best=(dd,float(t[2])+GRASP_FACE_DZ+GRASP_DZ_DEFAULT)
+    return best[1] if best else None
+
+def _slot_vertical_delta(p,sl,q,dq):
+    """B팔: 보정 자세 점을 지나는 수직선 위 실물 자세 - (트윈 q + base 보정). 안 되면 None."""
+    cal=_slot_cal(p)
+    if cal is None: return None
+    pc=np.asarray(tool_pos(cal),float)
+    tilt=cal[1]+cal[2]+cal[3]
+    z=float(np.asarray(tool_pos(list(q)),float)[2])
+    # 11-06 (사용자: "끝까지 안 내려간다") 보정 자세는 위에서 XY 를 맞추다 높이도 몇 mm 바뀐다 (B #2: +8mm).
+    #   그 높이 차이를 바닥까지 끌고 가면 잡는 높이(162)보다 8mm 위에서 멈춰 펜 위 허공을 잡았다.
+    #   -> 보정 높이 이상: 보정 점 높이 차이 그대로 (보정 높이에선 저장 모터값과 정확히 같음)
+    #      보정 높이 ~ 그 도킹의 잡는 높이(소켓+10+37): 높이 차이를 0 으로 줄여 바닥은 정확히 잡는 높이
+    zs=float(sl[2]); dz=float(pc[2])-zs
+    zf=_slot_floor_z(sl)
+    if zf is not None and zs-zf>0.005:
+        # 11-06 (사용자: "지금보다 20mm 더 내려가야 함") 팔마다 바닥을 더 내리는 양 — B팔 실물이 모형보다 약 20mm 높다
+        ex=float((S.get('grasp_extra') or {}).get(p.get('arm','A'),GRASP_EXTRA_DEFAULT.get(p.get('arm','A'),0.0)))
+        if z>=zs: zt=z+dz
+        elif z>zf: zt=z+dz+(-ex-dz)*(zs-z)/(zs-zf)      # 보정 높이(높이차 dz) → 잡는 높이(-ex) 로 선형
+        else: zt=z-ex
+    else:
+        zt=z+dz
+    tgt=np.array([float(pc[0]),float(pc[1]),zt])
+    bo=list(_ik_off_base(list(q)))+[0.0]*NJOINT
+    seed=[a+b+c for a,b,c in zip(list(q),bo,list(dq)+[0.0]*NJOINT)]
+    qr=_tilt_ik(tgt,tilt,seed,cal[J5_IDX],list(q)[GRIP_IDX])
+    if qr is None:
+        if _SLOT_VFAIL[0]!=p['name']:
+            _SLOT_VFAIL[0]=p['name']
+            LOG(f"  ⚠ [자리 보정] {p['name']}: 높이 {z*1000:.0f}mm 에서 수직선 자세를 못 풂 — 이 구간은 보정 차이를 그대로 더함")
+        return None
+    return [qr[j]-q[j]-bo[j] for j in range(4)]+[0.0]*(NJOINT-4)
+
+def _slot_why(p,slot):
+    """_slot_dq 가 못 쓴 이유 (캐시에서)."""
+    for k,v in list(_SLOT_DQ.items()):
+        if k[0]==p['name'] and isinstance(v,tuple): return v[1]
+    return '알 수 없음'
+
+def _slot_jdelta(q):
+    """새 방식: 트윈 팔 끝이 보정 자리 위에 있으면 그 자리의 관절 차이를 (가까울수록 1, 5~10mm 에서 0 으로) 돌려준다.
+    11-06: 보정을 쓸 때·못 쓸 때 모두 화면 기록에 한 번 알린다 (예전엔 말없이 빠져서 '저장이 안 됐나' 처럼 보였다)."""
+    tp=tool_pos(list(q))
+    best=None
+    for p in S['poses']:
+        sl=_pose_slot(p)
+        if sl is None: continue
+        d=math.hypot(float(tp[0])-sl[0],float(tp[1])-sl[1])
+        if d<SLOT_FADE_XY[1] and (best is None or d<best[0]): best=(d,p,sl)
+    if best is None:
+        _SLOT_LAST[0]=None
+        return None
+    d,p,sl=best
+    dq=_slot_dq(p,sl,q)
+    _newB=(p.get('arm','A')!='A')              # 기록 알림도 B팔만 (A팔은 예전처럼 조용히)
+    if dq is None:
+        if _newB and _SLOT_LAST[0]!=('x',p['name']):
+            _SLOT_LAST[0]=('x',p['name'])
+            LOG(f"  ⚠ [자리 보정] {p['name']}: 저장된 보정을 못 씁니다 — {_slot_why(p,sl)}. "
+                "이 자리는 보정 없이(계산값) 갑니다")
+        return None
+    a0,a1=SLOT_FADE_XY
+    w=1.0 if d<=max(a0,SLOT_EXACT) else max(0.0,1.0-(d-a0)/(a1-a0))
+    vd=None
+    if _newB and SLOT_VERTICAL_B:                # 11-06: B팔은 보정 자세 점의 수직선 (밀림 없음)
+        try:
+            vd=_slot_vertical_delta(p,sl,q,dq)
+        except Exception as e:
+            print('[자리 보정] 수직선 계산 실패:',e)
+    if _newB and w>=0.999 and _SLOT_LAST[0]!=p['name']:
+        _SLOT_LAST[0]=p['name']
+        LOG(f"  [자리 보정] {p['name']} 적용 — 손으로 맞춘 그대로 (그 점의 수직선으로 하강): "
+            +' '.join(f"j{j+1} {math.degrees(dq[j]):+.1f}°" for j in range(4))
+            +(f" · 그리퍼 수평 보정 {float((S.get('level_trim') or {}).get(ACTIVE_ARM[0],0.0)):+.1f}° 별도"
+              if float((S.get('level_trim') or {}).get(ACTIVE_ARM[0],0.0)) else ''))
+    return [w*v for v in (vd if vd is not None else dq)]
+
+def _slot_delta(q):
+    """실물에만 더할 '그 자리의 보정량' (관절 각도 차이). 해당 없으면 None.
+
+    ★ 트윈은 이론, 실물은 이론+보정 (2026-10-20, 사용자) ★
+      예전에는 보정 자세의 각도로 3D 까지 움직여서 트윈 속 펜이 도킹에서 어긋났다.
+    ★ 보정은 XY 만 (높이는 팔이 알아서) ★
+      보정 자세의 각도를 통째로 쓰면, 미세조정 중 높이까지 바뀐 채 저장된 경우
+      (실측: #10 이 이름은 235mm 인데 실제 175.9mm) 펜 위로 가야 할 때 펜 속으로
+      내려가 손목이 꺾였다. -> 그 자세에서 'XY 차이'만 뽑아,
+      트윈의 팔 끝과 '같은 높이'에서 XY 만 옮긴 자리를 실물 목표로 푼다.
+      트윈 팔 끝이 그 자리 위에 내려와 있을 때만 붙고, 멀어지면 0 으로 서서히 준다."""
+    if ROBOT._sim(): return None
+    if SLOT_JOINT_DELTA: return _slot_jdelta(q)      # 11-06: 보정 자세의 기울기를 지키는 새 방식
+    # 11-04: 팔마다 자기 보정만 쓴다 (_pose_slot 이 p['arm'] 으로 거른다 — B팔은 B팔로 잰 보정만)
+    tp=tool_pos(list(q))
+    # ★ 높이로는 줄이지 않는다 (11-04) ★ 같은 XY 면 높이와 상관없이 같은 보정 -> 하강·상승은 늘 곧게.
+    off=_slot_off_at(float(tp[0]),float(tp[1]))
+    if off is None: return None
+    tgt=(float(tp[0])+off[0],float(tp[1])+off[1],float(tp[2]))
+    key=(tuple(round(v,4) for v in tgt),round(float(q[4]),4),round(float(q[GRIP_IDX]),4),
+         round(float(BASE_OFF[0]),4),round(float(BASE_OFF[1]),4),round(float(BASE_YAW[0]),4))
+    qr=_SLOT_Q.get(key)
+    if qr is None:
+        qr=ik_tool_fast(tgt,q[4],q[GRIP_IDX]) or ik_tool(tgt,_seed_list(list(q)),q[4],q[GRIP_IDX])
+        qr=list(qr) if qr is not None else False
+        if len(_SLOT_Q)>20000: _SLOT_Q.clear()
+        _SLOT_Q[key]=qr
+    if not qr: return None
+    d=[u-v for u,v in zip(qr,list(q))]
+    d[GRIP_IDX]=0.0
+    return d
+
+SLOT_INTERP_R=0.080     # 중간값에 쓰는 보정점 반경 (m)
+SLOT_INTERP_K=8         # 가까운 보정점 몇 개까지
+SLOT_EXACT=0.002        # 이 안이면 그 보정점 하나만 (손으로 맞춘 값 그대로)
+SLOT_BBOX_TOL=0.015     # 보정점들이 둘러싼 범위 밖으로 이만큼까지 채운다 (판 가장자리 회전 소켓 7.5mm)
+SLOT_ODD=0.008          # 주변 보정점 중앙값과 이만큼 넘게 다르면 '튀는 점' — 중간값 계산에서 뺀다
+# ★ 11-05 (사용자): 보정 지도·보간 안 씀 — '등록한 자리만 손으로 맞춘 값 그대로' ★
+#   False = 여러 보정점으로 중간값을 짐작하지 않는다 (아래 ② 건너뜀). 등록 안 한 자리는 이론값.
+#   True 로 바꾸면 11-04 보간이 되살아난다 (데이터는 그대로 있다).
+SLOT_INTERP_ON=False
+
+def _slot_pts(display=False):
+    """지금 팔·지금 로봇 자리 기준, 쓸 수 있는 보정점 [(px,py,ox,oy)] (o = 그 자리의 XY 보정량 m).
+    display=True 는 보정 지도 표시용 — 찍기만 하고 [보정 저장] 안 한 자세는 빼서 초록으로 안 보이게 한다.
+    (실제 움직임은 display=False — 11-04 사용자: 작동은 그대로, 지도만)"""
+    out=[]
+    for p in S['poses']:
+        if display and p.get('calmap') and not p.get('tuned'): continue
+        s=_pose_slot(p)
+        if s is None: continue
+        off=_slot_xy(p,s[0],s[1])
+        if off is None or math.hypot(off[0],off[1])>SLOT_XY_MAX: continue
+        out.append((s[0],s[1],float(off[0]),float(off[1])))
+    return out
+
+def _med(v):
+    v=sorted(v); n=len(v)
+    return v[n//2] if n%2 else 0.5*(v[n//2-1]+v[n//2])
+
+def _slot_odd(pt,pts):
+    """그 보정점이 주변(80mm 안, 자기 제외 3개 이상) 보정점들의 중앙값과 SLOT_ODD 넘게 다른가."""
+    px,py,ox,oy=pt
+    nb=[q for q in pts if q is not pt and 1e-9<math.hypot(q[0]-px,q[1]-py)<=SLOT_INTERP_R]
+    if len(nb)<3: return False
+    nb.sort(key=lambda q:math.hypot(q[0]-px,q[1]-py)); nb=nb[:SLOT_INTERP_K]
+    return math.hypot(ox-_med([q[2] for q in nb]),oy-_med([q[3] for q in nb]))>SLOT_ODD
+
+def _slot_off_at(x,y,pts=None):
+    """판 위 (x,y) 에 줄 XY 보정량 (ox,oy) 또는 None.  (2026-11-04, 사용자: 막 보정할 테니 중간값을 잘 찾아라)
+    보정량은 '팔이 판 위 어느 XY 로 가나' 의 함수라 도킹 회전과 상관없이 모든 보정점(0°·90°·180°·270° 어디서
+    맞췄든)을 같이 쓴다.
+      ① 보정점 바로 위(2mm)          -> 손으로 맞춘 값 그대로
+      ② 가까운 보정점(80mm 안, 8개까지) 중 '튀는 점'(주변 중앙값과 8mm 넘게 다름)을 빼고 거리²반비례 평균.
+         보정점들이 둘러싼 범위 밖 15mm 까지만 (그보다 바깥은 짐작하지 않음 -> 이론값)
+      ③ 보정점 하나만 가까우면(10mm) -> 그 보정점 (SLOT_FADE_XY 로 서서히)"""
+    pts=_slot_pts() if pts is None else pts
+    near=[]
+    for q in pts:
+        d=math.hypot(x-q[0],y-q[1])
+        if d<=SLOT_INTERP_R: near.append((d,q))
+    if not near: return None
+    near.sort(key=lambda n:n[0])
+    d0,q0=near[0]
+    if d0<=SLOT_EXACT: return (q0[2],q0[3])
+    if not SLOT_INTERP_ON:                      # 11-05: 보간 끔 — 그 등록점 하나의 값만 (③, 가까울 때만 서서히)
+        a0,a1=SLOT_FADE_XY
+        if d0<a1:
+            w=1.0 if d0<=a0 else 1.0-(d0-a0)/(a1-a0)
+            return (q0[2]*w,q0[3]*w)
+        return None
+    cand=near[:SLOT_INTERP_K]
+    if len(cand)>=3:
+        mx=_med([n[1][2] for n in cand]); my=_med([n[1][3] for n in cand])
+        keep=[n for n in cand if math.hypot(n[1][2]-mx,n[1][3]-my)<=SLOT_ODD]
+    else:
+        keep=cand
+    if len(keep)>=2:
+        xs=[n[1][0] for n in keep]; ys=[n[1][1] for n in keep]; tol=SLOT_BBOX_TOL
+        if min(xs)-tol<=x<=max(xs)+tol and min(ys)-tol<=y<=max(ys)+tol:
+            ws=[1.0/(n[0]**2) for n in keep]; W=sum(ws)
+            return (sum(w*n[1][2] for w,n in zip(ws,keep))/W, sum(w*n[1][3] for w,n in zip(ws,keep))/W)
+    a0,a1=SLOT_FADE_XY
+    if d0<a1:
+        w=1.0 if d0<=a0 else 1.0-(d0-a0)/(a1-a0)
+        return (q0[2]*w,q0[3]*w)
+    return None
+
+# ===== 보정 지도 (2026-11-04, 사용자) =====
+#   로봇 하나마다 보정할 영역 = 로봇이 선 판 기준  앞 판 · 대각 판 · 옆(X) 판 · 앞앞 판의 가까운 3줄.
+#   그 안에서 도킹(회전 0°)을 꽂을 수 있는 자리마다 '소켓 점' 하나. 40mm(2칸) 간격 기준점만 손으로
+#   보정하고 나머지는 _slot_off_at 보간. 3D 에 점으로 보인다:
+#     초록 = 보정됨 · 빨강 = 보정할 기준점 · 노랑 = 보간으로 채워짐 · 회색 = 아직 못 채움
+#   빨강/회색 점을 누르면 그 자리 보정 자세를 등록(또는 이미 있으면 염)한다 -> ③연동에서 미세조정·저장.
+CALMAP={'on':False,'cut':0}
+CALMAP_FAR_ROWS=6        # 앞앞 판(파랑)은 로봇 쪽 6줄까지 (11-04: 3 -> 6, 사용자)
+CALMAP_NEAR_R=0.0       # 11-04 사용자: 안 되는 자리도 지우지 말고 보이기 -> 0 (전부 보라로 표시)
+_CALMAP_REACH={}        # (로봇 자리, 팔, x, y) -> 닿는가
+
+def _calmap_reach(x,y,ztop):
+    """그 소켓 자리에 팔이 실제로 갈 수 있나 (물리적으로 되는 자리만 남긴다, 11-04).
+    도킹 위 접근 높이와 펜을 꽂는 높이(162mm) 둘 다 수평 유지(물컵 규칙)로 풀려야 한다."""
+    key=(round(float(BASE_OFF[0]),4),round(float(BASE_OFF[1]),4),round(float(BASE_YAW[0]),4),
+         ACTIVE_ARM[0],round(x,4),round(y,4))
+    hit=_CALMAP_REACH.get(key)
+    if hit is not None: return hit
+    # ★ 11-04: 도달표(08-12)로 미리 거르지 않는다 (사용자: 반경이 작다) ★ 도달표가 실제보다 좁아 닿는 자리까지
+    #   뺐다. 지금 관절 한계로 '접근 높이 -> 펜 높이' 가 실제로 풀리는지(아래 뒤 검사)만으로 정한다.
+    ok=True
+    if ok:
+        # ★ 도달표(08-12)는 그 뒤 바뀐 관절 한계를 모른다 (11-04 실측: (50,-477) 에서 j3 가 한계 2913 에 닿아
+        #   잡기 하강이 z=178mm 에서 멈춤). 지금 한계로 '접근 높이 -> 펜 높이' 가 실제로 풀리는지 뒤에서 검사한다.
+        #   검사 전(None)엔 보이고, 안 풀리면(False) 뺀다.
+        r=_CALMAP_IK.get(key)
+        if r is None:
+            _CALMAP_IK_Q[key]=(x,y,ztop); _calmap_ik_kick()
+        elif r is False:
+            ok=False
+    if len(_CALMAP_REACH)>50000: _CALMAP_REACH.clear()
+    if ok is False or _CALMAP_IK.get(key) is not None: _CALMAP_REACH[key]=ok
+    return ok
+
+_CALMAP_IK={}           # key -> True/False (지금 관절 한계로 접근~펜 높이가 풀리나)
+_CALMAP_IK_Q={}         # 검사 대기 key -> (x,y,ztop)
+_CALMAP_IK_TH=[None]
+def _calmap_ik_kick():
+    th=_CALMAP_IK_TH[0]
+    if th is not None and th.is_alive(): return
+    def _work():
+        while _CALMAP_IK_Q:
+            if RUNNING.is_set():                  # 팔이 움직이는 중엔 쉰다 (전송 타이밍을 뺏지 않게)
+                time.sleep(0.5); continue
+            _it=list(_CALMAP_IK_Q.items())[:1]           # 화면 쪽이 동시에 넣어도 안전하게 (복사본에서 하나)
+            if not _it: break
+            key,(x,y,zt)=_it[0]
+            ok=True
+            try:
+                q0=list(get_angles('base') or CURRENT_Q)
+                za=zt+GRASP_FACE_DZ+GRASP_DZ_DEFAULT+GRASP_LIFT; zs=zt+GRASP_FACE_DZ+GRASP_DZ_DEFAULT
+                qa=ik_tool((x,y,za),_seed_list(q0),q0[4],q0[GRIP_IDX])
+                if qa is None: ok=False
+                else:
+                    qs=qa                         # 하강처럼 위에서부터 몇 걸음에 나눠 푼다 (같은 갈래 유지)
+                    for k in range(1,5):
+                        z=za+(zs-za)*k/4
+                        qs=ik_tool((x,y,z),_seed_list(qs),qa[4],qa[GRIP_IDX])
+                        if qs is None: ok=False; break
+            except Exception:
+                ok=True                           # 검사 실패는 빼지 않는다
+            _CALMAP_IK[key]=ok
+            _CALMAP_IK_Q.pop(key,None)
+            _CALMAP_REACH.pop(key,None)
+            time.sleep(0.02)                              # 화면·통신이 밀리지 않게 조금씩
+    th=threading.Thread(target=_work,daemon=True); _CALMAP_IK_TH[0]=th; th.start()
+
+def _calmap_dock_geom():
+    """도킹(회전 0°) 다리 4개 로컬 좌표와 소켓 로컬 XY, 소켓 윗면 z. (m)"""
+    for d in docking_ids():
+        try:
+            pins=env_pins_local(d)
+            m=_dock_mate()
+            if len(pins)>=4 and m:
+                _,scale=MESH_REG[d]
+                sock=np.asarray(m['socket_xy_mm'],float)*scale
+                top=docking_top(d)
+                return [np.asarray(q[:2],float) for q in pins], sock, (float(top[2]) if top else 0.115)
+        except Exception:
+            continue
+    return None
+
+_CALMAP_CACHE={'key':None,'pts':[]}
+def calmap_points():
+    """보정 지도 점 (바뀐 게 없으면 저장해 둔 결과)."""
+    key=(round(float(BASE_OFF[0]),4),round(float(BASE_OFF[1]),4),round(float(BASE_YAW[0]),4),ACTIVE_ARM[0],
+         len(_CALMAP_IK)//25, len(_CALMAP_IK_Q)==0, len(S.get('calmap_ok') or []),
+         tuple(sorted(PLATES.keys())),
+         tuple((p['name'],bool(p.get('tuned')),tuple(round(float(v),4) for v in (p.get('angles') or [])[:5]))
+               for p in S['poses'] if p.get('rel') is not None))
+    if _CALMAP_CACHE['key']!=key:
+        _CALMAP_CACHE['pts']=_calmap_points_calc(); _CALMAP_CACHE['key']=key
+    return _CALMAP_CACHE['pts']
+
+def _calmap_points_calc():
+    """보정 지도 점 [{x,y,z,kind,base}] (지금 팔 기준)."""
+    g=_calmap_dock_geom()
+    if g is None: return []
+    pins,sock,ztop=g
     try:
-        pre=f"{disp_name(oid)}_이동("
-        for p in S['poses']:
-            if p['name'].startswith(pre):
-                a=get_angles(p['name'])
-                if a is None: continue
-                o=get_offset(p['name'])
-                if any(abs(v)>1e-9 for v in o):
-                    o=level_offset(o) if LEVEL_ALWAYS else o
-                    a=[x+y for x,y in zip(list(a)[:NJOINT],list(o)[:NJOINT])]
-                return p['name'],list(a)[:NJOINT]
+        rp=[l2w(np.array([q[0],q[1],0.0])) for q in robot_pins_local()]
+        cx=float(np.mean([r[0] for r in rp])); cy=float(np.mean([r[1] for r in rp]))
+    except Exception:
+        return []
+    rt=(int(math.floor((cx-GRID_ORG[0])/PLATE_SIZE)),int(math.floor((cy-GRID_ORG[1])/PLATE_SIZE)))
+    k=int(round(float(BASE_YAW[0])/(math.pi/2)))%4
+    def rot(dx,dy):
+        for _ in range(k): dx,dy=-dy,dx
+        return dx,dy
+    fdx,fdy=rot(0,1)                                # 로봇 앞 방향 (판 단위)
+    tiles=[(rt[0]+a,rt[1]+b) for a,b in (rot(0,1),rot(1,1),rot(1,0))]
+    far=(rt[0]+rot(0,2)[0],rt[1]+rot(0,2)[1])
+    pegs=set()
+    def tile_pegs(tl):
+        ox,oy=tile_origin(tl)
+        n=int(round(PLATE_SIZE/PEG_PITCH))
+        return [(round(ox+PEG_PITCH/2+i*PEG_PITCH,4),round(oy+PEG_PITCH/2+j*PEG_PITCH,4))
+                for i in range(n) for j in range(n)]
+    for tl in tiles:
+        if tl in PLATES: pegs.update(tile_pegs(tl))
+    if far in PLATES:
+        fp=tile_pegs(far)
+        proj=lambda q:q[0]*fdx+q[1]*fdy
+        lv=sorted({round(proj(q),4) for q in fp})[:CALMAP_FAR_ROWS]
+        pegs.update(q for q in fp if round(proj(q),4) in lv)
+    p0=min(pins,key=lambda v:(v[0],v[1]))
+    # 다리 간격은 목심 칸 단위로 맞춘다 (STL 에서 읽은 다리 중심이 249.9 / 250.3mm 처럼 조금씩 어긋난다)
+    rel=[(round(round(float(v[0]-p0[0])/PEG_PITCH)*PEG_PITCH,4),
+          round(round(float(v[1]-p0[1])/PEG_PITCH)*PEG_PITCH,4)) for v in pins]
+    soff=(float(sock[0]-p0[0]),float(sock[1]-p0[1]))
+    cands=[]
+    for (x,y) in pegs:
+        if all((round(x+a,4),round(y+b,4)) in pegs for a,b in rel):
+            cands.append((x,y))
+    if not cands: return []
+    # 기준점 격자는 영역 전체로 잡는다 (닿는 자리만으로 잡으면 격자가 들쭉날쭉해진다)
+    xs=sorted({c[0] for c in cands}); ys=sorted({c[1] for c in cands})
+    bx=set(xs[::2])|{xs[-1]}; by=set(ys[::2])|{ys[-1]}
+    # ★ 회전 90°·180°·270° 도 (11-04, 사용자) ★ 다리 정사각형은 같은 목심 4개에 그대로 꽂히고,
+    #   소켓만 다리 중심에서 7.5mm 떨어진 채 중심을 돈다 (0°=아래 · 90°=오른쪽 · 180°=위 · 270°=왼쪽).
+    #   손으로 보정할 기준점은 0° 의 2칸 격자뿐 — 회전 자리는 그 사이에 들어가 보간으로 채워진다.
+    cxr=max(a for a,b in rel)/2.0; cyr=max(b for a,b in rel)/2.0      # 다리 정사각형 중심 (p0 기준)
+    vx,vy=soff[0]-cxr,soff[1]-cyr                                     # 중심 -> 소켓 (0°)
+    pts=_slot_pts(display=True)
+    good=_calmap_good_world()
+    try:
+        _l1=fk_points(list(get_angles('base') or CURRENT_Q))[1]; j1x,j1y=float(_l1[0]),float(_l1[1])
+    except Exception:
+        j1x,j1y=cx,cy
+    out=[]; cut=0
+    for rot in (0,90,180,270):
+        c,s=math.cos(math.radians(rot)),math.sin(math.radians(rot))
+        rx,ry=c*vx-s*vy,s*vx+c*vy
+        for (x,y) in cands:
+            sx,sy=x+cxr+rx,y+cyr+ry
+            if not _calmap_reach(sx,sy,ztop):
+                # 로봇 몸 가까이(팔꿈치 한계)는 실제로도 안 된다 -> 빼기. 먼 쪽은 사용자가 '닿는다' 고 해서 (11-04)
+                #   보라 점으로 남긴다 (3D 모델 계산으로는 안 닿음 — 실물 확인 후 보정)
+                if math.hypot(sx-j1x,sy-j1y)<CALMAP_NEAR_R: cut+=1; continue
+                out.append({'x':round(sx,4),'y':round(sy,4),'z':round(ztop,4),'kind':'far','base':False,'rot':rot})
+                continue
+            base=(rot==0 and x in bx and y in by)
+            done=any(math.hypot(sx-p[0],sy-p[1])<=SLOT_TOL for p in pts)
+            if any(math.hypot(sx-g[0],sy-g[1])<=SLOT_TOL for g in good): kind='good'
+            elif done:
+                _me=min(pts,key=lambda q:math.hypot(sx-q[0],sy-q[1]))
+                kind='odd' if _slot_odd(_me,pts) else 'ok'
+            elif base: kind='need'
+            else: kind='fill' if _slot_off_at(sx,sy,pts) is not None else 'none'
+            out.append({'x':round(sx,4),'y':round(sy,4),'z':round(ztop,4),'kind':kind,'base':base,'rot':rot})
+    CALMAP['cut']=cut
+    return out
+
+def _calmap_good_world():
+    """'보정 성공' 으로 기록된 자리 (지금 팔·지금 로봇 자리 기준 판 좌표)."""
+    out=[]
+    for g in S.get('calmap_ok') or []:
+        if g.get('arm','A')!=ACTIVE_ARM[0]: continue
+        w=l2w(np.array([float(g['rel'][0]),float(g['rel'][1]),0.0]))
+        out.append((float(w[0]),float(w[1])))
+    return out
+
+def h_calmap_ok():
+    """✅ 보정 성공: 지금 3D 에 꽂혀 있는 도킹 자리들을 '실물로 해 보니 잘 됐다' 로 기록한다 (11-04, 사용자).
+    로봇 기준 좌표로 남겨 로봇을 옮겨도 유지. 지도에 파란 점. 표시용 기록 — 움직임에는 쓰지 않는다."""
+    lst=S.setdefault('calmap_ok',[])
+    pts=_slot_pts()
+    done=[]
+    for d in docking_ids():
+        e=_env_ent(d)
+        if e is None or not e.get('visible',True): continue
+        tt=dock_socket_world(d)
+        if not tt: continue
+        rel=w2l(np.array([float(tt[0]),float(tt[1]),0.0]))
+        how=('보정점' if any(math.hypot(tt[0]-q[0],tt[1]-q[1])<=SLOT_TOL for q in pts)
+             else ('자동 계산' if _slot_off_at(float(tt[0]),float(tt[1]),pts) is not None else '이론값'))
+        old=[g for g in lst if g.get('arm','A')==ACTIVE_ARM[0]
+             and math.hypot(float(g['rel'][0])-rel[0],float(g['rel'][1])-rel[1])<=SLOT_TOL]
+        for g in old: lst.remove(g)
+        lst.append({'arm':ACTIVE_ARM[0],'rel':[round(float(rel[0]),5),round(float(rel[1]),5)],
+                    't':time.strftime('%Y-%m-%d %H:%M'),'how':how})
+        done.append(f"{disp_name(d)} (X{rel[0]*1000:+.0f}, Y{rel[1]*1000:+.0f} · {how})")
+    if not done: return '꽂혀 있는 도킹이 없습니다'
+    _macro_save()
+    _CALMAP_CACHE['key']=None
+    print('[보정 성공] '+', '.join(done))
+    return '✅ 보정 성공 기록: '+', '.join(done)+f" — 지금까지 성공 {sum(1 for g in lst if g.get('arm','A')==ACTIVE_ARM[0])}곳"
+
+def h_calmap(on=None):
+    """보정 지도 켜기/끄기 + 요약. on='status' 면 상태만."""
+    if on!='status': CALMAP['on']=(not CALMAP['on']) if on in (None,'') else bool(on)
+    if not CALMAP['on']: return '보정 지도 끔'
+    pts=calmap_points()
+    def cnt(rs):
+        q=[p for p in pts if p['rot'] in rs]
+        return {k:sum(1 for p in q if p['kind']==k) for k in ('ok','need','fill','none')},len(q)
+    c0,n0=cnt((0,)); cr,nr=cnt((90,180,270))
+    ng=sum(1 for p in pts if p['kind']=='good')
+    nf=sum(1 for p in pts if p['kind']=='far')
+    no=sum(1 for p in pts if p['kind']=='odd')
+    nb=sum(1 for p in pts if p['base'])
+    _pend=len(_CALMAP_IK_Q)
+    return (f"보정 지도 켬 ({arm_label(ACTIVE_ARM[0])}) — 팔이 안 닿아 뺀 자리 {CALMAP['cut']}"
+            +(f" (관절 한계 검사 중 {_pend}곳 남음 — 조금 뒤 [켜기/끄기] 두 번으로 갱신)" if _pend else "")+" | "
+            f"✅ 성공 {ng}곳 · 🟠 주변과 튀는 보정 {no}곳(다시 확인) · 보라(모델상 안 닿음, 실물 확인) {nf}곳 · 기준점 {nb}곳 중 남은 빨강 {c0['need']} | "
+            f"회전 0° {n0}자리: 초록 {c0['ok']} · 노랑 {c0['fill']} · 회색 {c0['none']} | "
+            f"회전 90·180·270° {nr}자리: 초록 {cr['ok']} · 노랑 {cr['fill']} · 회색 {cr['none']}"
+            " — 3D 에서 빨간 점을 누르면 그 자리 보정 자세가 등록됩니다")
+
+def calmap_register(x,y):
+    """보정 지도 점 클릭: 그 소켓 자리 위(도킹 접근 높이)로 보정 자세 등록. 이미 있으면 그것을 연다.
+    반환 (이름 또는 None, 메시지)."""
+    g=_calmap_dock_geom()
+    ztop=g[2] if g else 0.115
+    z=ztop+GRASP_FACE_DZ+GRASP_DZ_DEFAULT+GRASP_LIFT          # 이동 블록이 도킹 위로 가는 높이와 같다
+    rel=w2l(np.array([float(x),float(y),z]))
+    old=_slot_find(ACTIVE_ARM[0],rel)
+    if old is not None:
+        FT['pose']=old['name']
+        return old['name'],f"'{old['name']}' — 이미 있는 보정 자세를 엽니다 (③연동에서 미세조정)"
+    q0=list(CURRENT_Q)
+    q=ik_tool((float(x),float(y),z),_seed_list(q0),q0[4],q0[GRIP_IDX])
+    if q is None: return None,f"그 자리 ({x*1000:.0f},{y*1000:.0f})mm 는 팔이 닿지 않습니다"
+    angles=[float(v) for v in q]
+    name=_slot_name(ACTIVE_ARM[0],rel)
+    with LOCK:
+        S['poses'].append({'name':name,'angles':angles,'offset':[0.0]*NJOINT,
+                           'offsets':{'sts':[0.0]*NJOINT},
+                           'rel':[round(float(v),5) for v in rel],'arm':ACTIVE_ARM[0],
+                           'calmap':True})               # [보정 저장] 전에는 보정 지도에서 초록으로 안 보인다 (표시만)
+    _macro_save()
+    FT['pose']=name
+    print(f"[보정 지도] {name} 등록 (판 위 {x*1000:.0f},{y*1000:.0f}mm)")
+    return name,(f"'{name}' 등록 — 실제 도킹을 그 자리에 꽂고 ③연동 [로봇을 이 자세로] → +/- 미세조정 → [보정 저장]")
+
+def _goto_pose_q(oid):
+    """그 대상 자리의 '이동' 보정 자세 (없으면 None,None).
+
+    ★ 보정의 주인은 물건이 아니라 판 위 XY 자리다 (2026-10-20) ★
+      예전에는 이름 "<대상이름>_이동(x,y,z)" 으로만 찾아서, 보라 도킹에서
+      보정해 두고 같은 자리에 주황 도킹을 놓으면 보정 전 값으로 갔다
+      (같은 자리의 ppap 보정도 '#2 로 이동' 에서는 무시됐다).
+      -> 이동 목표 XY 에서 SLOT_TOL 안에 등록된 '이동' 자세를 이름과 상관없이 쓴다.
+         높이가 같으면 보정 각도 그대로, 다르면 그 자리의 XY 보정량만 옮겨
+         목표 높이에서 다시 푼다 (높이가 다른 도킹을 같은 자리에 놓은 경우)."""
+    try:
+        t=goto_point(oid)
+        if t is None: return None,None
+        hit=_slot_pose(float(t[0]),float(t[1]))
+        if hit is None: return None,None
+        name,a,(px,py,pz)=hit
+        if abs(float(t[2])-pz)<=SLOT_SAME_Z: return name,a
+        fp=tool_pos(a)                         # 보정된 자세가 실제로 가리키는 곳
+        dx,dy=float(fp[0])-px,float(fp[1])-py  # 그 자리의 XY 보정량
+        q=ik_tool((float(t[0])+dx,float(t[1])+dy,float(t[2])),
+                  _seed_list(a),a[4],list(CURRENT_Q)[GRIP_IDX])
+        if q is None: return None,None
+        return f"{name} (XY 보정 {dx*1000:+.1f},{dy*1000:+.1f}mm)",list(q)[:NJOINT]
     except Exception as e:
         print('등록 자세 조회 실패:',e)
     return None,None
 
+# ---- 📱 목표가 사라지면 대기 / 다시 나타나면 이어서 (2026-10-22) ----
+#   휴대폰 카메라가 판을 보고 있고(자동 반영 켬, 판 맞춤 완료) 실물로 움직일 때만 작동한다.
+#   목표 도킹이 숨겨지면(=카메라에 사라짐) 팔을 든 채(토크 유지) 기다리고, 다시 보이면 그 자리로
+#   새로 계산해서 바로 이어 간다. 이동 중에 사라지거나 옮겨지면 그 자리에서 멈추고 다시 계산한다.
+class _TargetLost(Exception): pass
+GOTO_GUARD={'oid':None,'xy':None,'poid':None,'pxy':None}   # poid/pxy = 일시 정지 뒤 '옮겨졌나' 볼 목표 (11-06)
+
+def _guard_target(oid):
+    """일시 정지에서 풀릴 때 '옮겨졌나' 볼 목표를 정한다 (None = 안 봄)."""
+    if oid is None:
+        GOTO_GUARD.update(poid=None,pxy=None); return
+    p=goto_point(oid)
+    GOTO_GUARD.update(poid=str(oid),pxy=((float(p[0]),float(p[1])) if p is not None else None))
+PATH_VIS={'pts':None}          # 지금 움직이는 블록의 예상 경로 (3D 에 반투명으로)
+
+def _live_hold_on():
+    lv=_LIVE[0]
+    return (bool(lv) and LIVE_APPLY['on'] and LIVE_APPLY.get('reg') not in (None,'manual')
+            and lv.live() and not ROBOT._sim())
+
+def _target_ready(oid):
+    oid=str(oid)
+    if 'docking' in oid.lower():
+        e=_env_ent(oid); return e is not None and bool(e.get('visible',True))
+    b=BRICKS.get(oid) or BRICKS.get(_clone_base(oid))
+    if b is None or not b.get('pos'): return False
+    if HELD.get('brick')==oid: return True
+    bp=b['pos']
+    for d in docking_ids():                    # 꽂혀 있던 도킹이 사라졌으면 물체도 없는 것
+        t=dock_socket_world(d)
+        if t and math.hypot(bp[0]-t[0],bp[1]-t[1])<0.025:
+            return bool((_env_ent(d) or {}).get('visible',True))
+    return True
+
+def _wait_target(oid,tag):
+    if _target_ready(oid): return None
+    LOG(f"  [{tag}] 목표 {disp_name(oid)} 가 안 보입니다 — 팔을 든 채 기다립니다 (다시 꽂으면 이어서)")
+    while not _target_ready(oid):
+        if STOP.is_set(): return f"{tag}: 정지됨"
+        time.sleep(0.2)
+    LOG(f"  [{tag}] 목표 {disp_name(oid)} 다시 보임 — 이어서 갑니다")
+    return None
+
 def goto_move(oid,tag='이동'):
+    """이동 블록. 휴대폰 카메라가 지켜볼 때는 목표가 사라지면 기다렸다가 이어 간다."""
+    while True:
+        if _live_hold_on():
+            w=_wait_target(oid,tag)
+            if w: return w
+        p=goto_point(oid)
+        GOTO_GUARD.update(oid=(str(oid) if _live_hold_on() else None),
+                          xy=((float(p[0]),float(p[1])) if p is not None else None))
+        _guard_target(oid)                         # 11-06 일시 정지 뒤 옮겨졌으면 다시 계산
+        try:
+            return _goto_move_core(oid,tag)
+        except _TargetLost as ex:
+            LOG(f"  [{tag}] 목표 {disp_name(oid)} {ex} — 그 자리에서 멈추고 다시 계산합니다")
+            continue
+        finally:
+            GOTO_GUARD.update(oid=None,xy=None,poid=None,pxy=None); PATH_VIS['pts']=None
+
+def _goto_move_core(oid,tag='이동'):
     """이동 블록의 '실행 시점' 재계산 버전: 지금 물체가 있는 곳으로
     뽑기(상승) → 수평 → 하강. 미리 계산한 경로는 물체가 파이프라인 중간에
     옮겨지면 옛 위치로 가버리므로, 이동 블록은 항상 이걸 쓴다.
@@ -7528,7 +9040,10 @@ def goto_move(oid,tag='이동'):
     #    단 시뮬은 제외 — 등록 자세는 '실물의 조립오차를 손으로 메운 각도' 라
     #    실물에서만 정답이다. 3D 에는 그 오차가 없으므로, 시뮬이 이 값을 쓰면
     #    화면에서 엉뚱한 자리로 간다. 시뮬은 ② 계산 좌표로 간다.
-    _pn,_pq=(None,None) if ROBOT._sim() else _goto_pose_q(oid)
+    # ★ 2026-10-20: 등록(보정) 자세 각도로 트윈을 움직이지 않는다 ★
+    #   트윈은 아래 ② 이론 경로로 가고, 그 자리 보정량은 _send_real -> _ik_off
+    #   (_slot_delta) 가 실물에만 더한다. 아래 ① 은 쓰지 않는다.
+    _pn,_pq=None,None
     if _pq is not None:
         LOG(f"  [{tag}] 등록 자세 사용: {_pn}")
         q0=list(CURRENT_Q)
@@ -7553,11 +9068,17 @@ def goto_move(oid,tag='이동'):
     #   3D(CURRENT_Q)가 직전 목표를 이미 알고 있으므로 그걸 쓴다.
     q0=list(CURRENT_Q)
     now=tool_pos(q0)
+    if (math.hypot(float(p[0])-float(now[0]),float(p[1])-float(now[1]))<SAME_SPOT_XY
+            and abs(float(p[2])-float(now[2]))<SAME_SPOT_Z):
+        LOG(f"  [{tag}] 이미 {disp_name(oid)} 위입니다 (이동 없음)")      # 11-04: 같은 자리 이동은 제자리
+        return None
     zmin=max(float(p[2]),_clear_z())
     ztr=_travel_z(now,p,zmin)
     if ztr is None:
         return (f"{tag}: {disp_name(oid)} 까지 안전 높이({zmin*1000:.0f}mm)로 "
                 "갈 수 없습니다 — [로봇 자리 추천]을 눌러보세요")
+    PATH_VIS['pts']=[[float(now[0]),float(now[1]),float(now[2])],[float(now[0]),float(now[1]),float(ztr)],
+                     [float(p[0]),float(p[1]),float(ztr)],[float(p[0]),float(p[1]),float(p[2])]]
     # ① 뽑기: 지금 자리에서 수직 상승. 실물이 낮게 접힌 자세면 그 자리에서
     #    위로 못 올라가는 경우가 있다 -> base 자세를 경유해 다시 시도한다
     #    (예전엔 여기서 "z=68mm 도달 불가" 로 실물 실행이 첫걸음에 죽었다)
@@ -7617,7 +9138,7 @@ def do_ascend_here():
                 tz=float(_t[2])+GRASP_FACE_DZ+GRASP_DZ_DEFAULT+GRASP_LIFT
                 what=f'{disp_name(_dk)} 위 접근 높이'; break
     if tz is None:
-        tz=z+GRASP_LIFT; what='지금 높이 +60mm'
+        tz=z+GRASP_LIFT; what=f'지금 높이 +{GRASP_LIFT*1000:.0f}mm'
     if tz<=z+1e-4:
         return f"상승: 이미 접근 높이입니다 (지금 z={z*1000:.0f}mm)"
     e=_descend(x,y,z,tz,'상승')
@@ -7679,16 +9200,26 @@ def brick_graspable(bid):
                       f'{p[2]*1000:.0f}mm)은 수평 유지로 도달 불가')
     return True,q
 
-GRASP_LIFT=0.06        # 원하는 접근/상승 여유 높이 (m)
+GRASP_LIFT=0.047       # 원하는 접근/상승 여유 높이 (m)
+#   11-06 (사용자: 펜이 짧아졌으니 더 낮게 가도 된다) 60 -> 47mm. 접근·상승 높이 162+60=222 -> 162+47=209mm.
+#   209 = 도킹 윗면 115 + 안전 여유 20 + 새 펜이 잡는 점 아래로 늘어진 길이 74 (82mm 펜: 원점 아래 37 + 37)
+#   = 펜을 들고 옮길 때 _clear_z() 가 요구하는 높이와 같다 → 더 낮추면 _clear_z 가 다시 올린다.
+#   (B팔은 #9 위에서 최고 225mm 라 222 는 한계 3mm 앞이었다 — 수치 IK 가 초기값 탓에 '못 감' 판정)
 HELD={'brick':None}    # 지금 그리퍼가 들고 있는 물체
 
 def _max_z_over(x,y,z_from,z_to=0.30):
-    """(x,y) 축 위에서 도달 가능한 가장 높은 z. 없으면 None."""
+    """(x,y) 축 위에서 도달 가능한 가장 높은 z. 없으면 None.
+    11-06: 수치 IK 가 초기값 탓에 실패하면 해석 IK(ik_tool_fast — FK 검산·관절 한계 확인 포함)로 한 번 더,
+           그리고 마지막에 z_from 자체도 본다 (예전엔 5mm 계단이라 z_from 바로 위만 되는 자리를 놓쳤다)."""
     q0=list(CURRENT_Q); seeds=_seed_list(q0)
+    def _ok(z):
+        return (ik_tool((x,y,z),seeds,q0[4],q0[GRIP_IDX]) is not None
+                or ik_tool_fast((x,y,z),q0[4],q0[GRIP_IDX]) is not None)
     z=z_to
     while z>=z_from-1e-9:
-        if ik_tool((x,y,z),seeds,q0[4],q0[GRIP_IDX]) is not None: return z
+        if _ok(z): return z
         z-=0.005
+    if z_from<=z_to and _ok(z_from): return z_from
     return None
 
 def _travel_z(p_from,p_to,z_min,z_max=0.30,n=8):
@@ -7703,13 +9234,20 @@ def _travel_z(p_from,p_to,z_min,z_max=0.30,n=8):
     for k in range(n+1):
         c=a+(b-a)*(k/n)
         z=_max_z_over(float(c[0]),float(c[1]),z_min,best)
-        if z is None: return None
+        if z is None:
+            try:                                   # 11-06: 어디서 막혔는지 남긴다 (로봇 기준 mm)
+                cl=w2l(c); al=w2l(a); bl=w2l(b)
+                LOG(f"  [안전 높이] {arm_label(ACTIVE_ARM[0])}: 길 {k}/{n} 지점 (로봇 기준 X{cl[0]*1000:+.0f} Y{cl[1]*1000:+.0f})"
+                    f" 에서 {z_min*1000:.0f}~{best*1000:.0f}mm 높이 자세를 못 찾음 — 출발 X{al[0]*1000:+.0f} Y{al[1]*1000:+.0f}"
+                    f" Z{al[2]*1000:.0f} → 목표 X{bl[0]*1000:+.0f} Y{bl[1]*1000:+.0f} Z{bl[2]*1000:.0f}")
+            except Exception: pass
+            return None
         best=min(best,z)
     return best
 
 FT_NEAR_DEG=25.0        # 이 각도 안에 등록 자세가 있으면 그 보정을 쓴다
 
-def _ik_off(q=None):
+def _ik_off_base(q=None):
     """IK 로 만든 자세를 실물로 보낼 때 더할 보정값.
 
     IK 결과는 '이론 자세'라 실물의 조립오차만큼 어긋난다. 이걸 빼먹으면
@@ -7724,6 +9262,7 @@ def _ik_off(q=None):
         if q is not None:
             best=None
             for p in S['poses']:
+                if _is_slot_pose(p): continue   # 자리 보정은 _slot_delta 가 (두 번 더하지 않게)
                 o=get_offset(p['name'])
                 if not any(abs(v)>1e-9 for v in o): continue
                 d=math.degrees(math.sqrt(sum((a-b)**2 for a,b
@@ -7736,9 +9275,29 @@ def _ik_off(q=None):
     except Exception:
         return [0.0]*NJOINT
 
+def _ik_off(q=None):
+    """실물로 보낼 때 더할 보정값 = 기존 보정(_ik_off_base) + 그 자리의 보정량(_slot_delta).
+    ★ 실물 전송 경로에서만 쓰인다 — 3D 트윈은 언제나 이론 자세 q 를 그린다 (2026-10-20) ★"""
+    o=_ik_off_base(q)
+    if SEAT_FIX[0] is not None:                  # 잡기 중: 놓을 때 잰 '소켓이 끌어준 양' (11-04)
+        o=[a+b for a,b in zip(o,SEAT_FIX[0])]
+    if q is None: return o
+    try:
+        d=_slot_delta(q)
+        if d is not None: o=[a+b for a,b in zip(o,d)]
+    except Exception as e:
+        print('[자리 보정] 계산 실패:',e)
+    return o
+
 # 실물 모터가 있는 로봇(패밀리). 이 외의 로봇을 골라 두고 실물로 보내면
 # 축 수·기구학이 달라 엉뚱한 각도가 모터에 들어간다 -> 사람이 다친다.
 REAL_FAMILIES=('sts3215','dynamixel')
+
+def cal_joint_labels(rk):
+    """③연동 미세조정에 보일 관절 이름. SO-ARM 은 선 없는 모터(j5 고정)를 뺀다."""
+    n=robot_njoints(rk)
+    return [f'J{i+1}' for i in range(n)
+            if not (rk=='sts' and i<len(J2ID) and J2ID[i] in STS_DEAD_IDS)]
 
 def real_robot_ok():
     """지금 3D 에서 고른 로봇이 '실물이 있는 로봇' 인가?
@@ -7754,6 +9313,13 @@ def _send_real(q,log=False,tag=''):
 
     안전장치: 고른 로봇과 실물이 다르면 아예 보내지 않는다.
     (UR15 8축 각도를 SO-ARM 6축 모터에 보내면 매우 위험하다)"""
+    g=GOTO_GUARD
+    if g['oid'] is not None and _live_hold_on():      # 📱 이동 중 목표가 사라지거나 옮겨지면 멈춘다
+        if not _target_ready(g['oid']): raise _TargetLost('사라짐')
+        _p=goto_point(g['oid'])
+        if _p is not None and g['xy'] and math.hypot(_p[0]-g['xy'][0],_p[1]-g['xy'][1])>0.015:
+            raise _TargetLost('옮겨짐')
+    if _pause_point()=='stop': return          # 11-06 일시 정지 (정지로 끝나면 보내지 않는다)
     ros_publish(q)
     # 실물 전송 차단은 ROBOT.send(RobotMux) 안에서 최종 판단한다
     ROBOT.send([a+o for a,o in zip(q,_ik_off(q))],log=log,tag=tag)
@@ -7804,7 +9370,7 @@ def flow_send(way,dt,tag='',log=False):
         raws={}; vel={}
         for j in range(min(5,NJOINT)):
             i=J2ID[j]
-            if i==GRIP_ID: continue
+            if i==GRIP_ID or i in STS_DEAD_IDS: continue
             raws[i]=rad_to_raw(j,qc[j])[0]
             if prev is not None:
                 d=abs(raws[i]-prev.get(i,raws[i]))
@@ -7914,6 +9480,8 @@ def _descend(x,y,z_hi,z_lo,tag,steps=None):
     # 하강). 그래서 중간 지점들은 '검사만' 하고, 실제 이동은 끝점까지
     # 한 번에 부드럽게 간다. (사용자: "하강이 진짜 덜덜거린다")
     n=steps or max(6,int(abs(z_hi-z_lo)/0.005))   # 8/13 값 (5mm)
+    if FORCE_SIM[0] and SIM_SPEED[0]>1.5:         # 11-05 (사용자: 미리보기가 느리다) 3D 에서만 배속만큼 성기게 (최대 4배) — 실물은 그대로 5mm
+        n=max(3,int(round(n/min(4.0,SIM_SPEED[0]/1.5))))
     if False:                                     # 8/13 방식으로 되돌림
         # ★ 그라디오 방식 ★ 3mm 마다 미리 계산해 둔 경로를 재생만 한다.
         q0=list(CURRENT_Q)
@@ -7949,9 +9517,10 @@ def _descend(x,y,z_hi,z_lo,tag,steps=None):
                               f"z={z*1000:.0f}mm 도달 불가")
         q[GRIP_IDX]=q0[GRIP_IDX]
         if LEVEL_ALWAYS: q[J5_IDX]=q0[J5_IDX]
-        # 축마다 이동량이 다르면 같이 도착하도록 속도를 맞춘다(물컵 유지)
-        try: ROBOT_STS.sync_speed(q0,q,0.05)
-        except Exception: pass
+        # 축마다 이동량이 다르면 같이 도착하도록 속도를 맞춘다(물컵 유지) — 실물 모터용 (3D 미리보기에서는 건너뜀)
+        if not FORCE_SIM[0]:
+            try: ROBOT_STS.sync_speed(q0,q,0.05)
+            except Exception: pass
         _send_real(q,log=True,tag=tag)        # 8/13 방식: 그냥 보내고 쉰다
         q0=q
         time.sleep(0.05*(DXL_STEP_SLOW if EXEC.get('mode')=='dxl' else 1.0)
@@ -7981,8 +9550,9 @@ def _brick_move_to(p,tag):
     prev=list(q0)
     for f in way:
         if STOP.is_set(): return f"{tag}: 정지됨"
-        try: ROBOT_STS.sync_speed(prev,f,dt)
-        except Exception: pass
+        if not FORCE_SIM[0]:                     # 실물 모터용 속도 맞추기 (3D 미리보기에서는 건너뜀, 11-05)
+            try: ROBOT_STS.sync_speed(prev,f,dt)
+            except Exception: pass
         _send_real(f,log=True,tag=tag); time.sleep(dt/SIM_SPEED[0])
         prev=f
     return None
@@ -8041,7 +9611,93 @@ def grip_wait(op,timeout=8.0):
     return why,p
 
 
+def grasp_z(bid):
+    p=brick_grasp_point(bid); return float(p[2]) if p is not None else None
+def release_z(did):
+    t=dock_socket_world(did); return float(t[2])+GRASP_FACE_DZ+GRASP_DZ_DEFAULT if t is not None else None
+
+# ★ 놓은 자리 기억 → 다시 잡을 때 그 자리로 (2026-11-04, 사용자: 놓고 올라올 땐 괜찮은데 다시 내려가면 펜을 찍는다) ★
+#   놓기와 잡기는 같은 목표(틱 단위까지 같음)로 내려가는데, 놓을 때는 펜이 소켓 홈을 타고 들어가며
+#   팔을 몇 mm 끌어당겨 맞춰 준다. 펜을 놓으면 그 힘이 사라져 팔이 제자리로 돌아가고, 다시 내려가면
+#   그 몇 mm 때문에 집게가 펜 머리를 찍는다.
+#   -> 놓기 바닥에서 '꽂힌 채(닫힘)' A1 과 '놓은 뒤(열림)' A2 실제 각도를 읽어, A1-A2 (= 소켓이 끌어준 양)
+#      를 그 도킹에 기억한다. 같은 로봇 자리·같은 도킹 축에서 그 펜을 잡을 때 이만큼 더해 내려간다
+#      (실물만, j1~j4). 너무 크면 (관절 SEAT_MAX_DEG 또는 SEAT_MAX_MM 초과) 안 쓰고 기록만 한다.
+SEAT_MEM={}              # 도킹 id -> {'delta':[rad..],'xy':(x,y),'pose':(bx,by,yaw,팔),'mm':(dx,dy),'t':시각}
+SEAT_FIX=[None]          # 잡는 동안만 _ik_off 에 더해지는 값
+SEAT_APPLY=[False]       # 11-04: 끔 — 측정만 (물컵 규칙을 깨서 그리퍼가 기울었다)
+SEAT_MAX_DEG=4.0
+SEAT_MAX_MM=10.0
+SEAT_XY_TOL=0.003
+
+def _seat_pose_key():
+    return (round(float(BASE_OFF[0]),4),round(float(BASE_OFF[1]),4),round(float(BASE_YAW[0]),4),ACTIVE_ARM[0])
+
+def _seat_real():
+    return (not FORCE_SIM[0]) and (not ROBOT._sim()) and ROBOT.connect()
+
+def _seat_read():
+    try:
+        time.sleep(0.25)                              # 멈춘 뒤 읽기
+        return list(ROBOT.read())
+    except Exception as e:
+        LOG(f"  [꽂힘 자리] 읽기 실패: {e}"); return None
+
+def _seat_dock_of(bid):
+    """그 물체가 꽂혀 있는 (보이는) 도킹 id."""
+    b=BRICKS.get(bid) or {}
+    bp=b.get('pos')
+    if not bp: return None
+    for d in docking_ids():
+        e=_env_ent(d)
+        if e is not None and not e.get('visible',True): continue
+        tt=dock_socket_world(d)
+        if tt and math.hypot(bp[0]-tt[0],bp[1]-tt[1])<0.015: return d
+    return None
+
+GOTO_BEFORE_TOL=0.015    # 잡기·놓기 전, 대상 축에서 이만큼(m) 넘게 떨어져 있으면 먼저 그 위로 간다
+
+def _goto_before(oid,tag):
+    """★ 잡기·놓기는 '어디'를 가진다 (2026-11-04, 사용자) ★
+    예전엔 제자리에서 수직으로만 움직여서, [놓기 #8] 을 #2 위에서 하면 실물은 #2 에
+    내려놓고 트윈만 펜을 #8 로 옮겼다. -> 대상 위가 아니면 [이동] 과 똑같은 길(goto_move,
+    자리 보정 포함)로 먼저 그 위로 간다. 바로 앞에 같은 대상 [이동] 이 있으면 이미 위라 그냥 지나간다."""
+    if _live_hold_on():
+        w=_wait_target(oid,tag)
+        if w: return w
+    _p=goto_point(oid); _n=tool_pos(list(CURRENT_Q))
+    if _p is not None and math.hypot(_p[0]-_n[0],_p[1]-_n[1])>GOTO_BEFORE_TOL:
+        LOG(f"  [{tag}] {disp_name(oid)} 위가 아니라 먼저 그 위로 이동합니다")
+        return goto_move(oid,f'{tag} 전 이동')
+    return None
+
 def do_grasp(bid):
+    """잡기 블록. 대상(펜) 위가 아니면 먼저 그 위로 간다 (_goto_before)."""
+    if bid not in BRICKS or not BRICKS[bid].get('pos'):
+        return f"{bid} 가 배치되지 않았습니다"
+    if HELD.get('brick')!=bid:
+        e=_goto_before(bid,'잡기')
+        if e: return e
+    try:
+        _n=tool_pos(list(CURRENT_Q))
+        _z=grasp_z(bid)
+        if _z is not None:
+            PATH_VIS['pts']=[[float(_n[0]),float(_n[1]),float(_n[2])],[float(_n[0]),float(_n[1]),_z]]
+    except Exception:
+        pass
+    try:
+        for _k in range(6):
+            try:
+                return _do_grasp_core(bid)
+            except _TargetLost as ex:            # 11-06 일시 정지 중 펜이 옮겨짐 → 위로 올라가 새 자리로
+                LOG(f"  [잡기] {disp_name(bid)} {ex} — 그 자리에서 올라가 새 자리로 다시 갑니다")
+                e=goto_move(bid,'잡기 다시')
+                if e: return e
+        return f"잡기: {disp_name(bid)} 자리가 계속 바뀌어 멈춥니다"
+    finally:
+        PATH_VIS['pts']=None
+
+def _do_grasp_core(bid):
     """잡기 (사용자 정의 2026-08-14) = 열기 → 하강 → 닫기 → 상승.
 
     이동은 포함하지 않는다 — 먼저 [이동→사물] 블록으로 축 위에 와 있어야
@@ -8062,14 +9718,39 @@ def do_grasp(bid):
     zg=float(p[2])                                # 잡는 높이만 대상에서
     pen_top=float(BRICKS[bid]['pos'][2])+float(BRICKS[bid].get('h',0.0))
     z_up=max(zg+GRASP_LIFT,pen_top+0.02)          # 상승 목표 = 접근 높이
+    _fix=None
+    _dk=_seat_dock_of(bid)
+    _sm=SEAT_MEM.get(_dk) if _dk else None
+    if _sm is not None and _seat_real():
+        if _sm['pose']!=_seat_pose_key() or math.hypot(_sm['xy'][0]-x,_sm['xy'][1]-y)>SEAT_XY_TOL:
+            LOG(f"  [꽂힘 자리] {disp_name(_dk)}: 놓을 때와 로봇·도킹 자리가 달라 안 씀")
+        elif (max(abs(math.degrees(v)) for v in _sm['delta'][:4])>SEAT_MAX_DEG
+              or math.hypot(*_sm['mm'])>SEAT_MAX_MM):
+            LOG(f"  [꽂힘 자리] {disp_name(_dk)}: 값이 너무 커서({math.hypot(*_sm['mm']):.1f}mm) 안 씀 — 보정을 확인하세요")
+        else:
+            # ★ 11-04 실측 후 끔 ★ 관절 차이를 그대로 더하면 물컵 규칙(j2+j3+j4=0)이 깨져 그리퍼가
+            #   3.6° 기울었다. 게다가 옆으로 돌아간 양은 0.3~0.6mm 뿐(대부분 위아래)이라 쓸 이유도 없다.
+            #   측정은 참고용 기록으로만 남긴다. 다시 켜려면 SEAT_APPLY[0]=True (물컵 규칙 맞춤 필요).
+            if SEAT_APPLY[0]:
+                _fix=list(_sm['delta'])
+            LOG(f"  [꽂힘 자리] {disp_name(_dk)}: 놓을 때 옆으로 X{_sm['mm'][0]:+.1f} Y{_sm['mm'][1]:+.1f}mm "
+                +("— 맞춰 내려갑니다" if _fix is not None else "(참고 기록 · 보정 안 함)"))
     STOP.clear(); RUNNING.set()
     try:
         ROBOT.time_profile(True); ROBOT.torque(True)
+        if _fix is not None:
+            SEAT_FIX[0]=_fix
+            ROBOT.send([a+o for a,o in zip(list(CURRENT_Q),_ik_off(list(CURRENT_Q)))])   # 위에서 먼저 맞추고
+            _settle_or_rest()
         _run_at(RUN_AT.get('blk',-1),'열기')
         ROBOT.gripper(True); _grip_vis(True)
         grip_wait(True)                   # ① 다 열릴 때까지
         _run_at(RUN_AT.get('blk',-1),'하강')
-        e=_descend(x,y,float(now[2]),zg,'잡기② 하강')            # ② 수직 하강
+        _guard_target(bid)                       # 11-06: 일시 정지 중 펜(도킹)이 옮겨지면 다시
+        try:
+            e=_descend(x,y,float(now[2]),zg,'잡기② 하강')            # ② 수직 하강
+        finally:
+            _guard_target(None)
         if e: return e
         _run_at(RUN_AT.get('blk',-1),'닫기')
         ROBOT.gripper(False); _grip_vis(False)
@@ -8078,14 +9759,43 @@ def do_grasp(bid):
         _run_at(RUN_AT.get('blk',-1),'상승')
         e=_descend(x,y,zg,z_up,'잡기④ 상승')                     # ④ 수직 상승
         if e: return e
+        if _dk: SEAT_MEM.pop(_dk,None)            # 펜을 뽑았으니 그 도킹 기억은 끝
         return (f"{bid} 잡음 — 열기 → 하강 {zg*1000:.0f}mm → 닫기 → "
                 f"상승 {z_up*1000:.0f}mm")
+    except _TargetLost:
+        raise                                    # 11-06: do_grasp 가 올라가서 새 자리로 다시
     except Exception as ex:
         ROBOT.estop(); return f"오류: {ex} - 토크 해제됨"
     finally:
+        SEAT_FIX[0]=None
         RUNNING.clear()
 
 def do_release(did):
+    """놓기 블록. 대상 도킹 위가 아니면 먼저 그 위로 간다 (_goto_before)."""
+    if HELD.get('brick') is None: return "들고 있는 물체가 없습니다 (먼저 [잡기])"
+    if dock_socket_world(did) is None: return f"도킹을 찾을 수 없습니다: {did}"
+    e=_goto_before(did,'놓기')
+    if e: return e
+    try:
+        _n=tool_pos(list(CURRENT_Q))
+        _z=release_z(did)
+        if _z is not None:
+            PATH_VIS['pts']=[[float(_n[0]),float(_n[1]),float(_n[2])],[float(_n[0]),float(_n[1]),_z]]
+    except Exception:
+        pass
+    try:
+        for _k in range(6):
+            try:
+                return _do_release_core(did)
+            except _TargetLost as ex:            # 11-06 일시 정지 중 도킹이 옮겨짐 → 위로 올라가 새 자리로
+                LOG(f"  [놓기] {disp_name(did)} {ex} — 그 자리에서 올라가 새 자리로 다시 갑니다")
+                e=goto_move(did,'놓기 다시')
+                if e: return e
+        return f"놓기: {disp_name(did)} 자리가 계속 바뀌어 멈춥니다"
+    finally:
+        PATH_VIS['pts']=None
+
+def _do_release_core(did):
     """놓기 (사용자 정의 2026-08-14) = 하강 → 열기 → 상승 → 닫기.
 
     이동은 포함하지 않는다 — 먼저 [이동→사물] 블록으로 소켓 축 위에 와
@@ -8108,11 +9818,30 @@ def do_release(did):
     try:
         ROBOT.time_profile(True); ROBOT.torque(True)
         _run_at(RUN_AT.get('blk',-1),'하강')
-        e=_descend(x,y,float(now[2]),zg,'놓기① 하강')            # ① 펜이 소켓에
+        _guard_target(did)                       # 11-06: 일시 정지 중 도킹이 옮겨지면 다시
+        try:
+            e=_descend(x,y,float(now[2]),zg,'놓기① 하강')            # ① 펜이 소켓에
+        finally:
+            _guard_target(None)
         if e: return e
+        _a1=_seat_read() if _seat_real() else None              # 꽂힌 채 (소켓이 팔을 끌어준 상태)
         _run_at(RUN_AT.get('blk',-1),'열기')
         ROBOT.gripper(True); _grip_vis(True)
         grip_wait(True)                   # ② 다 열릴 때까지 = 놓임
+        if _a1 is not None:
+            _a2=_seat_read()                                    # 놓은 뒤 (팔이 제자리로 돌아간 상태)
+            if _a2 is not None:
+                _d=[(_a1[j]-_a2[j]) if j<4 else 0.0 for j in range(NJOINT)]
+                try:
+                    _q=list(CURRENT_Q); _p0=tool_pos(_q); _p1=tool_pos([a+b for a,b in zip(_q,_d)])
+                    _mm=((float(_p1[0])-float(_p0[0]))*1000,(float(_p1[1])-float(_p0[1]))*1000)
+                except Exception:
+                    _mm=(0.0,0.0)
+                SEAT_MEM[did]={'delta':_d,'xy':(x,y),'pose':_seat_pose_key(),'mm':_mm,'t':time.time()}
+                LOG(f"  [꽂힘 자리] {disp_name(did)}: 펜을 놓자 팔이 {math.hypot(*_mm):.1f}mm 돌아감 "
+                    f"(X{_mm[0]:+.1f} Y{_mm[1]:+.1f}mm · "
+                    +' '.join(f"j{j+1}:{math.degrees(_d[j]):+.2f}°" for j in range(4))
+                    +") — 참고 기록")
         place_brick_on_docking(bid,did)                          # 소켓에 안착
         HELD['brick']=None
         pen_top=float(BRICKS[bid]['pos'][2])+float(BRICKS[bid].get('h',0.0))
@@ -8125,6 +9854,8 @@ def do_release(did):
         grip_wait(False)                  # ④ 닫기
         return (f"{bid} 를 {disp_name(did)} 소켓에 놓음 — 하강 {zg*1000:.0f}mm "
                 f"→ 열기 → 상승 {z_up*1000:.0f}mm → 닫기")
+    except _TargetLost:
+        raise                                    # 11-06: do_release 가 올라가서 새 자리로 다시
     except Exception as ex:
         ROBOT.estop(); return f"오류: {ex} - 토크 해제됨"
     finally:
@@ -8236,7 +9967,9 @@ def _msg_of(out):
 LLM_LOG_FILE=os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           'llm_usage.jsonl')
 
-LLM_CFG={'url':os.environ.get('ARM_LLM_URL',''),
+# AI 모델 선택: auto(Spark 되면 Gemma, 아니면 규칙) / gemma / rachel(자작·내장) / rule
+LLM_CFG={'engine':'auto',
+         'url':os.environ.get('ARM_LLM_URL',''),
          'model':os.environ.get('ARM_LLM_MODEL','qwen3:32b')}
 
 def _llm_autodetect():
@@ -8268,7 +10001,7 @@ def _llm_autodetect():
                   "— 말로 만들기가 LLM 으로 동작합니다")
             return
         except Exception: pass
-    print('[LLM] 연결 안 됨 — 규칙 파서로 동작 (Spark 포트가 열리면 자동 전환)')
+    print('[LLM] Spark 연결 안 됨 — 말로 만들기는 더블 레이첼(내장)로, 그것도 안 되면 규칙 파서 (Spark 포트가 열리면 자동 전환)')
 _llm_autodetect()
 
 def _flat_blocks(x):
@@ -8287,6 +10020,15 @@ def _resolve_item(it):
       전체 id 로 바꿔서 반환. 못 맞추면 None (블록 폐기)."""
     if it in (GRIP_OPEN_ITEM,GRIP_CLOSE_ITEM,DOWN_ITEM,UP_ITEM): return it
     if not isinstance(it,str): return None
+    if is_arm_item(it):                       # 두 팔 블록 (10-30): 설정에 있는 팔만
+        return it if it[len(ARM_PREFIX):] in arms_cfg() else None
+    if is_wait_item(it):
+        if wait_arm(it) is not None:          # 'A팔 끝날 때까지' (11-03): 설정에 있는 팔만
+            return it if wait_arm(it) in arms_cfg() else None
+        try:
+            w=float(it[len(WAIT_PREFIX):])
+            return f"{WAIT_PREFIX}{w:g}" if 0<=w<=600 else None
+        except ValueError: return None
     for pre,pool in ((GRASP_PREFIX,list(BRICKS)),
                      (RELEASE_PREFIX,docking_ids()),
                      (GOTO_PREFIX,list(BRICKS)+[e['id'] for e in ENV_SHOW])):
@@ -8350,13 +10092,276 @@ def _llm_expand(js):
         print('별명 펼치기 실패:',e)
     return js
 
+# ===== RACHEL — 자작 소형 LLM (nano_llm/, 내장 실행) =====
+#   Gemma 와 달리 서버가 필요 없다. 38MB 체크포인트를 프로세스 안에서 돌린다.
+#   색→도킹 조회는 신경망이 아니라 hints.build()(결정론 전처리)가 한다 —
+#   같은 크기에서 조회를 모델에 맡기면 64%, 계산으로 빼면 99.6% (실측).
+RACHEL_ST={'m':None,'stoi':None,'itos':None,'err':''}
+_RACHEL_LOCK=threading.Lock()
+
+def _rachel_load():
+    """RACHEL 로드. int8 양자화본이 있으면 그쪽을 먼저 쓴다.
+       실측(4코어): fp32 1,654ms·38MB / int8 1,265ms·19.5MB, 정확도 차이 0%.
+       int8 은 Linear 층 구조가 달라 빈 모델을 먼저 양자화한 뒤 가중치를 넣는다."""
+    if RACHEL_ST['m'] is not None: return True
+    if RACHEL_ST['err']: return False
+    try:
+        import torch
+        from nano_llm import model as _rm, tokenizer as _rt
+        d=os.path.join(os.path.dirname(os.path.abspath(__file__)),'nano_llm')
+        p8=os.path.join(d,'rachel_int8.pt'); p32=os.path.join(d,'rachel.pt')
+        path=p8 if os.path.exists(p8) else p32
+        ck=torch.load(path,map_location='cpu')
+        itos=ck['vocab']; m=_rm.Rachel(len(itos))
+        if ck.get('int8'):
+            m=torch.quantization.quantize_dynamic(
+                m,{torch.nn.Linear},dtype=torch.qint8)
+        m.load_state_dict(ck['model']); m.eval()
+        RACHEL_ST.update(m=m,stoi={c:i for i,c in enumerate(itos)},itos=itos)
+        print(f"[RACHEL] 로드됨 (10M 파라미터, CPU"
+              f"{', int8 양자화' if ck.get('int8') else ''})")
+        return True
+    except Exception as e:
+        RACHEL_ST['err']=str(e); print('[RACHEL] 로드 실패:',e); return False
+
+def _rachel_scene():
+    """학습 형식 그대로 장면 문자열을 만든다: '빨강=d8 주황=d9 | 펜=초록@d8'."""
+    cmap={}                                   # 별명(dN) -> 표준 색이름
+    for d in docking_ids():
+        e=_env_ent(d)
+        if e is not None and not e.get('visible',True): continue
+        n=disp_name(d).split('#')[-1]
+        if not n.isdigit(): continue
+        w=_color_word((_names().get(d) or {}).get('color'))
+        if w: cmap[f'd{n}']=w
+    if not cmap: return None
+    bid=next((b for b,v in BRICKS.items() if v.get('pos') is not None),None)
+    if bid is None: return None
+    pcol=_color_word((_names().get(bid) or {}).get('color')) or '초록'
+    home=None; p=BRICKS[bid].get('pos')
+    for d in docking_ids():                   # 펜이 결합된 도킹 = 출발지
+        t=dock_socket_world(d)
+        if p is not None and t is not None and \
+           math.hypot(p[0]-t[0],p[1]-t[1])<0.025:
+            n=disp_name(d).split('#')[-1]
+            if f'd{n}' in cmap: home=f'd{n}'
+            break
+    if home is None: home=next(iter(cmap))
+    hdr=' '.join(f'{c}={d}' for d,c in cmap.items())
+    return cmap,home,pcol,f'{hdr} | 펜={pcol}@{home}'
+
+# ★ C++ 추론기 우선 ★
+#   같은 모델·같은 출력인데 14배 빠르고(1,265ms -> 91ms) 의존성이 없다.
+#   rachel_cpp/rachel(_static) 과 rachel.bin 이 있으면 그걸 쓰고,
+#   없으면 torch 경로로 되돌아간다.
+RACHEL_CPP=[None]     # (실행파일 경로, 가중치 경로) 또는 False
+
+def _rachel_cpp_paths():
+    if RACHEL_CPP[0] is not None: return RACHEL_CPP[0]
+    d=os.path.join(os.path.dirname(os.path.abspath(__file__)),'rachel_cpp')
+    w=os.path.join(d,'rachel.bin')
+    # rachel(-march=native) 이 rachel_static 보다 100ms 빠르다 — 이걸 먼저 본다.
+    # static 은 다른 기기로 옮길 때의 예비책 (의존성 없음).
+    for exe in ('rachel','rachel_static'):
+        p=os.path.join(d,exe)
+        if os.path.exists(p) and os.access(p,os.X_OK) and os.path.exists(w):
+            RACHEL_CPP[0]=(p,w); print(f'[RACHEL] C++ 추론기 사용: {exe}')
+            return RACHEL_CPP[0]
+    RACHEL_CPP[0]=False; return False
+
+# 상주 프로세스 — 모델을 한 번만 읽고 계속 쓴다.
+#   매번 새로 실행하면 프로세스 시작 + 9.6MB 로드가 붙어 100ms 를 손해본다.
+RACHEL_SRV=[None]                      # subprocess.Popen 또는 None
+_RACHEL_SRV_LOCK=threading.Lock()
+
+def _rachel_srv():
+    """상주 프로세스를 얻는다 (없으면 띄운다). 실패하면 None."""
+    p=RACHEL_SRV[0]
+    if p is not None and p.poll() is None: return p
+    paths=_rachel_cpp_paths()
+    if not paths: return None
+    exe,w=paths
+    try:
+        import subprocess
+        p=subprocess.Popen([exe,w,'--serve'],stdin=subprocess.PIPE,
+                           stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+        if p.stdout.readline().strip()!=b'READY':
+            p.kill(); return None
+        RACHEL_SRV[0]=p
+        print('[RACHEL] C++ 상주 프로세스 기동')
+        return p
+    except Exception as e:
+        print('[RACHEL] 상주 기동 실패:',e); return None
+
+def _rachel_cpp_run(prompt):
+    """C++ 추론기 실행 (상주 우선, 실패 시 1회성 실행)."""
+    paths=_rachel_cpp_paths()
+    if not paths: return None
+    exe,w=paths
+    with _RACHEL_SRV_LOCK:
+        p=_rachel_srv()
+        if p is not None:
+            try:
+                p.stdin.write(prompt.replace('\n','\x01').encode()+b'\n')
+                p.stdin.flush()
+                out=p.stdout.readline().decode('utf-8','replace').strip()
+                if out: return out
+            except Exception as e:
+                print('[RACHEL] 상주 통신 실패 -> 재기동:',e)
+                try: p.kill()
+                except Exception: pass
+                RACHEL_SRV[0]=None
+    try:                                    # 예비: 1회성 실행
+        import subprocess
+        r=subprocess.run([exe,w,prompt],capture_output=True,timeout=30)
+        return r.stdout.decode('utf-8','replace').strip() or None
+    except Exception as e:
+        print('[RACHEL] C++ 실행 실패:',e); RACHEL_CPP[0]=False; return None
+
+def _rachel_parse(t):
+    """RACHEL 로 문장 해석. 실패하면 None (규칙 파서로)."""
+    if not _rachel_cpp_paths() and not _rachel_load(): return None
+    sc=_rachel_scene()
+    if sc is None: return None
+    import json as _json
+    from nano_llm import hints as _rh
+    try: import torch; from nano_llm import tokenizer as _rt
+    except Exception: torch=None; _rt=None
+    cmap,home,pcol,hdr=sc
+    # ★ 문장 안 줄바꿈 제거 (2026-10-20) ★ 입력은 '장면/힌트/문장/>' 를 줄로 나누므로,
+    #   음성·붙여넣기로 들어온 줄바꿈이 남으면 문장이 두 줄로 쪼개져 엉뚱한 답이 나온다
+    #   (실측: "…주황색으로\n 옮기는 걸" -> 빨강을 건너뜀). 학습·검증 데이터는 한 줄이다.
+    t=' '.join(str(t).split())
+    h=_rh.build(cmap,home,pcol,t)             # 색·번호 조회는 계산이 한다
+    prompt=(f'{hdr}\n힌트 {h}' if h else hdr)+f'\n{t}\n>'
+    t0=time.time()
+    use_cpp = LLM_CFG.get('engine') != 'rachel_py'   # 파이썬 강제 선택 시 건너뜀
+    txt=_rachel_cpp_run(prompt) if use_cpp else None
+    if txt is None:                       # C++ 이 없거나 실패 -> torch 경로
+        if not _rachel_load(): return None
+        with _RACHEL_LOCK:
+            ids=torch.tensor([_rt.encode(RACHEL_ST['stoi'],prompt)])
+            out=RACHEL_ST['m'].generate(ids,_rt.EOS)
+        txt=_rt.decode(RACHEL_ST['itos'],out[0,ids.size(1):].tolist()).strip()
+    try:
+        js=_json.loads(txt[txt.find('{'):txt.rfind('}')+1])
+    except Exception:
+        # 글자 단위 생성이라 드물게 JSON 틀이 깨진다 (실측: ':[' 누락).
+        # 내용물(@블록)은 정규식으로 완전 복구된다 — 형식 수리도 계산이 한다.
+        import re as _re
+        blks=_re.findall(r'@(?:goto|grasp|release):[A-Za-z0-9_#\-]+'
+                         r'|@open|@close|@down|@up',txt)
+        if not blks:
+            print('[RACHEL] JSON 아님:',txt[:80]); return None
+        js={'blocks':blks}
+        for k in ('clear','stop'):
+            if _re.search(rf'"{k}"\s*:?\s*true',txt): js[k]=True
+        m=_re.search(r'"speed"\s*:?\s*"([0-9.]+x)"',txt)
+        if m: js['speed']=m.group(1)
+        print('[RACHEL] JSON 수리 ->',len(blks),'블록')
+    js=_llm_expand(js)                        # dN -> 실제 id
+    _way='C++' if (use_cpp and _rachel_cpp_paths()) else 'torch'
+    LOG(f'  [RACHEL/{_way}] {(time.time()-t0)*1000:.0f}ms: {txt[:100]}')
+    try:
+        with open(LLM_LOG_FILE,'a',encoding='utf-8') as _f:
+            _f.write(_json.dumps({'engine':'rachel','text':t,'answer':js},
+                                 ensure_ascii=False)+'\n')
+    except Exception: pass
+    return js if isinstance(js,dict) else None
+
+# ===== 더블 레이첼 (nano_double/, 2026-10-30) — 두 팔 · 지저분한 말 → 정리문 + 블록 =====
+#   C++ 엔진은 v9 와 같은 rachel_cpp/rachel 을 쓰고 가중치만 nano_double/double.bin.
+#   출력은 검사(nano_double/check.py)를 통과해야만 블록이 된다 — 못 믿으면 None (규칙 파서로).
+RACHEL2=[None]
+def _rachel2_parse(t):
+    sc=_rachel_scene()
+    if sc is None: return None
+    cmap,home,pcol,_=sc
+    here=os.path.dirname(os.path.abspath(__file__))
+    w=os.path.join(here,'nano_double','double.bin')
+    paths=_rachel_cpp_paths()
+    if not paths or not os.path.exists(w): return None
+    if os.path.join(here,'nano_double') not in sys.path: sys.path.insert(0,os.path.join(here,'nano_double'))
+    try:
+        from rachel2 import Rachel2
+    except Exception as e:
+        print('[더블 레이첼] 불러오기 실패:',e); return None
+    docks={}
+    for d,c in cmap.items(): docks.setdefault(c,d)      # 같은 색 도킹이 둘이면 앞의 것
+    scn=dict(arms=dict(arms_cfg()),docks=docks,pen=pcol,pen_home=home)
+    t0=time.time()
+    with _RACHEL_SRV_LOCK:
+        try:
+            if RACHEL2[0] is None or RACHEL2[0].p.poll() is not None:
+                RACHEL2[0]=Rachel2(paths[0],w)
+            res=RACHEL2[0].ask(scn,' '.join(str(t).split()),fallback=6)   # 검사에 걸리면 6개 더 뽑아 다수결
+        except Exception as e:
+            print('[더블 레이첼] 실행 실패:',e); RACHEL2[0]=None; return None
+    LOG(f"  [더블 레이첼] {(time.time()-t0)*1000:.0f}ms: {res['canon'][:120]}"
+        +('' if res['ok'] else f"  ✗ 검사 걸림: {res['why']}"))
+    try:
+        import json as _json
+        with open(LLM_LOG_FILE,'a',encoding='utf-8') as _f:
+            _f.write(_json.dumps({'engine':'rachel2','text':t,'canon':res['canon'],'ok':res['ok'],
+                                  'why':res['why'],'blocks':res['blocks']},ensure_ascii=False)+'\n')
+    except Exception: pass
+    if not res['ok']: return None
+    app=res['app'] or []
+    js={'blocks':[b for b in app if b not in ('@stop','@clear','@preview','@faster','@slower')]}
+    if '@stop' in app: js['stop']=True
+    if '@clear' in app: js['clear']=True
+    if '@preview' in app: js['preview']=True
+    if '@faster' in app: js['speed']='3.0x'
+    if '@slower' in app: js['speed']='0.5x'
+    if not app: js['say']='명령이 아닌 말로 알아들었습니다'
+    return _llm_expand(js)
+
+_LLM_ENGINES={'auto':'자동 (Spark 되면 Gemma, 아니면 더블 레이첼, 그것도 안 되면 규칙)',
+              'rachel2':'더블 레이첼 (두 팔 · 자작 25.6M · 검사 통과만)',
+              'gemma':'Gemma 4 (Spark 파인튜닝)',
+              'rachel':'RACHEL C++ (자작 10M · 134ms · 9.6MB)',
+              'rachel_py':'RACHEL 파이썬 (torch · 1,265ms · 비교용)',
+              'rule':'규칙 파서 (AI 미사용)'}
+def h_llm_engine(sel):
+    """말로 만들기의 AI 모델 선택."""
+    eng=str(sel or 'auto').strip()
+    if eng not in _LLM_ENGINES: eng='auto'
+    BTN(f'AI 모델 {eng}')
+    LLM_CFG['engine']=eng
+    if eng=='rachel':
+        p=_rachel_cpp_paths()
+        if not p:
+            return ('RACHEL C++ 실행파일이 없습니다 — rachel_cpp/ 에서 빌드하세요:\n'
+                    '  g++ -O3 -march=native -ffast-math -fopenmp -w -o rachel rachel.cpp')
+        return f'AI 모델: {_LLM_ENGINES[eng]}  ({os.path.basename(p[0])})'
+    if eng=='rachel2':
+        _w=os.path.join(os.path.dirname(os.path.abspath(__file__)),'nano_double','double.bin')
+        if not _rachel_cpp_paths() or not os.path.exists(_w):
+            return '더블 레이첼 가중치(nano_double/double.bin) 또는 C++ 실행파일이 없습니다 — 규칙 파서로 동작합니다'
+        if _rachel_scene() is None:
+            return '더블 레이첼 선택됨 — 단, 번호 있는 도킹과 펜을 먼저 배치해야 동작합니다'
+        return f"AI 모델: {_LLM_ENGINES[eng]} · 팔 {' · '.join(f'{k}={v}' for k,v in arms_cfg().items())}"
+    if eng=='rachel_py':
+        if not _rachel_load():
+            return f"RACHEL 로드 실패: {RACHEL_ST['err'][:80]} — 규칙 파서로 동작합니다"
+        if _rachel_scene() is None:
+            return 'RACHEL 선택됨 — 단, 번호 있는 도킹과 펜을 먼저 배치해야 동작합니다'
+    if eng=='gemma' and not LLM_CFG.get('url'):
+        return 'Gemma 선택됨 — Spark 연결이 아직 없어 붙는 대로 사용됩니다'
+    return f'AI 모델: {_LLM_ENGINES[eng]}'
+
 def _llm_parse(t):
-    """Spark LLM 에게 문장 해석을 맡긴다. 미설정/실패면 None (규칙 파서로).
+    """문장 해석. engine 설정에 따라 RACHEL(내장)/Gemma(Spark)/규칙으로 간다.
+    Spark LLM 에게 문장 해석을 맡긴다. 미설정/실패면 None (규칙 파서로).
 
     ★ 끊겼다 살아나면 다시 잡는다 ★
       예전에는 앱이 켜질 때 딱 한 번만 찾았다. 그래서 그때 Spark 터널이
       죽어 있으면 그 뒤로 영영 규칙 파서만 썼다(터널을 되살려도 소용없음).
       -> 주소가 없거나 연결이 끊겼으면 30초마다 다시 찾아본다."""
+    eng=LLM_CFG.get('engine','auto')
+    if eng=='rule':   return None            # AI 끄기 — 규칙 파서만
+    if eng in ('rachel','rachel_py'): return _rachel_parse(t)
+    if eng=='rachel2': return _rachel2_parse(t)
     url=LLM_CFG.get('url')
     if not url:
         now=time.time()
@@ -8365,7 +10370,10 @@ def _llm_parse(t):
             try: _llm_autodetect()
             except Exception: pass
             url=LLM_CFG.get('url')
-        if not url: return None
+        if not url:
+            # ★ Spark 가 없으면 '자동' 은 내장 더블 레이첼로 (11-04) ★ 라떼판다엔 Spark 가 없어 '자동' 이 늘 규칙 파서였다
+            #   ('비팔로 … 옮겼다가 다시 …' 에서 B팔·둘째 목적지가 빠짐). 더블 레이첼도 못 쓰면 None -> 규칙 파서.
+            return _rachel2_parse(t) if eng=='auto' else None
     import json as _json, urllib.request as _rq
     def _pen_where(b):
         p=BRICKS[b].get('pos')
@@ -8638,13 +10646,15 @@ def add_plate(tile):
     ix,iy=tile
     mid=f"plate_tile_{ix}_{iy}"
     k=2; base=mid
-    while mid in MESH_REG: mid=f"{base}_{k}"; k+=1
+    _shown={e['id'] for e in ENV_SHOW}
+    # 화면에 없는 옛 등록(프리셋을 불러와 빠진 판)은 같은 이름을 다시 쓴다 — 불러올 때마다 _2, _3 … 로 늘지 않게 (11-04)
+    while mid in _shown or (mid in MESH_REG and MESH_REG[mid][0]!=PLATE_MESH_PATH): mid=f"{base}_{k}"; k+=1
     # 원본 플레이트 STL의 현재 원점 -> 목표 타일 원점으로 평행이동
     b=_plate_bounds_m(PLATE_MESH_PATH)
     tox,toy=tile_origin(tile)
     off=(tox-b[0][0], toy-b[0][1], 0.0)
     MESH_REG[mid]=(PLATE_MESH_PATH,0.001)
-    ENV_SHOW.append({'id':mid,'color':'#8f8f8f','visible':True,
+    ENV_SHOW.append({'id':mid,'color':plate_color(tile),'visible':True,
                      'tile':tile,'offset':off,'added':True})
     PLATES[tile]={'id':mid,'origin':(tox,toy),'added':True}
     with LOCK:                                  # 영구 저장 (재시작 유지)
@@ -8668,14 +10678,21 @@ def remove_plate(tile):
     _peg_layout_changed()
     return True
 
-# 부팅 시: 예전에 추가해 둔 플레이트 복원 (영구)
+# 부팅 시: 기본 바닥판 2×4 로 맞춘다 (사용자 11-03 — 실행하자마자 이 모양, 위 PLATE_LAYOUT)
+#   원본 STL 판(로봇 둘레 4장)은 그대로 두고 빈 칸만 복제로 채운다. 배치 밖의 예전 추가분은 저장 목록에서 뺀다.
+#   (예전: 저장해 둔 추가분을 그대로 되살렸다 → 좌우 4 × 앞뒤 2 회색 판이었다)
 try:
+    _pl_old=[tuple(t) for t in (S.get('plates_added') or [])]
+    with LOCK: S['plates_added']=[]
     _pl_n=0
-    for _t5 in list(S.get('plates_added') or []):
+    for _t5 in PLATE_LAYOUT:
         if add_plate(tuple(_t5)): _pl_n+=1
-    if _pl_n: print(f"플레이트 복원: 추가분 {_pl_n}장")
+    _pl_out=[t for t in PLATES if t not in set(PLATE_LAYOUT)]
+    print(f"기본 바닥판 2×4: 원본 {len(PLATES)-_pl_n}장 + 추가 {_pl_n}장"
+          +(f" (예전 추가분 {[t for t in _pl_old if t not in set(PLATE_LAYOUT)]} 뺌)" if set(_pl_old)-set(PLATE_LAYOUT) else '')
+          +(f" ★ 배치 밖 원본 판 {_pl_out}" if _pl_out else ''))
 except Exception as _e:
-    print('플레이트 복원 실패:',_e)
+    print('기본 바닥판 만들기 실패:',_e)
 
 VIEWER_HTML="""<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>body{margin:0;overflow:hidden;background:#303030}
@@ -8778,139 +10795,6 @@ const dl=new THREE.DirectionalLight(0xffffff,1.2); dl.position.set(1,2,1); scene
 // z-up(로봇) -> y-up(three.js)
 const world=new THREE.Group(); world.rotation.x=-Math.PI/2; scene.add(world);
 
-/* ================= 도색 시뮬레이션 =================
-   벽(캔버스 텍스처)에 스프레이를 쏴서 도료를 쌓는다.
-   서버가 '어디서 어느 방향으로 얼마나' 뿌렸는지 광선으로 주면,
-   여기서 벽과 교차시켜 그 자리에 색을 칠한다. */
-const PAINT={wall:null,ctx:null,tex:null,W:1024,H:768,
-             size:[2.0,1.4],           // 벽 실제 크기 (m) — 크게
-             // 주둥이 끝이 base 자세에서 (0.18,-1.06,1.00) 이고 -Y 로 뿌린다.
-             // 30cm 앞에 세운다 ('보통' 사거리 35cm 안, 팔을 뻗을 여유도 있음)
-             pos:[0.18,-1.36,1.00],    // 벽 중심 (로봇 좌표)
-             color:'#e6194b'};
-function makeWall(){
-  const cv=document.createElement('canvas');
-  cv.width=PAINT.W; cv.height=PAINT.H;
-  const cx=cv.getContext('2d');
-  cx.fillStyle='#f2f2f2'; cx.fillRect(0,0,cv.width,cv.height);
-  // 옅은 격자 (칠한 정도가 눈에 잘 보이게)
-  cx.strokeStyle='#e2e2e2'; cx.lineWidth=1;
-  for(let x=0;x<cv.width;x+=64){cx.beginPath();cx.moveTo(x,0);cx.lineTo(x,cv.height);cx.stroke();}
-  for(let y=0;y<cv.height;y+=64){cx.beginPath();cx.moveTo(0,y);cx.lineTo(cv.width,y);cx.stroke();}
-  const tex=new THREE.CanvasTexture(cv);
-  const g=new THREE.PlaneGeometry(PAINT.size[0],PAINT.size[1]);
-  const mesh=new THREE.Mesh(g,new THREE.MeshPhongMaterial(
-      {map:tex,side:THREE.DoubleSide,shininess:10}));
-  // 벽은 XZ 평면에 세운다 (로봇 정면). world 안이라 z-up 좌표.
-  mesh.rotation.x=Math.PI/2;
-  mesh.position.set(PAINT.pos[0],PAINT.pos[1],PAINT.pos[2]);
-  world.add(mesh);
-  PAINT.wall=mesh; PAINT.ctx=cx; PAINT.tex=tex;
-}
-makeWall();
-
-/* 분사 광선 하나를 벽에 칠한다 */
-const _pO=new THREE.Vector3(), _pD=new THREE.Vector3();
-function paintRay(o,d,ang,reach,amt){
-  if(!PAINT.wall)return;
-  _pO.set(o[0],o[1],o[2]); _pD.set(d[0],d[1],d[2]).normalize();
-  // 벽 평면: 법선 = world 의 -Y (mesh 를 x 로 90도 눕혔으므로)
-  const wy=PAINT.pos[1];
-  const t=(wy-_pO.y)/(_pD.y||1e-9);
-  if(t<0||t>reach)return;                     // 뒤쪽이거나 사거리 밖
-  const hx=_pO.x+_pD.x*t, hz=_pO.z+_pD.z*t;
-  // 벽 로컬 좌표 -> 캔버스 픽셀
-  const u=(hx-PAINT.pos[0])/PAINT.size[0]+0.5;
-  const v=0.5-(hz-PAINT.pos[2])/PAINT.size[1];
-  if(u<0||u>1||v<0||v>1)return;
-  const px=u*PAINT.W, py=v*PAINT.H;
-  // 퍼짐: 거리 * tan(각) -> 반지름(m) -> 픽셀
-  const rm=t*Math.tan(ang*Math.PI/180);
-  const rp=Math.max(2,rm/PAINT.size[0]*PAINT.W);
-  const cx=PAINT.ctx;
-  const g=cx.createRadialGradient(px,py,0,px,py,rp);
-  const a=Math.min(0.55,amt*0.9);             // 한 번에 쌓이는 진하기
-  g.addColorStop(0,   hexA(PAINT.color,a));
-  g.addColorStop(0.6, hexA(PAINT.color,a*0.5));
-  g.addColorStop(1,   hexA(PAINT.color,0));
-  cx.fillStyle=g;
-  cx.beginPath(); cx.arc(px,py,rp,0,Math.PI*2); cx.fill();
-  PAINT.tex.needsUpdate=true;
-}
-function hexA(hex,a){
-  const n=parseInt(hex.slice(1),16);
-  return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
-}
-function clearPaint(){
-  if(!PAINT.ctx)return;
-  const cx=PAINT.ctx;
-  cx.fillStyle='#f2f2f2'; cx.fillRect(0,0,PAINT.W,PAINT.H);
-  cx.strokeStyle='#e2e2e2'; cx.lineWidth=1;
-  for(let x=0;x<PAINT.W;x+=64){cx.beginPath();cx.moveTo(x,0);cx.lineTo(x,PAINT.H);cx.stroke();}
-  for(let y=0;y<PAINT.H;y+=64){cx.beginPath();cx.moveTo(0,y);cx.lineTo(PAINT.W,y);cx.stroke();}
-  PAINT.tex.needsUpdate=true;
-}
-/* 꼬깔(원뿔)은 뺐다 — 조준선이 '어디에 얼마나 퍼져 닿는지' 를
-   훨씬 정확히 보여주므로, 시야만 가렸다. */
-
-/* ===== 조준선 (레이저 포인터) =====
-   노즐에서 표면까지 선을 긋고, 닿는 자리에 고리를 그린다.
-   고리 크기 = 실제로 도료가 퍼질 범위. 뿌리기 전에 자세를 잡을 수 있다. */
-let laserOn=true;
-const laserLine=new THREE.Line(
-  new THREE.BufferGeometry().setFromPoints(
-    [new THREE.Vector3(),new THREE.Vector3()]),
-  new THREE.LineBasicMaterial({color:0xff3355,transparent:true,opacity:0.9}));
-laserLine.visible=false; world.add(laserLine);
-
-// 닿는 자리 고리 (안쪽 진한 원 + 바깥 퍼짐 테두리)
-const hitRing=new THREE.Mesh(
-  new THREE.RingGeometry(0.9,1.0,48),
-  new THREE.MeshBasicMaterial({color:0xff3355,transparent:true,opacity:0.95,
-                               side:THREE.DoubleSide,depthTest:false}));
-const hitCore=new THREE.Mesh(
-  new THREE.CircleGeometry(1,24),
-  new THREE.MeshBasicMaterial({color:0xff3355,transparent:true,opacity:0.35,
-                               side:THREE.DoubleSide,depthTest:false}));
-hitRing.renderOrder=999; hitCore.renderOrder=999;
-hitRing.visible=false; hitCore.visible=false;
-world.add(hitRing); world.add(hitCore);
-
-/* 조준선을 지금 자세에 맞춰 갱신한다.
-   서버가 광선(o,d)을 늘 보내주므로, 벽과 만나는 지점을 여기서 구한다. */
-function updateLaser(aim){
-  if(!aim||!laserOn||!PAINT.wall){
-    laserLine.visible=hitRing.visible=hitCore.visible=false; return;
-  }
-  const o=new THREE.Vector3(aim.o[0],aim.o[1],aim.o[2]);
-  const d=new THREE.Vector3(aim.d[0],aim.d[1],aim.d[2]).normalize();
-  const wy=PAINT.pos[1];                       // 벽 평면 (world -Y 법선)
-  const t=(wy-o.y)/(d.y||1e-9);
-  const far=Math.min(aim.reach,3.0);
-  const hit=(t>0&&t<=aim.reach);
-  const L=hit?t:far;
-  const end=o.clone().add(d.clone().multiplyScalar(L));
-  laserLine.geometry.setFromPoints([o,end]);
-  laserLine.geometry.attributes.position.needsUpdate=true;
-  // 사거리 안이면 빨강, 밖이면(너무 멀다) 회색
-  laserLine.material.color.setHex(hit?0xff3355:0x888888);
-  laserLine.visible=true;
-
-  if(!hit){ hitRing.visible=hitCore.visible=false; return; }
-  // 벽 밖으로 벗어나면 고리를 숨긴다
-  const u=(end.x-PAINT.pos[0])/PAINT.size[0]+0.5;
-  const v=0.5-(end.z-PAINT.pos[2])/PAINT.size[1];
-  if(u<0||u>1||v<0||v>1){ hitRing.visible=hitCore.visible=false; return; }
-  const rm=Math.max(0.004,t*Math.tan(aim.ang*Math.PI/180));   // 퍼짐 반지름(m)
-  for(const mh of [hitRing,hitCore]){
-    mh.position.copy(end).add(d.clone().multiplyScalar(-0.002)); // 벽에 묻히지 않게
-    mh.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),
-                                     new THREE.Vector3(0,-1,0)); // 벽 법선
-    mh.scale.set(rm,rm,1);
-    mh.visible=true;
-  }
-  hitCore.scale.set(rm*0.18,rm*0.18,1);        // 한가운데 점
-}
 const grid=new THREE.GridHelper(2,20,0x666666,0x444444); scene.add(grid);
 
 // ---- 좌표축 (base_link 원점, 월드 고정) : x=빨강 y=초록 z=파랑 ----
@@ -8954,7 +10838,117 @@ toolMark.add(new THREE.Mesh(new THREE.SphereGeometry(0.006,16,12),
   new THREE.MeshBasicMaterial({color:0xff00cc,depthTest:false})));
 toolMark.add(makeAxes(0.05,2));
 toolMark.visible=false; world.add(toolMark);
+// ---- 카메라 동기화: 녹화 영상의 카메라 위치(주황) + 판 테두리(빨강) + 판 가운데→카메라 선(하늘) ----
+//   1인칭이면 이 장면을 카메라 눈으로 그리고, 실제 영상을 배경으로 깐다.
+//   앱의 로봇·도킹이 영상 속 실물 위에 겹치면 디지털 트윈이 맞는 것.
+const camSync={st:null,fp:false,k:-1,tex:null,loading:false,saved:null,bg0:null};
+camSync.vscene=new THREE.Scene();      // '영상만' 보기용 빈 장면 (배경 = 영상)
+camSync.zoom=1;                        // 1인칭 '트윈만' 보기의 확대 배율 (휠). 영상이 켜진 보기에선 늘 1
+ren.domElement.addEventListener('wheel',ev=>{
+  if(!camSync.fp||!camSync.st||camSync.st.view!=='twin')return;   // 영상이 보이면 확대 금지 (영상과 3D 가 어긋난다)
+  ev.preventDefault(); ev.stopPropagation();
+  camSync.zoom=Math.min(6,Math.max(0.25,camSync.zoom*(ev.deltaY<0?1.1:1/1.1)));
+},{passive:false,capture:true});
+camSync.grp=new THREE.Group(); camSync.grp.visible=false; world.add(camSync.grp);
+camSync.edgeGrp=new THREE.Group(); camSync.edgeGrp.visible=false; world.add(camSync.edgeGrp);
+camSync.dot=new THREE.Mesh(new THREE.SphereGeometry(0.012,16,12),
+  new THREE.MeshBasicMaterial({color:0xff8800}));
+camSync.grp.add(camSync.dot);
+function _csLines(color,grp){
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(new Float32Array(3*32),3));
+  const l=new THREE.LineSegments(g,new THREE.LineBasicMaterial({color:color}));
+  l.frustumCulled=false; grp.add(l); return l;
+}
+camSync.frus=_csLines(0xff8800,camSync.grp);
+camSync.ray=_csLines(0x33ccff,camSync.grp);
+camSync.edge=_csLines(0xff3333,camSync.edgeGrp);
+// 카메라가 읽은 물건: 바닥에 고리 (로봇 = 자홍 큰 고리, 도킹 = 그 색 고리)
+camSync.rings=[];
+for(let i=0;i<12;i++){
+  const pts=[];for(let a=0;a<=32;a++)pts.push(new THREE.Vector3(Math.cos(a/32*Math.PI*2),Math.sin(a/32*Math.PI*2),0));
+  const r=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:0xffffff,depthTest:false}));
+  r.visible=false; r.renderOrder=5; camSync.edgeGrp.add(r); camSync.rings.push(r);
+}
+function _csSet(l,pts){
+  const a=l.geometry.attributes.position;
+  for(let i=0;i<pts.length&&i<a.count;i++){a.array[i*3]=pts[i][0];a.array[i*3+1]=pts[i][1];a.array[i*3+2]=pts[i][2];}
+  a.needsUpdate=true; l.geometry.setDrawRange(0,Math.min(pts.length,a.count));
+}
+const _csLoader=new THREE.TextureLoader();
+function camSyncUpdate(cs){
+  camSync.st=cs||null;
+  if(!cs||!cs.on){camSync.grp.visible=false;camSync.edgeGrp.visible=false;camSyncFp(false);return;}
+  camSync.edgeGrp.visible=true;
+  const objs=cs.objs||[];
+  camSync.rings.forEach((r,i)=>{const o=objs[i]; r.visible=!!o; if(!o)return;
+    const rad=o.kind==='robot'?0.07:0.045;
+    r.scale.set(rad,rad,1); r.position.set(o.xy[0],o.xy[1],(cs.center[2]||0.02)+0.003);
+    r.material.color.set(o.kind==='robot'?0xff00ff:(o.hex||'#ffffff'));});
+  const c=cs.corners; _csSet(camSync.edge,[c[0],c[1],c[1],c[2],c[2],c[3],c[3],c[0]]);
+  if(cs.pos){
+    const P=cs.pos, R=cs.R, ctr=cs.center;
+    camSync.dot.position.set(P[0],P[1],P[2]);
+    // 보는 범위 사각뿔 (카메라 축: x 오른쪽, y 아래, z 앞)
+    const tv=Math.tan(cs.fovy*Math.PI/360), th=tv*cs.aspect, d=0.08, q=[];
+    for(const [u,v] of [[-th,-tv],[th,-tv],[th,tv],[-th,tv]]){
+      q.push([P[0]+d*(R[0]*u+R[1]*v+R[2]),P[1]+d*(R[3]*u+R[4]*v+R[5]),P[2]+d*(R[6]*u+R[7]*v+R[8])]);}
+    _csSet(camSync.frus,[P,q[0],P,q[1],P,q[2],P,q[3],q[0],q[1],q[1],q[2],q[2],q[3],q[3],q[0]]);
+    const e=[ctr[0]+(P[0]-ctr[0])*1.25,ctr[1]+(P[1]-ctr[1])*1.25,ctr[2]+(P[2]-ctr[2])*1.25];
+    _csSet(camSync.ray,[ctr,e]);
+  }
+  camSync.grp.visible=!!cs.pos&&!cs.fp;            // 1인칭에선 자기 몸(카메라 표시)은 숨긴다
+  if(!!cs.fp!==camSync.fp)camSyncFp(!!cs.fp);
+  if(camSync.fp&&cs.view==='twin'&&scene.background!==camSync.bg0)scene.background=camSync.bg0;
+  if(camSync.fp&&cs.view!=='twin'&&camSync.tex&&scene.background!==camSync.tex)scene.background=camSync.tex;
+  if(camSync.fp&&cs.k!==camSync.k&&!camSync.loading){   // 배경 = 지금 프레임
+    camSync.loading=true; const k=cs.k;
+    _csLoader.load(`/camframe/${k}?t=${Date.now()}`,t=>{
+      t.colorSpace=THREE.SRGBColorSpace;
+      if(camSync.fp){ if(camSync.tex)camSync.tex.dispose(); camSync.tex=t;
+        scene.background=(camSync.st&&camSync.st.view==='twin')?camSync.bg0:t; camSync.vscene.background=t; }
+      else t.dispose();
+      camSync.k=k; camSync.loading=false;
+    },undefined,()=>{camSync.loading=false;});
+  }
+}
+function camSyncFp(on){
+  if(on&&!camSync.fp){
+    camSync.saved={p:cam.position.clone(),t:ctl.target.clone(),fov:cam.fov};
+    camSync.bg0=scene.background; ctl.enabled=false; camSync.fp=true; camSync.k=-1;
+  }else if(!on&&camSync.fp){
+    cam.position.copy(camSync.saved.p); ctl.target.copy(camSync.saved.t);
+    cam.fov=camSync.saved.fov; cam.aspect=innerWidth/innerHeight; cam.updateProjectionMatrix();
+    scene.background=camSync.bg0; if(camSync.tex){camSync.tex.dispose();camSync.tex=null;}
+    ctl.enabled=true; camSync.fp=false; camSync.zoom=1;
+    ren.setScissorTest(false); ren.setViewport(0,0,innerWidth,innerHeight);
+  }
+}
+function camSyncRender(){
+  const cs=camSync.st;
+  if(cs&&cs.pos){
+    // 카메라(OpenCV 축, z-up 월드) -> three.js 카메라 (y-up, -z 를 본다). world 그룹은 x 축 -90도 회전.
+    const R=cs.R, M=v=>new THREE.Vector3(v[0],v[2],-v[1]);
+    const X=M([R[0],R[3],R[6]]), Y=M([R[1],R[4],R[7]]).negate(), Z=M([R[2],R[5],R[8]]).negate();
+    cam.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(X,Y,Z));
+    cam.position.copy(M(cs.pos));
+    // 트윈만 보기: 카메라 자리에서 시야각만 좁히고 넓힌다 (망원처럼). 영상이 보이면 배율 1 = 영상과 같은 시야
+    const z=(cs.view==='twin')?camSync.zoom:1;
+    cam.fov=2*Math.atan(Math.tan(cs.fovy*Math.PI/360)/z)*180/Math.PI;
+    cam.aspect=cs.aspect; cam.updateProjectionMatrix();
+  }
+  // 영상 비율 그대로 가운데에 (남는 곳은 검정) — 비율이 다르면 배경과 3D 가 어긋난다
+  const W=innerWidth,H=innerHeight,a=(cs&&cs.aspect)||16/9;
+  let w=W,h=W/a; if(h>H){h=H;w=H*a;}
+  const x=(W-w)/2,y=(H-h)/2;
+  ren.setScissorTest(false); ren.setViewport(0,0,W,H);
+  const bg=scene.background; scene.background=null; ren.setClearColor(0x000000,1); ren.clear(); scene.background=bg;
+  ren.setScissorTest(true); ren.setScissor(x,y,w,h); ren.setViewport(x,y,w,h);
+  ren.render((cs&&cs.view==='video')?camSync.vscene:scene,cam);   // '영상만' 이면 3D 없이 영상만
+  ren.setScissorTest(false); ren.setViewport(0,0,W,H);
+}
 const loader=new STLLoader(); const objs={}; window._objsDbg=objs;
+const robotIds=new Set();   // 로봇 링크 메쉬 id (우클릭에서 팔을 알아본다, 11-03)
 let ROBGEN=null;                 // 로봇 교체 세대. 바뀌면 STL 을 새로 받는다
 function dropRobotMeshes(ids){   // 예전 로봇 부품을 화면에서 치운다
   for(const id of ids){
@@ -8992,6 +10986,27 @@ const ghostMat=new THREE.MeshPhongMaterial({color:0x44ff88,transparent:true,
 const ghostMatHi=new THREE.MeshPhongMaterial({color:0x66ffaa,transparent:true,
   opacity:0.55,side:THREE.DoubleSide,depthWrite:false});
 let ghostMeshes=[];
+// ---- 보정 지도 (11-04) — 초록 보정됨 / 빨강 보정할 기준점 / 노랑 보간됨 / 회색 아직 ----
+const calGroup=new THREE.Group(); world.add(calGroup);
+let calMeshes=[];
+const CAL_COL={good:0x2299ff,ok:0x22cc55,odd:0xff8800,need:0xff3344,fill:0xffcc22,none:0x8a8f99,far:0xb066ff};
+function buildCalpts(list){
+  const key=JSON.stringify(list);
+  if(calGroup.userData.key===key) return;
+  calGroup.userData.key=key;
+  calGroup.clear(); calMeshes=[];
+  if(!list) return;
+  for(const c of list){
+    const r=(c.kind==='good'||c.kind==='odd')?0.0075:(c.base?0.0065:(c.rot?0.0026:0.0042));   // 성공·튀는점 > 기준점 > 0° 자리 > 회전 자리
+    const geo=new THREE.CylinderGeometry(r,r,0.004,20);
+    const m=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({color:CAL_COL[c.kind]||0xffffff,
+      transparent:true,opacity:c.kind==='none'?0.55:0.95}));
+    m.rotation.x=Math.PI/2;                          // world 는 z 가 위
+    m.position.set(c.x,c.y,c.z+0.004);
+    m.userData.cal=c;
+    calGroup.add(m); calMeshes.push(m);
+  }
+}
 function buildGhosts(list,psize){
   const key=JSON.stringify(list.map(g=>g.tile));
   if(ghostGroup.userData.key===key) return;
@@ -9113,6 +11128,16 @@ ren.domElement.addEventListener('click',async ev=>{
        처음부터 다시 끌어다 놓아야 했다.
        배치는 '끝났을 때' 스스로 꺼지고, 그 전에는 ESC 나 우클릭으로만 끈다. */
     if(rmPins.length)return;
+    if(calMeshes.length){                       // 보정 지도 점 (11-04)
+      const hc=ray.intersectObjects(calMeshes,false);
+      if(hc.length){
+        const c=hc[0].object.userData.cal;
+        const j=await (await fetch('/calpt/'+c.x+','+c.y)).json();
+        if(window.parent!==window)
+          window.parent.postMessage({calpose:j.name||null,armmsg:j.msg||''},'*');
+        calGroup.userData.key=null; return;
+      }
+    }
   }
   if(pegHover){                            // 목심 선택 (도달 가능한 것만)
     if(!pegHover.userData.ok) return;      // 빨강은 클릭 무시
@@ -9181,12 +11206,11 @@ ren.domElement.addEventListener('contextmenu',ev=>{
   ray.setFromCamera(mouse,cam);
   const picks=[],ids=[];
   for(const id in objs){const o=objs[id];
-    if(o.env&&!o.plate&&o.mesh&&o.mesh.visible){picks.push(o.mesh);ids.push(id);}}
+    if(((o.env&&!o.plate)||robotIds.has(id))&&o.mesh&&o.mesh.visible){picks.push(o.mesh);ids.push(id);}}
   const h=ray.intersectObjects(picks,false);
   if(!h.length)return;                 // 빈 곳 우클릭은 브라우저 기본 메뉴
   ev.preventDefault();
   const id=ids[picks.indexOf(h[0].object)];
-  selEnvSet(id);                       // 우클릭한 대상도 '선택된 느낌'
   ctxMenu.innerHTML='';
   const mk=(txt,fn)=>{const b=document.createElement('div');
     b.textContent=txt;
@@ -9195,6 +11219,17 @@ ren.domElement.addEventListener('contextmenu',ev=>{
     b.onmouseleave=()=>b.style.background='';
     b.onclick=e=>{e.stopPropagation();hideCtx();fn();};
     ctxMenu.appendChild(b);};
+  if(robotIds.has(id)){                // 로봇 팔 우클릭 (11-03): 그 팔 위치 옮기기 ('B~l3' = B팔, 'l3' = A팔)
+    const L=id.includes('~')?id.split('~')[0]:'A';
+    mk(`📍 ${L}팔 위치 옮기기 (핀 배치)`,async()=>{
+      const j=await (await fetch('/armmv/'+encodeURIComponent(L))).json();
+      if(window.parent!==window)window.parent.postMessage({armmsg:j.msg},'*');
+      rmGroup.userData.key=null;});
+    ctxMenu.style.left=ev.clientX+'px';ctxMenu.style.top=ev.clientY+'px';
+    ctxMenu.style.display='block';
+    return;
+  }
+  selEnvSet(id);                       // 우클릭한 대상도 '선택된 느낌'
   if(!objs[id].brick)                 // 물체는 핀이 없어 이동 메뉴 제외
     mk('📍 이동 (핀 배치)',()=>fetch('/envmv/'+encodeURIComponent(id)));
   mk('🗑 삭제',()=>fetch('/envdel/'+encodeURIComponent(id)));
@@ -9349,6 +11384,19 @@ addEventListener('message',ev=>{
   }
 });
 
+/* 📱 지금 움직이는 블록의 예상 경로 — 반투명 관 (서버 st.path, 블록이 끝나면 비워진다) */
+let pathObj=null, pathKey='';
+function drawPath(pts){
+  const k=JSON.stringify(pts||null); if(k===pathKey)return; pathKey=k;
+  if(pathObj){ world.remove(pathObj); pathObj.geometry.dispose(); pathObj.material.dispose(); pathObj=null; }
+  if(!pts||pts.length<2)return;
+  const v=pts.map(p=>new THREE.Vector3(p[0],p[1],p[2])), cp=new THREE.CurvePath();
+  for(let i=0;i+1<v.length;i++) if(v[i].distanceTo(v[i+1])>1e-4) cp.add(new THREE.LineCurve3(v[i],v[i+1]));
+  if(!cp.curves.length)return;
+  const g=new THREE.TubeGeometry(cp, 24*cp.curves.length, 0.006, 10, false);
+  const m=new THREE.MeshBasicMaterial({color:0x22d3ee, transparent:true, opacity:0.35, depthWrite:false});
+  pathObj=new THREE.Mesh(g,m); pathObj.renderOrder=5; world.add(pathObj);
+}
 async function poll(){
   try{
     const st=await (await fetch('/state')).json();
@@ -9356,22 +11404,10 @@ async function poll(){
       dropRobotMeshes(Object.keys(objs).filter(k=>!(st.env||[]).some(e=>e.id===k)));
     }
     if(st.gen!==undefined)ROBGEN=st.gen;
-    /* 도색: 서버가 준 분사 광선을 벽에 칠한다 */
-    if(st.sprays&&st.sprays.length){
-      for(const h of st.sprays)paintRay(h.o,h.d,h.ang,h.reach,h.amt);
-    }
-    if(st.spray){
-      if(st.spray.clear){clearPaint();}
-      if(st.spray.laser!==undefined)laserOn=!!st.spray.laser;
-      // 조준선: 분사 중이 아니어도 늘 보여준다 (어디에 뿌려질지 미리 보기)
-      updateLaser(st.spray.aim);
-      // 분사 중에는 조준선을 굵고 진하게 (뿜는 중이 눈에 띄게)
-      laserLine.material.opacity=st.spray.on?1.0:0.45;
-      hitRing.material.opacity  =st.spray.on?1.0:0.6;
-      hitCore.material.opacity  =st.spray.on?0.5:0.2;
-    }
     const skipLinks=(performance.now()-joyLive)<400;   // 즉시 경로 우선
-    for(const l of st.links){ ensure(l.id,l.color,1.0,st.gen);
+    for(const l of st.links){ ensure(l.id,l.color,1.0,st.gen); robotIds.add(l.id);
+      const _lo=objs[l.id];                      // 두 팔 모드: 팔 색이 바뀌면 다시 칠한다 (10-30)
+      if(_lo&&_lo.mesh&&_lo.col!==l.color){_lo.col=l.color;_lo.mesh.material.color.set(l.color);}
       if(!skipLinks)setTarget(l.id,l.m); }
     const alive=new Set();
     for(const e of st.env){ ensure(e.id,e.color,e.scale); alive.add(e.id);
@@ -9400,6 +11436,7 @@ async function poll(){
     }
     window._snapPts=st.snaps||[];        // 물체 드래그용 자석 지점 (빈 도킹)
     buildGhosts(st.ghosts||[],st.psize||0.2);
+    buildCalpts(st.calpts||null);
     buildPegs(st.pegs||[],st.ptop||0.02);
     buildRMove(st.rmove||null);
     if(st.pegsel!==pegSelName){          // 서버(드롭다운)에서 바뀐 선택 반영
@@ -9412,6 +11449,8 @@ async function poll(){
       toolMark.position.set(st.toolxyz[0],st.toolxyz[1],st.toolxyz[2]); }
     else toolMark.visible=false;
     document.title=(st.tool?('툴 '+st.tool):('EE '+st.ee));
+    camSyncUpdate(st.camsync);
+    try{ drawPath(st.path); }catch(e){}
   }catch(err){}
   /* ★ 화면 그리는 박자에 맞춰 다음 폴링을 잡는다 ★
      예전에는 setTimeout(25ms) 로 화면(16.7ms)과 따로 돌았다. 두 주기가
@@ -9492,8 +11531,8 @@ const _dInv=new THREE.Matrix4(), _dro=new THREE.Vector3(), _drd=new THREE.Vector
     o.mesh.matrix.compose(o.cp,o.cq,_ss);
     o.mesh.visible=(o.vis!==false);
   }
-  ctl.update();
-  if(VR.on) vrRender(); else ren.render(scene,cam);
+  if(!camSync.fp) ctl.update();
+  if(camSync.fp) camSyncRender(); else if(VR.on) vrRender(); else ren.render(scene,cam);
 })(performance.now());
 </script></body></html>"""
 
@@ -9512,6 +11551,424 @@ def _pin_centroid(oid):
     except Exception:
         _PINC[oid]=None
     return _PINC[oid]
+# ===== 카메라 동기화 (cam_grid/camsync.py) =====
+#   녹화 영상에서 구한 카메라 위치를 3D 뷰어에 띄우고, 1인칭(카메라 눈) 시점을 준다.
+#   영상 속 판 가운데를 앱 바닥판들의 가운데에 맞춘다. 판 무늬가 대칭이라 회전은
+#   사용자가 1인칭에서 로봇·도킹이 실물과 겹치게 고른다 (h_cam_ctl('rot')).
+_CAMSYNC=[None]
+# ★ 카메라 동기화 끔 (2026-10-20, 사용자: '아직은 안 쓸 거야') ★
+#   True 로 바꾸면 그대로 다시 켜진다. 끄면 모듈을 안 불러오고, 자동 반영 스레드도 안 뜨고,
+#   /state 의 camsync 는 None 이라 뷰어도 아무것도 안 그린다.
+CAM_ENABLED=False
+def _camsync():
+    if not CAM_ENABLED: return None
+    if _CAMSYNC[0] is None:
+        try:
+            _d=os.path.join(os.path.dirname(os.path.abspath(__file__)),'cam_grid')
+            if _d not in sys.path: sys.path.insert(0,_d)
+            import camsync as _cs
+            _CAMSYNC[0]=_cs.SYNC
+        except Exception as _e:
+            print('[카메라 동기화] 모듈을 못 불러왔습니다:',_e); _CAMSYNC[0]=False
+    return _CAMSYNC[0] or None
+def _plates_t0():
+    """앱 바닥판 중 왼쪽 아래 타일."""
+    ts=list(PLATES.keys())
+    return (min(t[0] for t in ts),min(t[1] for t in ts)) if ts else (0,0)
+def _plates_origin():
+    """영상 판의 첫 목심을 맞출 자리 = 왼쪽 아래 바닥판의 첫 목심 (타일 안 10mm)."""
+    ox,oy=tile_origin(_plates_t0())
+    return (ox+PEG_PITCH/2,oy+PEG_PITCH/2)
+# ---- 📱 휴대폰 실시간 카메라 (2026-10-22) ----
+#   녹화 영상용 카메라 동기화(CAM_ENABLED) 와 따로 돈다. 휴대폰이 프레임을 보내는 동안만 켜진다.
+#   지금 단계: 카메라 위치·시야를 트윈에 보인다 (배치는 아직 건드리지 않는다).
+_LIVE=[None]
+def _livecam():
+    if _LIVE[0] is None:
+        try:
+            _d=os.path.join(os.path.dirname(os.path.abspath(__file__)),'cam_grid')
+            if _d not in sys.path: sys.path.insert(0,_d)
+            import livecam as _lc
+            _LIVE[0]=_lc.LIVE
+            if LIVE_APPLY['thread'] is None:
+                LIVE_APPLY['thread']=threading.Thread(target=_live_apply_loop,daemon=True)
+                LIVE_APPLY['thread'].start()
+        except Exception as _e:
+            print('[휴대폰 카메라] 모듈을 못 불러왔습니다:',_e); _LIVE[0]=False
+    return _LIVE[0] or None
+def h_live_ctl(cmd):
+    lv=_livecam()
+    if not lv: return '휴대폰 카메라 모듈이 없습니다'
+    cmd=str(cmd)
+    if cmd=='apply':                            # 자동 반영 켜기/끄기
+        LIVE_APPLY['on']=not LIVE_APPLY['on']
+        return f"자동 반영 {'켬' if LIVE_APPLY['on'] else '끔'} | "+h_live_status()
+    if cmd in ('reg','reset'):                  # 판 맞춤 다시
+        LIVE_APPLY['reg']=None; LIVE_TRACKS.clear()
+        if cmd=='reg': lv.reg=None; return '판을 로봇 받침으로 다시 맞춥니다 | '+h_live_status()
+    if cmd in ('rot','x+','x-','y+','y-'):      # 손으로 맞추면 자동 맞춤을 끈다
+        LIVE_APPLY['reg']='manual'
+    return lv.ctl(cmd)
+def h_live_status():
+    lv=_livecam()
+    if not lv: return '휴대폰 카메라 모듈이 없습니다'
+    s=lv.summary()
+    if lv.live():
+        r=LIVE_APPLY.get('reg')
+        s+=(' | 판 맞춤: '+('손으로' if r=='manual' else ('로봇 받침 기준' if r else '로봇 받침 찾는 중')))
+        s+=f" | 자동 반영 {'켬' if LIVE_APPLY['on'] else '끔'}"
+        if LIVE_APPLY.get('last'): s+=' | '+LIVE_APPLY['last']
+    return s
+
+# ---- 📱 휴대폰 카메라 -> 앱 반영 (2026-10-22) ----
+#   ★ 바닥판은 안 바뀐다 (기준) · 로봇·도킹은 움직일 수 있다 (사용자, 10-26) ★ 로봇은 꾸준히 다른 자리에서 보일 때만,
+#     실행 중이 아닐 때만 옮긴다 (set_robot_pose = 매크로 상태 저장, calib 는 안 건드림).
+#   ★ 도킹은 지우지 않고 숨긴다 ★ 블록이 '#10 도킹' 처럼 이름으로 가리키므로, 지웠다 다시 만들면
+#     이름이 바뀌어 블록이 끊긴다. 다시 보이면 같은 도킹을 다시 보이게 해서 옮긴다.
+#   판 맞춤: 카메라가 찾은 로봇 받침 자리 = 앱의 로봇 받침 자리, 방향(90°×k) 은 앱 바닥판이
+#     영상 판 안에 가장 많이 들어가는 쪽, 마지막에 타일 경계(200mm)에 끌어당긴다.
+LIVE_APPLY={'on':True,'reg':None,'last':'','thread':None}
+LIVE_TRACKS=[]                 # [{'xy','votes','oid','gone'}]
+LIVE_FREE_CNT={}               # 도킹 id -> 연속 '비어 보임' 횟수
+LIVE_ROBOT={'hits':[]}         # 앱과 다른 자리에서 본 로봇 받침 (연속 3번 같은 자리면 옮긴다)
+LIVE_ROBOT_SECS=2.0            # 그 다른 자리가 이만큼(초) 넘게 이어져야
+LIVE_ROBOT_TOL=0.09            # 이보다 멀어야 '옮겨짐' (실측: 안 옮겼을 때 받침 인식 차이 50~67mm 라 그보다 크게)
+LIVE_DOCK_MIN_CELLS=4          # 다리 4개가 다 보여야 도킹 (10-22: 바닥색 차이 판정은 늘 4 를 보고한다 — 7 이면 하나도 안 들어갔다)
+
+def _rz3(k):
+    a=k*math.pi/2; c,s=round(math.cos(a)),round(math.sin(a))
+    return np.array([[c,-s,0],[s,c,0],[0,0,1.0]])
+
+def _live_register(lay):
+    """판(창 좌표, m) -> 앱 월드 (R, t).
+    ★ 바닥판 = 고정 2×4 (PLATE_LAYOUT, 사용자 11-03) ★ 카메라 판 창(목심 20×40) = 앱 바닥판 8장 전체.
+      2×4 체크무늬는 180° 돌려도 똑같아 보이므로, 두 방향 중 '앱에 지금 있는 로봇·도킹 자리' 와 더 맞는 쪽 (= 이전 자리 유지).
+      판 8장의 양 끝 줄이 다 보여야(창 = 판) 하고, 방향을 가를 로봇·도킹이 하나도 안 보이면 기다린다.
+      (예전 3×3 판: 4방향 × 타일 이동을 따지고 모자란 앱 판을 더했다 — 이제 판은 늘 그 8장)
+      계산은 cam_grid/plate_fit.py (앱 없이 시험할 수 있게)."""
+    if not lay: return None
+    import plate_fit as _pf                      # cam_grid 는 _livecam() 이 이미 경로에 넣었다
+    fw=l2w(np.array([*_cam_robot_foot_local(),0.0]))
+    tq=tool_pos([0.0]*NJOINT)                  # 로봇 팔이 뻗는 방향 (기본 자세의 툴 - 받침)
+    fwd=np.array([tq[0]-fw[0],tq[1]-fw[1]]); fwd=fwd/(np.linalg.norm(fwd)+1e-9)
+    app_docks=[xy for xy in (_cam_dock_xy(o) for o in docking_ids() if '#' in o
+                             and (_env_ent(o) or {}).get('visible',True)) if xy]
+    r=_pf.fit(lay,PLATE_LAYOUT,tile_origin,PEG_PITCH,PLATE_SIZE,PLATE_TOP,(fw[0],fw[1]),fwd,app_docks)
+    if r: r['cover']=len(PLATES)
+    return r
+
+def _live_board_to_world(reg,ab):
+    return reg['R']@np.array([ab[0]*PEG_PITCH,ab[1]*PEG_PITCH,0.0])+reg['t']
+
+def _live_free(lay,reg,xy,r=1):
+    """앱 월드 (x,y) 자리가 카메라에 '또렷이 비어' 보이는가."""
+    fr=lay.get('free')
+    if fr is None: return False
+    b=reg['R'].T@(np.array([xy[0],xy[1],reg['t'][2]])-reg['t'])
+    a0,b0=int(round(b[0]/PEG_PITCH)),int(round(b[1]/PEG_PITCH))
+    ni,nj=np.asarray(fr).shape[:2]              # 판 칸 수 (2×4 판 = 20×40)
+    cells=[(a0+i,b0+j) for i in range(-r,r+1) for j in range(-r,r+1) if 0<=a0+i<ni and 0<=b0+j<nj]
+    return bool(cells) and sum(bool(fr[c]) for c in cells)>=0.6*len(cells)
+
+def _live_set_visible(oid,v):
+    e=_env_ent(oid)
+    if e is None or bool(e.get('visible',True))==bool(v): return False
+    e['visible']=bool(v)
+    with LOCK: S.setdefault('env_vis',{})[oid]=bool(v)
+    _OBS['grid']=None; _clear_plan_cache(); _macro_save()
+    return True
+
+def _live_apply_once(lv):
+    lay=lv.layout()
+    if not lay: return
+    msgs=[]
+    reg=LIVE_APPLY.get('reg')
+    if reg=='manual': return                  # 손으로 맞추는 중엔 배치를 건드리지 않는다
+    # ★ 바닥판은 안 바뀐다 — 한 번 맞추면 유지 (사용자, 10-26) ★
+    #   같은 판(Board) 에서 창만 옮겨졌으면 맞춤을 정확히 그만큼 옮긴다 (칸 번호는 이어진다).
+    #   판을 처음부터 다시 잡았거나 거울상이 바뀐 때만 다시 맞춘다 — 그때도 앱의 이전 자리와 가장 맞는 방향으로.
+    if reg is not None and (reg.get('board_id')!=lay.get('board_id') or reg.get('mirror')!=lay.get('mirror')
+                            or reg.get('cont')!=lay.get('cont')):
+        reg=None; LIVE_APPLY['reg']=None; lv.reg=None
+    if reg is not None and reg.get('win')!=lay.get('win') and lay.get('win') and reg.get('win'):
+        di=lay['win'][0]-reg['win'][0]; dj=lay['win'][1]-reg['win'][1]
+        d=np.array([di,-dj if lay.get('mirror') else dj,0.0])*PEG_PITCH
+        reg['t']=reg['t']+reg['R']@d; reg['win']=tuple(lay['win']); lv.reg=(reg['R'],reg['t'])
+    if reg is None:
+        reg=_live_register(lay)
+        if reg is None:
+            LIVE_APPLY['last']='판을 맞추는 중 — 판 8장 전체와 로봇(또는 도킹)이 함께 보이게 비춰 주세요 (그동안 이전 자리 유지)'; return
+        reg.update(win=tuple(lay['win']) if lay.get('win') else None,board_id=lay.get('board_id'),
+                   mirror=lay.get('mirror'),cont=lay.get('cont'))
+        LIVE_APPLY['reg']=reg; lv.reg=(reg['R'],reg['t'])
+        msgs.append(f"판 맞춤: 앱 바닥판 2×4 기준 · {reg['k']*90}° · 이전 자리와 차이 {reg['cons']*1000:.0f}mm")
+    # 판 맞춤 증거: 도킹을 옮기기 '전' 앱 도킹 자리와 카메라 도킹이 4cm 안으로 맞는 게 하나라도 있나 (로봇 옮기기 조건)
+    app_dk=[xy for xy in (_cam_dock_xy(o) for o in docking_ids() if '#' in o
+                          and (_env_ent(o) or {}).get('visible',True)) if xy]
+    anchor=any(min((math.dist(xy,(w[0],w[1])) for xy in app_dk),default=1.0)<0.04
+               for w in (_live_board_to_world(reg,d['center']) for d in lay['dockings']))
+    # 바닥판은 더하지 않는다 — 늘 기본 2×4 (PLATE_LAYOUT, 11-03). 예전 3×3 판 시절엔 본 타일만큼 앱 판을 더했다.
+    # 도킹: 색이 같은 앱 도킹을 데려온다 (숨긴 것 포함). 없으면 숨긴 도킹 색을 바꿔 쓰고, 그것도 없으면 복제.
+    seen=set()
+    for d in lay['dockings']:
+        if d['n']<LIVE_DOCK_MIN_CELLS: continue
+        w=_live_board_to_world(reg,d['center']); xy=(float(w[0]),float(w[1]))
+        def _near(tr):
+            dd=math.dist(tr['xy'],xy); same=(max(tr['votes'],key=tr['votes'].get)==d['hex']) if tr['votes'] else False
+            return dd<=(0.16 if same else 0.06)
+        tr=min((t for t in LIVE_TRACKS if _near(t)),key=lambda t:math.dist(t['xy'],xy),default=None)
+        if tr is None:
+            tr={'xy':list(xy),'votes':{},'oid':None,'gone':0}; LIVE_TRACKS.append(tr)
+        tr['xy']=[0.7*tr['xy'][0]+0.3*xy[0],0.7*tr['xy'][1]+0.3*xy[1]]
+        tr['votes'][d['hex']]=tr['votes'].get(d['hex'],0)+1; tr['gone']=0
+        # 방향: 윗판 U 홈이 열린 쪽 (판 좌표 단위벡터) -> 앱 월드 yaw. 도킹 STL 의 홈은 로컬 -y 쪽이라
+        #   Rz(yaw)@(0,-1) = 홈 방향 -> yaw = atan2(dx,-dy). 90° 단위로 다수결.
+        if d.get('yaw'):
+            dw=reg['R'][:2,:2]@np.array(d['yaw']['dir'],float)
+            qk=int(round(math.degrees(math.atan2(dw[0],-dw[1]))/90.0))%4
+            yv=tr.setdefault('yawv',{})
+            for _k in yv: yv[_k]*=0.8                # 옛 판정은 서서히 잊는다 (도킹을 돌려 꽂으면 따라가게)
+            yv[qk]=yv.get(qk,0)+1
+        seen.add(id(tr))
+        col=max(tr['votes'],key=tr['votes'].get)
+        if tr['oid'] is None or _env_ent(tr['oid']) is None:
+            taken={t['oid'] for t in LIVE_TRACKS if t['oid']}
+            pool=[o for o in docking_ids() if '#' in o and o not in taken]
+            same=[o for o in pool if _snap_color((_names().get(o) or {}).get('color') or '')==col]
+            hidden=[o for o in pool if not (_env_ent(o) or {}).get('visible',True)]
+            if same:   tr['oid']=min(same,key=lambda o:math.dist(_cam_dock_xy(o) or (9,9),tr['xy']))
+            elif hidden: tr['oid']=hidden[0]
+            else:
+                # 복제할 원본: 화면에 없어도(공장 초기화 직후) 도킹 메쉬는 등록돼 있다
+                base=_cam_dock_base() or next((m for m in MESH_REG
+                                               if 'docking' in m.lower() and '#' not in m),None)
+                if base is None: continue
+                tr['oid']=env_clone(base)
+                if tr['oid'] is None: continue
+                msgs.append(f'도킹 추가 ({col})')
+        oid=tr['oid']
+        if _live_set_visible(oid,True): msgs.append(f'{disp_name(oid)} 다시 보임')
+        if _snap_color((_names().get(oid) or {}).get('color') or '')!=col:
+            set_name(oid,color=col); msgs.append(f'{disp_name(oid)} 색 -> {col}')
+        cur=_cam_dock_xy(oid)
+        turn=False
+        if tr.get('yawv'):
+            qk=max(tr['yawv'],key=tr['yawv'].get); want=qk*math.pi/2
+            e=_env_ent(oid)
+            if e is not None and abs((float(e.get('yaw',0.0))-want+math.pi)%(2*math.pi)-math.pi)>math.radians(5):
+                e['yaw']=want; turn=True             # move_env 가 이 yaw 로 가운데를 맞춰 저장한다
+        if turn or cur is None or math.dist(cur,tr['xy'])>0.03:
+            ok,_m=move_env(oid,tr['xy'][0],tr['xy'][1],snap=True)
+            if ok: msgs.append(f'{disp_name(oid)} '+(f'방향 {qk*90}°' if turn else '이동'))
+    # 로봇: 카메라가 본 받침 자리가 앱과 꾸준히 다르면(옮겨짐) 앱 로봇을 옮긴다 (사용자, 10-26: 로봇은 움직일 수 있다).
+    #   방향은 지금 값 그대로, 로봇 핀이 목심에 오게 20mm 격자로 맞춘다. 실행 중에는 절대 안 옮긴다.
+    #   안 보이면 아무것도 안 한다 = 이전 자리 유지.
+    #   ★ 판 맞춤이 맞다는 증거가 있어야 옮긴다 (10-26: 엉뚱한 받침 인식으로 로봇이 잘못 옮겨졌다) ★
+    #     도킹 하나 이상이 앱 자리와 4cm 안으로 맞고, 2초 넘게 같은 다른 자리에서 보여야 한다.
+    rb=lay.get('robot')
+    if rb is not None and anchor and LIVE_APPLY.get('robot',True) and not RUNNING.is_set():
+        w=_live_board_to_world(reg,rb)
+        fw=l2w(np.array([*_cam_robot_foot_local(),0.0]))
+        hits=LIVE_ROBOT['hits']
+        if math.hypot(w[0]-fw[0],w[1]-fw[1])>LIVE_ROBOT_TOL:
+            hits.append((float(w[0]),float(w[1]),time.time())); del hits[:-8]
+            same=[q for q in hits if math.dist(hits[-1][:2],q[:2])<0.03]
+            if len(same)>=3 and same[-1][2]-same[0][2]>=LIVE_ROBOT_SECS:
+                x,y=np.mean([q[:2] for q in same],0)
+                yaw=BASE_YAW[0]; R2=_rz2(yaw)
+                off=np.array([x,y])-R2@np.array(_cam_robot_foot_local())
+                pin=R2@np.asarray(robot_pins_local()[0][:2],float)+off
+                g=np.array([GRID_ORG[0]+PEG_PITCH/2,GRID_ORG[1]+PEG_PITCH/2])
+                off=off+(g+np.round((pin-g)/PEG_PITCH)*PEG_PITCH-pin)
+                set_robot_pose(off[0],off[1],yaw)
+                msgs.append(f"로봇 옮겨짐 -> 받침 ({x*1000:.0f},{y*1000:.0f})mm 로 이동")
+                hits.clear()
+        else:
+            hits.clear()
+    tracked={t['oid'] for t in LIVE_TRACKS if t['oid'] and id(t) in seen}
+    for o in [d for d in docking_ids() if '#' in d and d not in tracked]:
+        e=_env_ent(o); xy=_cam_dock_xy(o)
+        if not e or not e.get('visible',True) or not xy: continue
+        if _live_free(lay,reg,xy):
+            LIVE_FREE_CNT[o]=LIVE_FREE_CNT.get(o,0)+1
+            if LIVE_FREE_CNT[o]>=2 and _live_set_visible(o,False):
+                msgs.append(f'{disp_name(o)} 자리가 비어 보임 (숨김)')
+        else: LIVE_FREE_CNT[o]=0
+    for tr in LIVE_TRACKS:
+        if id(tr) in seen or not tr['oid']: continue
+        if _live_free(lay,reg,tr['xy']):
+            tr['gone']+=1
+            if tr['gone']>=2 and _live_set_visible(tr['oid'],False):
+                msgs.append(f"{disp_name(tr['oid'])} 사라짐 (숨김)")
+        else: tr['gone']=0
+    if msgs:
+        LIVE_APPLY['last']=time.strftime('%H:%M:%S ')+' · '.join(msgs)
+        print('[휴대폰 배치]',LIVE_APPLY['last'])
+
+def _live_apply_loop():
+    while True:
+        time.sleep(0.5)
+        lv=_LIVE[0]
+        if not lv or not LIVE_APPLY['on'] or not lv.live(): continue
+        try: _live_apply_once(lv)
+        except Exception as _e: print('[휴대폰 배치] 반영 실패:',type(_e).__name__,_e)
+
+def _camsync_state():
+    lv=_livecam()
+    if lv is not None and lv.live():            # 휴대폰이 보내는 중이면 그쪽이 우선
+        try: return lv.state(_plates_origin(),PLATE_TOP)
+        except Exception as _e: return {'on':False,'status':f'휴대폰 카메라 오류: {_e}'}
+    cs=_camsync()
+    if cs is None: return None
+    try: return cs.state(_plates_origin(),PLATE_TOP)
+    except Exception as _e: return {'on':False,'status':f'오류: {_e}'}
+
+# ---- 카메라가 읽은 배치를 앱에 자동 반영 ----
+#   ★ 손 배치 기능은 고치지 않는다 ★ 아래는 그 기능들이 쓰는 함수(set_robot_pose,
+#   env_clone, set_name, move_env, env_delete)를 '부르기만' 한다.
+#   도킹은 '추적 대상' 으로 관리한다: 실제 도킹 하나 = 추적 하나. 색은 그동안 읽힌 색의 다수결.
+#     - 새로 보이면: 같은 색의 앱 도킹을 데려오고, 없으면 복제해서 만든다
+#     - 옮겨지면: 5cm 넘게 벗어날 때만 옮긴다 (흔들림 무시)
+#     - 안 보이면: 그 자리가 '또렷이 비어 있음' 이 두 번 연속일 때만 지운다
+#       (아직 덜 봐서 판정이 없는 것과 뽑아서 없어진 것을 구별)
+CAM_TRACKS=[]            # [{'xy':[x,y],'votes':{hex:n},'oid':id,'gone':n}]
+CAM_ROBOT={}             # {'xy':(x,y)} 카메라가 놓은 로봇 받침 자리
+_CAM_FOOT=[None]
+def _cam_robot_foot_local():
+    """로봇 받침 바닥 가운데 (로봇 로컬, m). base_link 메쉬의 맨 아래 3mm 면 가운데.
+    메쉬를 못 읽으면 바닥 핀 두 개의 가운데."""
+    if _CAM_FOOT[0] is None:
+        try:
+            import trimesh as _tm
+            v=np.asarray(_tm.load(os.path.join(MESH_DIR,'base_link.STL')).vertices,float)
+            lo=v[v[:,2]<v[:,2].min()+0.003]
+            _CAM_FOOT[0]=(float(lo[:,0].mean()),float(lo[:,1].mean()))
+        except Exception:
+            ps=robot_pins_local()
+            _CAM_FOOT[0]=(float((ps[0][0]+ps[1][0])/2),float((ps[0][1]+ps[1][1])/2))
+    return _CAM_FOOT[0]
+CAM_APPLY={'thread':None,'last':''}
+def _cam_dock_xy(did):
+    t=docking_top(did); return (float(t[0]),float(t[1])) if t else None
+def _cam_visible_docks():
+    return [d for d in docking_ids() if '#' in d
+            and (_env_ent(d) is None or _env_ent(d).get('visible',True))]
+def _cam_dock_base():
+    return next((d for d in docking_ids() if '#' not in d),None)
+def _cam_apply_once(cs):
+    lay=cs.layout(_plates_origin(),PLATE_TOP)
+    if not lay: return
+    msgs=[]
+    # 로봇: 위치만 (방향은 지금 값 그대로).
+    #   ★ 한 번 놓으면 원래 자리가 '또렷이 비었다' 는 증거가 있을 때만 옮긴다 ★
+    #   팔이 판 위로 뻗으면 팔 밑이 크게 가려져 받침처럼 보일 때가 있다 (실측: 30cm 튐).
+    #   진짜 받침 자리는 로봇이 서 있는 한 절대 비어 보이지 않으므로 그 자리에 고정된다.
+    #   ★ 카메라가 읽는 건 '받침 바닥 가운데' 인데, 앱의 로봇 위치(BASE_OFF)는 로봇 기준점(원점)이다.
+    #     받침 바닥 가운데는 기준점에서 (241,-258)mm 떨어져 있다 (base_link 메쉬 실측)
+    #     → 받침 바닥 가운데가 읽은 자리에 오도록 기준점을 거꾸로 계산한다.
+    # ★ 받침 판의 목심 구멍 줄로 위치 + 방향까지 찾았으면 그것을 쓴다 (영상 하나에 한 번) ★
+    rp=lay.get('robot_pose')
+    if rp is not None:
+        if not CAM_ROBOT.get('pose_done'):
+            set_robot_pose(rp['base_off'][0],rp['base_off'][1],rp['yaw'])
+            CAM_ROBOT['pose_done']=True
+            CAM_ROBOT['xy']=tuple(l2w(np.array([*_cam_robot_foot_local(),0.0]))[:2])
+            msgs.append(f"로봇 받침 구멍으로 배치: 방향 {math.degrees(rp['yaw'])%360:.0f}°")
+    elif lay['robot'] is not None:
+        x,y=lay['robot']; old=CAM_ROBOT.get('xy')
+        if old is None or (math.dist(old,(x,y))>0.03 and cs.is_free_world(lay,old,r_cells=2)):
+            fl=np.array([*_cam_robot_foot_local(),0.0])
+            cur=l2w(fl)                                   # 지금 받침 바닥 가운데 (월드)
+            if math.hypot(x-cur[0],y-cur[1])>0.03:
+                b=np.array([x,y,0.0])-_yawR()@fl
+                set_robot_pose(float(b[0]),float(b[1]),BASE_YAW[0])
+                msgs.append(f'로봇 받침 -> ({x*1000:.0f},{y*1000:.0f})mm')
+            CAM_ROBOT['xy']=(x,y)
+    seen=set()
+    for d in lay['dockings']:
+        xy=d['xy']
+        # 같은 색이면 16cm 안까지 같은 도킹 (덩어리 중심이 흔들려도 지웠다 다시 만들지 않게),
+        # 색이 달라도 6cm 안이면 같은 도킹 (같은 의자가 잠깐 다른 색으로 읽힌 것)
+        def _near(t):
+            dd=math.dist(t['xy'],xy); same=max(t['votes'],key=t['votes'].get)==d['hex'] if t['votes'] else False
+            return dd<=(0.16 if same else 0.06)
+        tr=min((t for t in CAM_TRACKS if _near(t)),key=lambda t:math.dist(t['xy'],xy),default=None)
+        if tr is None:
+            tr={'xy':list(xy),'votes':{},'oid':None,'gone':0}; CAM_TRACKS.append(tr)
+        tr['xy']=[0.7*tr['xy'][0]+0.3*xy[0],0.7*tr['xy'][1]+0.3*xy[1]]
+        tr['votes'][d['hex']]=tr['votes'].get(d['hex'],0)+1; tr['gone']=0
+        seen.add(id(tr))
+        col=max(tr['votes'],key=tr['votes'].get)
+        if tr['oid'] is None or _env_ent(tr['oid']) is None:
+            taken={t['oid'] for t in CAM_TRACKS if t['oid']}
+            cands=[o for o in _cam_visible_docks() if o not in taken
+                   and _snap_color((_names().get(o) or {}).get('color') or '')==col]
+            if cands:
+                tr['oid']=min(cands,key=lambda o:math.dist(_cam_dock_xy(o) or (9,9),tr['xy']))
+            else:
+                base=_cam_dock_base()
+                if base is None: continue
+                tr['oid']=env_clone(base)
+                if tr['oid'] is None: continue
+                set_name(tr['oid'],color=col); msgs.append(f'도킹 추가 ({col})')
+        oid=tr['oid']
+        if _snap_color((_names().get(oid) or {}).get('color') or '')!=col:
+            set_name(oid,color=col); msgs.append(f'{disp_name(oid)} 색 -> {col}')
+        cur=_cam_dock_xy(oid)
+        if cur is None or math.dist(cur,tr['xy'])>0.05:
+            ok,_m=move_env(oid,tr['xy'][0],tr['xy'][1],snap=True)
+            if ok: msgs.append(f'{disp_name(oid)} 이동')
+    for tr in list(CAM_TRACKS):
+        if id(tr) in seen: continue
+        if cs.is_free_world(lay,tr['xy']):
+            tr['gone']+=1
+            if tr['gone']>=2:
+                if tr['oid'] and _env_ent(tr['oid']) is not None:
+                    _ok,_m=env_delete(tr['oid']); msgs.append(f'도킹 제거 ({_m})')
+                CAM_TRACKS.remove(tr)
+        else: tr['gone']=0
+    if msgs:
+        CAM_APPLY['last']=time.strftime('%H:%M:%S ')+' · '.join(msgs)
+        print('[카메라 배치]',CAM_APPLY['last'])
+def _cam_apply_loop():
+    while True:
+        time.sleep(0.5)
+        cs=_camsync()
+        if not cs or not cs.ready or not cs.auto: continue
+        try: _cam_apply_once(cs)
+        except Exception as _e: print('[카메라 배치] 반영 실패:',_e)
+def h_cam_load(path):
+    cs=_camsync()
+    if not cs: return '카메라 동기화 모듈이 없습니다'
+    CAM_TRACKS.clear(); CAM_ROBOT.clear()
+    cs.robot_mesh=os.path.join(MESH_DIR,'base_link.STL')    # 로봇 받침 자세(방향) 찾기에 쓴다
+    if CAM_APPLY['thread'] is None:
+        CAM_APPLY['thread']=threading.Thread(target=_cam_apply_loop,daemon=True); CAM_APPLY['thread'].start()
+    return cs.load(path)
+def h_cam_ctl(cmd):
+    cs=_camsync(); return cs.ctl(cmd) if cs else '카메라 동기화 모듈이 없습니다'
+def h_cam_status():
+    cs=_camsync()
+    if not cs: return '카메라 동기화 모듈이 없습니다'
+    s=cs.summary()
+    if cs.ready:
+        need=len(cs.tiles_needed())
+        if need and need!=len(PLATES):
+            s+=f" | ★ 영상 판 {need}타일 · 앱 바닥판 {len(PLATES)}장 → [바닥판 맞추기] 권장"
+    if CAM_APPLY['last']: s+=' | 마지막 반영: '+CAM_APPLY['last']
+    return s
+def h_cam_fit_plates():
+    """영상에서 읽은 판 크기(타일)대로 앱 바닥판을 더한다 (add_plate 를 부르기만). 빼지는 않는다."""
+    cs=_camsync()
+    if not cs or not cs.ready: return '먼저 영상을 불러오세요'
+    t0=_plates_t0(); added=[]
+    for u,v in cs.tiles_needed():
+        t=(t0[0]+u,t0[1]+v)
+        if t not in PLATES and add_plate(t): added.append(t)
+    if added: _peg_layout_changed()
+    return (f'바닥판 {len(added)}장 추가 → 지금 {len(PLATES)}장' if added
+            else f'추가할 바닥판이 없습니다 (지금 {len(PLATES)}장)')
+
 class _ViewerHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self,*a): pass
     def _send(self,code,ctype,body):
@@ -9528,12 +11985,15 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
             if self.path=='/' or self.path.startswith('/index'):
                 self._send(200,'text/html',VIEWER_HTML.encode())
             elif self.path=='/state':
-                frames=link_frames(CURRENT_Q)
-                links=[]
-                for k,ln in enumerate(ROBOT_LINKS):
-                    T=_base_T() if k==0 else frames[k]
-                    links.append({'id':ln,'color':ROBOT_COLOR_MAP[ln],
-                                  'm':[float(x) for x in T[:3,:].flatten()]+[0,0,0,1]})
+                if len(arms_shown())>1:            # 두 팔 (10-30)
+                    links=arm_links()
+                else:
+                    frames=link_frames(CURRENT_Q)
+                    links=[]
+                    for k,ln in enumerate(ROBOT_LINKS):
+                        T=_base_T() if k==0 else frames[k]
+                        links.append({'id':ln,'color':ROBOT_COLOR_MAP[ln],
+                                      'm':[float(x) for x in T[:3,:].flatten()]+[0,0,0,1]})
                 p,_=fk(CURRENT_Q)
                 _tp=tool_pos(CURRENT_Q) if TOOL_HAS else p
                 env=[]
@@ -9541,7 +12001,8 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                     # 색의 원본은 names (영구) - 재시작해도 지정색 유지
                     # 단, 바닥 플레이트는 제외 (옛날 색 기록이 바닥을 칠하지 않게)
                     env.append({'id':e['id'],
-                                'color':(e['color'] if _is_floor_plate(e['id'])
+                                'color':((plate_color(e['tile']) if e.get('tile') else e['color'])
+                                         if _is_floor_plate(e['id'])   # 바닥판 = 흰·파 체크무늬 (11-03, 프리셋을 불러도)
                                          else ((S.get('names',{}).get(e['id'])
                                                 or {}).get('color'))
                                               or e['color']),
@@ -9631,24 +12092,35 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                     'pegsel':PEG_VIEW.get('sel'),
                     'dragid':DRAG_ENV['id'],
                     'gen':ROBOT_GEN[0],
-                    # 도색: 분사 상태 + 아직 뷰어가 안 받아간 분사 광선들
                     'headgen':HEAD_GEN[0],
-                    'spray':dict(_spray_state(),
-                             wall=SPRAY.get('wall')),
-                    'sprays':_spray_take(),
                     'links':links,'env':env,'ghosts':ghosts,
                     'psize':PLATE_SIZE,'sel':PLATE_EDIT.get('sel'),
                     'ee':f"x={p[0]*1000:.0f} y={p[1]*1000:.0f} z={p[2]*1000:.0f}mm",
                     'eexyz':[float(v) for v in p],
                     'toolxyz':([float(v) for v in _tp] if TOOL_HAS else None),
                     'tool':(f"x={_tp[0]*1000:.0f} y={_tp[1]*1000:.0f} "
-                            f"z={_tp[2]*1000:.0f}mm" if TOOL_HAS else None)
+                            f"z={_tp[2]*1000:.0f}mm" if TOOL_HAS else None),
+                    'camsync':_camsync_state(),
+                    'calpts':(calmap_points() if CALMAP['on'] else None),
+                    'path':PATH_VIS['pts']
                     }).encode()
                 self._send(200,'application/json',body)
+            elif self.path.startswith('/camframe/'):     # 카메라 동기화: k 번째 프레임 JPEG
+                _cs=_camsync(); _b=None
+                _lv=_livecam()
+                try:
+                    if _lv is not None and _lv.live(): _b=_lv.jpeg()     # 휴대폰: 가장 최근 프레임
+                    else: _b=_cs.jpeg(int(self.path[len('/camframe/'):].split('?')[0])) if _cs else None
+                except Exception: _b=None
+                if _b: self._send(200,'image/jpeg',_b)
+                else: self._send(404,'text/plain',b'no frame')
             elif self.path=='/emoff':
                 if ENV_MOVE['on']:
                     print(f"[설비 배치] 취소: {disp_name(ENV_MOVE['id'])}")
                     emove_reset()
+                elif ROBOT_MOVE['on']:           # 11-03: 로봇 팔 옮기기도 ESC 로 취소 (공장 꾸미기 체크박스를 없앴다)
+                    print(f"[로봇 배치] 취소: {arm_label(ACTIVE_ARM[0])}")
+                    h_robot_move_mode(False)
                 self._send(200,'application/json',b'{"ok":true}')
             elif self.path.startswith('/envdrag/'):
                 try:
@@ -9709,6 +12181,11 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                 _ok,_m=undo_last()
                 self._send(200,'application/json',
                            json.dumps({'ok':_ok,'msg':_m}).encode())
+            elif self.path.startswith('/armmv/'):       # 팔 우클릭 → 그 팔 위치 옮기기 (11-03)
+                from urllib.parse import unquote
+                _ok,_m=arm_move_start(unquote(self.path[len('/armmv/'):]))
+                self._send(200,'application/json',
+                           json.dumps({'ok':bool(_ok),'msg':_m}).encode())
             elif self.path.startswith('/envmv/'):       # 우클릭 이동(핀 재배치)
                 from urllib.parse import unquote
                 _ok,_m=emove_start(unquote(self.path[len('/envmv/'):]))
@@ -9745,6 +12222,15 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                     self._send(200,'application/json',b'{"ok":true}')
                 else:
                     self._send(200,'application/json',b'{"ok":false}')
+            elif self.path.startswith('/calpt/'):
+                # 보정 지도 점 클릭 -> 그 자리 보정 자세 등록/열기 (11-04)
+                try:
+                    _x,_y=self.path[len('/calpt/'):].split(',')
+                    _nm,_msg=calmap_register(float(_x),float(_y))
+                    self._send(200,'application/json',
+                               json.dumps({'ok':_nm is not None,'name':_nm,'msg':_msg},ensure_ascii=False).encode())
+                except Exception as _e:
+                    self._send(200,'application/json',json.dumps({'ok':False,'msg':str(_e)},ensure_ascii=False).encode())
             elif self.path.startswith('/click/'):
                 # 뷰어에서 고스트 클릭 -> 플레이트 추가
                 try:
@@ -9804,7 +12290,9 @@ class _ViewerHandler(http.server.BaseHTTPRequestHandler):
                      'off':[float(v) for v in BASE_OFF]}
                 self._send(200,'application/json',json.dumps(kin).encode())
             elif self.path.startswith('/mesh/'):
-                mid=self.path[len('/mesh/'):].split('?')[0]   # ?g=세대 떼기
+                from urllib.parse import unquote
+                mid=unquote(self.path[len('/mesh/'):].split('?')[0])   # ?g=세대 떼기 (중계가 인코딩해 보낸다)
+                if mid not in MESH_REG and '~' in mid: mid=mid.split('~',1)[1]   # 다른 팔 = 같은 메쉬
                 if mid in MESH_REG:
                     with open(MESH_REG[mid][0],'rb') as f: data=f.read()
                     self._send(200,'application/octet-stream',data)
@@ -9838,9 +12326,6 @@ except Exception: pass
 try:
     _n=head_load_any()
     if _n: print(f'닭 머리 표 {_n:,}칸 불러옴 — 조종 즉시 반응')
-except Exception: pass
-# 분사는 가만히 서 있어도 계속 나온다 — 시간을 흘려보낼 스레드
-try: threading.Thread(target=_spray_loop,daemon=True).start()
 except Exception: pass
 
 # ===== 진짜 RViz 웹 스트리밍 자동 기동 (Xvfb + x11vnc + noVNC) =====
@@ -10298,7 +12783,8 @@ with gr.Blocks(title='ARM STUDIO') as demo:
                             sliders.append(gr.Slider(
                                 minimum=round(math.degrees(lo),1),
                                 maximum=round(math.degrees(hi),1),
-                                value=0.0,step=0.1,label=f'j{j+1}'))
+                                value=0.0,step=0.1,label=jname(j),
+                                visible=not _dead_joint(j)))
                         grip_open=gr.Button('열 기')
                         grip_close=gr.Button('닫 기')
                         path_in=gr.Textbox(label='폴더 경로')
@@ -10591,6 +13077,28 @@ with gr.Blocks(title='ARM STUDIO') as demo:
     btn_mclr.click(h_macro_clear,[macro_slot],macro_btns+[status])
     btn_save.click(h_save,None,[status])
     btn_load.click(h_load,None,[pose_sel,pose_for_seq,seq_sel,status])
+
+try: _apply_level_trim()                     # 11-05: 팔별 그리퍼 수평 보정 (calib.json level_trim)
+except Exception as _e: print('수평 보정 적용 실패:',_e)
+if S.get('level_trim'): print('그리퍼 수평 보정:',', '.join(f"{k}팔 {float(v):+.1f}°" for k,v in S['level_trim'].items()))
+
+# ===== 시작 배치 (11-05 사용자: 'esw_contest_drboom' 이 기본) =====
+#   모든 함수가 정의된 뒤라야 불러오기(결합 정규화 · 자세 정리 등)가 끝까지 돈다.
+#   ARM_START_LAYOUT 환경변수로 바꿀 수 있다 (빈 값 = 플레이트만).
+try:
+    _start=os.environ.get('ARM_START_LAYOUT','esw_contest_drboom')
+    _sp=(S.get('factory_presets') or {}).get(_start) if _start else None
+    if _sp:
+        _factory_apply(_sp)
+        with LOCK:
+            S['robot_xy']=[float(BASE_OFF[0]),float(BASE_OFF[1])]; S['robot_yaw']=float(BASE_YAW[0])
+        _macro_save()
+        LAST_PRESET[0]=_start
+        print(f"시작 배치: {_start}")
+    elif _start:
+        print(f"시작 배치 '{_start}' 없음 — 플레이트만")
+except Exception as _e:
+    print(f"시작 배치 불러오기 실패: {_e}")
 
 if __name__=='__main__':
     demo.queue(default_concurrency_limit=8)

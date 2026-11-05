@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>조이콘 IMU — 공 굴리기</title>
+<link rel="stylesheet" href="/ui/app.css">
+<style>
+  body{overflow:hidden}
+  #wrap{display:grid;grid-template-columns:1fr 340px;height:100vh;gap:0}
+  #view{position:relative;background:#0e0f13}
+  #view canvas{display:block}
+  #side{border-left:1px solid var(--line);padding:16px;overflow-y:auto;
+    display:flex;flex-direction:column;gap:12px}
+  .box{background:var(--panel,#161a22);border:1px solid var(--line);
+    border-radius:12px;padding:13px}
+  .box h3{font-size:12.5px;font-weight:700;margin-bottom:9px}
+  .num{display:flex;justify-content:space-between;font-size:12px;
+    padding:3px 0;color:var(--dim,#8b97ad)}
+  .num b{color:var(--text,#e8ecf5);font-weight:600;
+    font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums}
+  .bar{height:4px;background:#252a35;border-radius:2px;margin:5px 0 9px;
+    position:relative;overflow:hidden}
+  .bar i{position:absolute;top:0;bottom:0;background:#4c8dff;display:block}
+  .st{font-size:12px;color:var(--dim,#8b97ad);line-height:1.6}
+  .st b{color:#4ade80}
+  button{font:inherit}
+  .ax{width:9px;height:9px;border-radius:50%;flex:none;display:inline-block}
+  .mode{flex:1;background:#1c2029;border:1px solid var(--line);color:#8b97ad;
+    border-radius:8px;padding:7px 0;font-size:12px;font-weight:650;cursor:pointer}
+  .mode.on{background:#4c8dff;border-color:#4c8dff;color:#fff}
+  input[type=range]{accent-color:#4c8dff}
+  select{padding:6px 9px;background:#12151c;color:#e8ecf5;
+    border:1px solid var(--line);border-radius:7px;font:inherit;font-size:11.5px}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="view"></div>
+  <div id="side">
+    <div class="box">
+      <h3>연결</h3>
+      <button id="btnConn" class="btn primary wide">조이콘 연결 (WebHID)</button>
+      <div class="st" id="stat" style="margin-top:9px">
+        아직 연결 안 됨. 버튼을 누르면 브라우저가 기기 목록을 띄웁니다.
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>기울기 (중력 기준)</h3>
+      <div class="num"><span>앞뒤 (pitch)</span><b id="vP">0.0°</b></div>
+      <div class="bar"><i id="bP"></i></div>
+      <div class="num"><span>좌우 (roll)</span><b id="vR">0.0°</b></div>
+      <div class="bar"><i id="bR"></i></div>
+      <div class="num"><span>비틀기 (yaw·자이로)</span><b id="vY">0.0°/s</b></div>
+      <div class="bar"><i id="bY"></i></div>
+      <div class="num"><span>눌린 버튼</span><b id="btnState">—</b></div>
+    </div>
+
+    <div class="box">
+      <h3>공 위치</h3>
+      <div class="num"><span>X</span><b id="pX">0</b></div>
+      <div class="num"><span>Y</span><b id="pY">0</b></div>
+      <div class="num"><span>Z</span><b id="pZ">0</b></div>
+      <button id="btnReset" class="btn wide" style="margin-top:9px">가운데로</button>
+    </div>
+
+    <div class="box">
+      <h3>조작 방식</h3>
+      <div class="row" style="gap:5px">
+        <button class="btn sm mode on" data-m="tilt">기울기</button>
+        <button class="btn sm mode" data-m="push">밀기</button>
+        <button class="btn sm mode" data-m="mix">혼합</button>
+      </div>
+      <button id="btnZero" class="btn wide" style="margin-top:9px">
+        영점 잡기 (지금 자세를 기준으로)</button>
+      <div class="st" id="how" style="margin-top:9px"></div>
+    </div>
+
+    <div class="box">
+      <h3>축 바꾸기</h3>
+      <div class="st" style="margin-bottom:8px">
+        3D 화면의 <b style="color:#ff8080">빨강(X 앞뒤)</b> ·
+        <b style="color:#80ffaa">초록(Y 좌우)</b> ·
+        <b style="color:#80c0ff">파랑(Z 높이)</b> 화살표를 보고,
+        움직임이 안 맞으면 여기서 바꾸세요.</div>
+      <div class="row" style="gap:5px;margin-bottom:6px">
+        <span class="ax" style="background:#ff4d4d"></span>
+        <span style="font-size:11.5px;width:52px">X 앞뒤</span>
+        <select id="mapX" class="grow"></select>
+        <button class="btn sm inv" data-a="x">±</button>
+      </div>
+      <div class="row" style="gap:5px;margin-bottom:6px">
+        <span class="ax" style="background:#4dff88"></span>
+        <span style="font-size:11.5px;width:52px">Y 좌우</span>
+        <select id="mapY" class="grow"></select>
+        <button class="btn sm inv" data-a="y">±</button>
+      </div>
+      <div class="row" style="gap:5px">
+        <span class="ax" style="background:#4d9dff"></span>
+        <span style="font-size:11.5px;width:52px">Z 높이</span>
+        <select id="mapZ" class="grow"></select>
+        <button class="btn sm inv" data-a="z">±</button>
+      </div>
+      <div class="st" id="mapInfo" style="margin-top:8px"></div>
+    </div>
+
+    <div class="box">
+      <h3>감도</h3>
+      <div class="num"><span>속도</span><b id="vSpd">0.45</b></div>
+      <input id="spd" type="range" min="0.1" max="2.0" step="0.05" value="0.45"
+             style="width:100%">
+      <div class="num" style="margin-top:6px"><span>데드존</span><b id="vDead">6°</b></div>
+      <input id="dead" type="range" min="0" max="20" step="1" value="6"
+             style="width:100%">
+    </div>
+
+    <div class="box">
+      <h3>원시값</h3>
+      <div class="st" id="raw" style="font-family:ui-monospace,monospace;
+        font-size:11px">—</div>
+    </div>
+  </div>
+</div>
+
+<script type="importmap">{"imports":{
+ "three":"https://unpkg.com/three@0.160.0/build/three.module.js",
+ "three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+
+/* ================= 3D 무대 ================= */
+const view=document.getElementById('view');
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x0e0f13);
+const cam=new THREE.PerspectiveCamera(45,1,0.01,100);
+cam.position.set(1.6,1.4,1.6); cam.up.set(0,0,1);
+const rnd=new THREE.WebGLRenderer({antialias:true});
+view.append(rnd.domElement);
+const ctl=new OrbitControls(cam,rnd.domElement);
+ctl.target.set(0,0,0.15);
+
+scene.add(new THREE.AmbientLight(0xffffff,.55));
+const dl=new THREE.DirectionalLight(0xffffff,.9);
+dl.position.set(2,3,4); scene.add(dl);
+
+/* 바닥 격자 (로봇 작업대 느낌) */
+const grid=new THREE.GridHelper(2,20,0x3a4152,0x232733);
+grid.rotation.x=Math.PI/2; scene.add(grid);
+/* 작업 범위 테두리 */
+const box=new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(1,1,0.6)),
+  new THREE.LineBasicMaterial({color:0x2f4468}));
+box.position.z=0.3; scene.add(box);
+
+/* 공 */
+const ball=new THREE.Mesh(
+  new THREE.SphereGeometry(0.05,32,24),
+  new THREE.MeshPhongMaterial({color:0xff6b1a,shininess:60}));
+ball.position.set(0,0,0.15); scene.add(ball);
+/* ===== 축 표시 — 어디가 X/Y/Z 인지 눈으로 보이게 =====
+   화살표 + 글자로 그린다. 축 바꾸기를 할 때 기준이 된다. */
+function axisArrow(dir,color,label,len){
+  const g=new THREE.Group();
+  const d=new THREE.Vector3(...dir).normalize();
+  g.add(new THREE.ArrowHelper(d,new THREE.Vector3(0,0,0),len,color,
+        len*0.13,len*0.075));
+  /* 글자는 항상 카메라를 향하는 스프라이트로 */
+  const cv=document.createElement('canvas');
+  cv.width=cv.height=96;
+  const cx=cv.getContext('2d');
+  cx.fillStyle='#'+color.toString(16).padStart(6,'0');
+  cx.font='bold 64px sans-serif';
+  cx.textAlign='center'; cx.textBaseline='middle';
+  cx.fillText(label,48,50);
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({
+    map:new THREE.CanvasTexture(cv),transparent:true,depthTest:false}));
+  sp.scale.set(0.09,0.09,1);
+  sp.position.copy(d.clone().multiplyScalar(len*1.13));
+  g.add(sp);
+  return g;
+}
+const axes=new THREE.Group();
+axes.add(axisArrow([1,0,0],0xff4d4d,'X',0.6));   // 빨강 = X (앞)
+axes.add(axisArrow([0,1,0],0x4dff88,'Y',0.6));   // 초록 = Y (왼쪽)
+axes.add(axisArrow([0,0,1],0x4d9dff,'Z',0.6));   // 파랑 = Z (위)
+scene.add(axes);
+
+/* 앞/뒤·좌/우 를 글자로도 표시 (축 이름만으론 헷갈리므로) */
+function tag(text,pos,color){
+  const cv=document.createElement('canvas');
+  cv.width=256; cv.height=64;
+  const cx=cv.getContext('2d');
+  cx.fillStyle=color; cx.font='bold 40px sans-serif';
+  cx.textAlign='center'; cx.textBaseline='middle';
+  cx.fillText(text,128,34);
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({
+    map:new THREE.CanvasTexture(cv),transparent:true,depthTest:false}));
+  sp.scale.set(0.26,0.065,1);
+  sp.position.set(...pos);
+  scene.add(sp);
+}
+tag('앞 (+X)',[0.72,0,0.02],'#ff8080');
+tag('뒤 (−X)',[-0.72,0,0.02],'#a05050');
+tag('왼 (+Y)',[0,0.72,0.02],'#80ffaa');
+tag('오른 (−Y)',[0,-0.72,0.02],'#50a070');
+tag('위 (+Z)',[0,0,0.72],'#80c0ff');
+
+/* 공의 그림자 (바닥 위치 파악용) */
+const shadow=new THREE.Mesh(
+  new THREE.CircleGeometry(0.05,24),
+  new THREE.MeshBasicMaterial({color:0x000000,transparent:true,opacity:.35}));
+shadow.position.z=0.001; scene.add(shadow);
+
+function resize(){
+  const w=view.clientWidth,h=view.clientHeight;
+  cam.aspect=w/h; cam.updateProjectionMatrix(); rnd.setSize(w,h);
+  rnd.setPixelRatio(Math.min(devicePixelRatio,2));
+}
+addEventListener('resize',resize); resize();
+
+/* ================= 조이콘 IMU (WebHID) ================= */
+const $=s=>document.querySelector(s);
+let dev=null;
+const IMU={ax:0,ay:0,az:0,gx:0,gy:0,gz:0};   // 가속도(g) / 자이로(도/초)
+const BTN={R:false,ZR:false,A:false,B:false,X:false,Y:false};
+
+/* 조이콘 명령 전송 (서브커맨드) */
+let pkt=0;
+async function cmd(sub,data=[]){
+  if(!dev)return;
+  const b=new Uint8Array(48);
+  b[0]=pkt++&0xF;
+  b.set([0x00,0x01,0x40,0x40,0x00,0x01,0x40,0x40],1);  // 진동 기본값
+  b[9]=sub; b.set(data,10);
+  try{ await dev.sendReport(0x01,b); }catch(e){}
+}
+
+async function connect(){
+  try{
+    const list=await navigator.hid.requestDevice({
+      filters:[{vendorId:0x057e}]                 // 닌텐도만
+    });
+    if(!list.length){ $('#stat').textContent='선택된 기기가 없습니다.'; return; }
+    dev=list[0];
+    if(!dev.opened) await dev.open();
+    $('#stat').innerHTML='<b>연결됨</b> — '+dev.productName;
+
+    dev.addEventListener('inputreport',onReport);
+    /* 조이콘 설정: IMU 켜기 + 표준 보고 모드 */
+    await cmd(0x40,[0x01]);                       // IMU enable
+    await new Promise(r=>setTimeout(r,60));
+    await cmd(0x03,[0x30]);                       // report mode 0x30 (60Hz full)
+    await new Promise(r=>setTimeout(r,60));
+    await cmd(0x48,[0x01]);                       // 진동 enable (응답 안정)
+  }catch(e){
+    $('#stat').textContent='연결 실패: '+e.message;
+  }
+}
+$('#btnConn').onclick=connect;
+
+/* 0x30 리포트에서 IMU 6축을 꺼낸다.
+   조이콘은 한 리포트에 5ms 간격 3세트를 담아 보낸다 — 마지막 것만 쓴다. */
+/* 스펙 출처: dekuNukem/Nintendo_Switch_Reverse_Engineering (imu_sensor_notes)
+     · 0x30 리포트에서 IMU 는 12번째 바이트부터 (reportId 를 뺀 data 기준)
+     · 한 리포트에 5ms 간격 3세트 -> 평균 내면 훨씬 안정적이다
+     · 가속도 1 = 0.000244 G,  자이로 1 = 0.070 도/초
+     · 노이즈 데드존: 가속도 205, 자이로 75 (원시값 기준) */
+const ACC_K=0.000244, GYR_K=0.070;
+const GYR_DZ=75;          // 자이로 노이즈 데드존 (원시값)
+const dz=(v,t)=>Math.abs(v)<t?0:v;
+
+/* 흔들림을 줄이는 저역통과 필터 (값이 튀는 주범을 여기서 잡는다) */
+const LP=0.25;                       // 0=안 움직임, 1=필터 없음
+const smooth=(prev,now)=>prev+(now-prev)*LP;
+
+let rptN=0;
+function onReport(e){
+  rptN++;
+  const {data,reportId}=e;
+  if(reportId!==0x30) return;
+  const d=new DataView(data.buffer,data.byteOffset,data.byteLength);
+  const s16=o=>d.getInt16(o,true);
+  /* data 는 reportId 가 빠진 본문이므로 문서의 13번 바이트 = 여기서 12 */
+  const base=12;
+  let n=0, a=[0,0,0], g=[0,0,0];
+  for(let k=0;k<3;k++){                 // 3세트 평균
+    const o=base+k*12;
+    if(o+12>data.byteLength) break;
+    /* 가속도는 데드존을 걸면 안 된다 — 중력 성분까지 잘려 기울기가 망가진다.
+       (데드존은 '움직임' 을 재는 자이로에만 적용) */
+    a[0]+=s16(o+0); a[1]+=s16(o+2); a[2]+=s16(o+4);
+    g[0]+=dz(s16(o+6),GYR_DZ); g[1]+=dz(s16(o+8),GYR_DZ); g[2]+=dz(s16(o+10),GYR_DZ);
+    n++;
+  }
+  /* 버튼 (오른쪽 조이콘): data[2] 에 Y/X/B/A/SR/SL/R/ZR 비트가 들어온다 */
+  if(data.byteLength>2){
+    const b=d.getUint8(2);
+    BTN.R  = !!(b&0x40);
+    BTN.ZR = !!(b&0x80);
+    BTN.A  = !!(b&0x08); BTN.B=!!(b&0x04);
+    BTN.X  = !!(b&0x02); BTN.Y=!!(b&0x01);
+  }
+  if(!n) return;
+  IMU.ax=smooth(IMU.ax,a[0]/n*ACC_K);
+  IMU.ay=smooth(IMU.ay,a[1]/n*ACC_K);
+  IMU.az=smooth(IMU.az,a[2]/n*ACC_K);
+  IMU.gx=smooth(IMU.gx,g[0]/n*GYR_K);
+  IMU.gy=smooth(IMU.gy,g[1]/n*GYR_K);
+  IMU.gz=smooth(IMU.gz,g[2]/n*GYR_K);
+}
+
+/* ================= 조작 로직 =================
+   세 가지 방식을 화면에서 바꿔가며 쓴다.
+     기울기 : 중력 방향으로 각도를 재서 '속도'로 삼는다 (드리프트 없음)
+     밀기   : 손의 가속을 적분해 속도로 삼되, 멈추면 속도를 0 으로 되돌린다
+              (ZUPT — 이게 없으면 값이 계속 흘러간다)
+     혼합   : 밀기로 크게, 기울기로 미세 조정
+   축 바꾸기: 조이콘을 어떻게 쥐느냐에 따라 축이 달라지므로 화면에서 고른다. */
+const P={x:0,y:0,z:0.15};
+const LIM={x:.5,y:.5,zLo:.05,zHi:.55};
+let MODE='tilt';
+let SPD=0.45;         // m/s (기본을 느리게 — 미세 조작 위주)
+let DEAD=6;           // 도 (기울기 방식) — 손떨림 무시
+const MAXA=35;        // 이 각도에서 최고 속도
+
+/* 영점: 이 자세를 '기울기 0' 으로 삼는다 (어떻게 쥐든 편하게) */
+const ZERO={p:0,r:0,on:false};
+
+/* 축 매핑: 화면 X/Y/Z 각각을 조이콘의 어느 축에서 가져올지 */
+const SRC=['buttons','pitch','roll','yaw','acc-x','acc-y','acc-z'];
+/* 기본값: 실제로 손에 쥐고 맞춰본 조합 (2026-08-23)
+     X(앞뒤)  <- 좌우 기울기, 방향 반대
+     Y(좌우)  <- 앞뒤 기울기, 방향 반대
+     Z(높이)  <- 버튼 (X=위 / ZR=아래).  R 버튼은 고장이라 안 씀 — 비틀기보다 쓰기 편함 */
+const MAP={x:{src:'roll',sign:-1},y:{src:'pitch',sign:-1},z:{src:'buttons',sign:1}};
+
+/* 밀기용 속도 상태 */
+const V={x:0,y:0,z:0};
+let still=0;          // 정지 판정 누적 (ZUPT)
+
+let prev=performance.now();
+
+function tiltRaw(){
+  /* 중력 방향으로 기울기 (적분 없음 -> 드리프트 없음) */
+  const {ax,ay,az}=IMU;
+  return {
+    pitch:Math.atan2(-ay,Math.hypot(ax,az))*180/Math.PI,
+    roll :Math.atan2( ax,Math.hypot(ay,az))*180/Math.PI,
+  };
+}
+/* 중력을 뺀 '순수 가속' — 밀기 감지용 */
+function linAcc(){
+  const {ax,ay,az}=IMU;
+  const m=Math.hypot(ax,ay,az)||1;
+  return {x:ax-ax/m, y:ay-ay/m, z:az-az/m};   // 중력 성분 제거
+}
+
+const shape=a=>{
+  const sg=Math.sign(a), m=Math.abs(a);
+  if(m<DEAD) return 0;
+  return sg*Math.min(1,(m-DEAD)/(Math.max(MAXA,DEAD+1)-DEAD));
+};
+
+/* 매핑된 축에서 값 하나 꺼내기 */
+function pick(src,t,la){
+  switch(src){
+    case 'pitch': return shape(t.pitch);
+    case 'roll' : return shape(t.roll);
+    case 'buttons': return (BTN.X?1:0)-(BTN.ZR?1:0);   // X=위, ZR=아래
+    case 'yaw'  : return Math.abs(IMU.gz)>60?Math.sign(IMU.gz)*
+                         Math.min(1,(Math.abs(IMU.gz)-60)/240):0;
+    case 'acc-x': return la.x*3;
+    case 'acc-y': return la.y*3;
+    case 'acc-z': return la.z*3;
+  }
+  return 0;
+}
+
+function step(dt){
+  const raw=tiltRaw();
+  const t={pitch:raw.pitch-(ZERO.on?ZERO.p:0),
+           roll :raw.roll -(ZERO.on?ZERO.r:0)};
+  const la=linAcc();
+
+  if(MODE==='tilt'||MODE==='mix'){
+    P.x+=MAP.x.sign*pick(MAP.x.src,t,la)*SPD*dt;
+    P.y+=MAP.y.sign*pick(MAP.y.src,t,la)*SPD*dt;
+    P.z+=MAP.z.sign*pick(MAP.z.src,t,la)*SPD*0.6*dt;
+  }
+  if(MODE==='push'||MODE==='mix'){
+    /* 가속 -> 속도 (적분). 손을 멈추면 속도를 빠르게 0 으로 (ZUPT) */
+    const A=(MODE==='mix')?4:9;          // 밀기 감도
+    const mv=Math.hypot(la.x,la.y,la.z);
+    if(mv<0.045){ still++; } else still=0;
+    const decay=(still>3)?0.55:0.94;     // 멈춘 뒤엔 급감속
+    V.x=V.x*decay+la.x*A*dt;
+    V.y=V.y*decay+la.y*A*dt;
+    V.z=V.z*decay+la.z*A*dt;
+    if(still>8){V.x=V.y=V.z=0;}          // 완전 정지
+    P.x+=MAP.x.sign*V.x*dt;
+    P.y+=MAP.y.sign*V.y*dt;
+    P.z+=MAP.z.sign*V.z*dt;
+  }
+
+  P.x=Math.max(-LIM.x,Math.min(LIM.x,P.x));
+  P.y=Math.max(-LIM.y,Math.min(LIM.y,P.y));
+  P.z=Math.max(LIM.zLo,Math.min(LIM.zHi,P.z));
+  return {t,la};
+}
+
+function loop(){
+  const now=performance.now(), dt=Math.min(.05,(now-prev)/1000); prev=now;
+  const {t}=step(dt);
+
+  ball.position.set(P.x,P.y,P.z);
+  shadow.position.set(P.x,P.y,0.001);
+
+  const bar=(el,v,max)=>{
+    const w=Math.min(1,Math.abs(v)/max)*50;
+    el.style.width=w+'%'; el.style.left=(v<0?50-w:50)+'%';
+  };
+  $('#vP').textContent=t.pitch.toFixed(1)+'°'; bar($('#bP'),t.pitch,60);
+  $('#vR').textContent=t.roll.toFixed(1)+'°';  bar($('#bR'),t.roll,60);
+  $('#vY').textContent=IMU.gz.toFixed(0)+'°/s'; bar($('#bY'),IMU.gz,300);
+  const pressed=Object.entries(BTN).filter(([,v])=>v).map(([k])=>k);
+  $('#btnState').textContent=pressed.length?pressed.join(' '):'—';
+  $('#pX').textContent=(P.x*1000).toFixed(0)+' mm';
+  $('#pY').textContent=(P.y*1000).toFixed(0)+' mm';
+  $('#pZ').textContent=(P.z*1000).toFixed(0)+' mm';
+  const mag=Math.hypot(IMU.ax,IMU.ay,IMU.az);
+  $('#raw').textContent=
+    `acc  ${IMU.ax.toFixed(2)} ${IMU.ay.toFixed(2)} ${IMU.az.toFixed(2)} (g)\n`
+   +`크기 ${mag.toFixed(2)}g  ← 가만히 두면 1.00 근처여야 정상\n`
+   +`gyro ${IMU.gx.toFixed(0)} ${IMU.gy.toFixed(0)} ${IMU.gz.toFixed(0)} (°/s)\n`
+   +`리포트 ${rptN}개 수신`;
+
+  ctl.update(); rnd.render(scene,cam);
+  requestAnimationFrame(loop);
+}
+
+/* ---------- 화면 조작 ---------- */
+const HOW={
+  tilt:'조이콘을 <b>기울인 방향</b>으로 굴러갑니다. 세우면 멈춥니다.<br>'
+      +'높이는 <b>X=위 · ZR(검지)=아래</b> 버튼으로.',
+  push:'조이콘을 <b>미는 방향</b>으로 따라옵니다. 손을 멈추면 공도 멈춥니다.<br>'
+      +'큰 이동에 직관적이지만 거리는 대략적입니다.',
+  mix :'<b>밀어서 크게</b> 옮기고 <b>기울여서 미세</b> 조정합니다.',
+};
+function setMode(m){
+  MODE=m;
+  document.querySelectorAll('.mode').forEach(b=>
+    b.classList.toggle('on',b.dataset.m===m));
+  $('#how').innerHTML=HOW[m];
+  V.x=V.y=V.z=0; still=0;
+}
+document.querySelectorAll('.mode').forEach(b=>
+  b.onclick=()=>setMode(b.dataset.m));
+
+$('#btnZero').onclick=()=>{
+  const r=tiltRaw(); ZERO.p=r.pitch; ZERO.r=r.roll; ZERO.on=true;
+  $('#btnZero').textContent='영점 잡힘 (다시 누르면 갱신)';
+  setTimeout(()=>$('#btnZero').textContent='영점 잡기 (지금 자세를 기준으로)',1400);
+};
+
+/* 축 선택 상자 */
+const LABEL={'buttons':'버튼 X↑ / ZR↓','pitch':'앞뒤 기울기',
+  'roll':'좌우 기울기','yaw':'비틀기',
+  'acc-x':'가속 X','acc-y':'가속 Y','acc-z':'가속 Z'};
+['x','y','z'].forEach(ax=>{
+  const el=$('#map'+ax.toUpperCase());
+  el.innerHTML=SRC.map(v=>
+    `<option value="${v}"${MAP[ax].src===v?' selected':''}>${LABEL[v]}</option>`).join('');
+  el.onchange=()=>{MAP[ax].src=el.value;showMap();};
+});
+document.querySelectorAll('.inv').forEach(b=>b.onclick=()=>{
+  MAP[b.dataset.a].sign*=-1; showMap();
+});
+function showMap(){
+  $('#mapInfo').textContent=['x','y','z']
+    .map(a=>`${a.toUpperCase()} ← ${LABEL[MAP[a].src]}${MAP[a].sign<0?' (반대)':''}`)
+    .join('  ·  ');
+}
+$('#spd').oninput=()=>{SPD=+$('#spd').value;$('#vSpd').textContent=SPD.toFixed(1);};
+$('#dead').oninput=()=>{DEAD=+$('#dead').value;$('#vDead').textContent=DEAD+'°';};
+
+setMode('tilt'); showMap();
+$('#btnReset').onclick=()=>{P.x=0;P.y=0;P.z=0.15;V.x=V.y=V.z=0;still=0;};
+loop();
+</script>
+</body>
+</html>

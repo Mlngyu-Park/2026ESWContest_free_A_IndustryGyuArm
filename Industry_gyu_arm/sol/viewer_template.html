@@ -1,0 +1,1412 @@
+<title>KYLE 납땜 뷰어</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#f3f1ec; --panel:#ffffff; --ink:#1d1b17; --muted:#6b675f; --line:#d9d4ca;
+  --accent:#c8641e; --accent-ink:#ffffff; --board:#2e7d4f; --board-edge:#1e5a37;
+  --chip:#2a2a2e; --chip-top:#3a3a40; --socket:#141416; --pin:#c9c9c9; --hole:#0f2d1c;
+  --ok:#2e8b57; --warn:#c8641e; --crit:#b3261e; --info:#4a6fa5;
+  --sel:#ffd54a;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#15161a; --panel:#1e2026; --ink:#ece9e2; --muted:#9a968d; --line:#33363e;
+    --accent:#e8843a; --accent-ink:#1a1a1a; --board:#2b6e47; --board-edge:#1a4a2f;
+    --chip:#2a2a2e; --chip-top:#404048; --socket:#0e0e10; --pin:#bdbdbd; --hole:#0b2416;
+    --info:#7ea0d6;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#15161a; --panel:#1e2026; --ink:#ece9e2; --muted:#9a968d; --line:#33363e;
+  --accent:#e8843a; --accent-ink:#1a1a1a; --board:#2b6e47; --board-edge:#1a4a2f;
+  --chip:#2a2a2e; --chip-top:#404048; --socket:#0e0e10; --pin:#bdbdbd; --hole:#0b2416;
+  --info:#7ea0d6;
+}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"IBM Plex Sans KR",system-ui,sans-serif;font-size:13px;display:flex;flex-direction:column;overflow:hidden}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+header{display:flex;align-items:center;gap:12px;padding:8px 16px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+header h1{font-size:15px;margin:0;font-weight:600;letter-spacing:-.01em}
+header .sub{color:var(--muted);font-size:12px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.seg button{border:0;background:transparent;color:var(--ink);padding:5px 10px;cursor:pointer;font:inherit}
+.seg button.on{background:var(--accent);color:var(--accent-ink)}
+button.btn{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:5px 10px;border-radius:6px;cursor:pointer;font:inherit}
+button.btn:hover{border-color:var(--accent)}
+button.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+main{flex:1;display:grid;grid-template-columns:270px 1fr 300px;min-height:0}
+aside{background:var(--panel);border-right:1px solid var(--line);overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:12px}
+aside.right{border-right:0;border-left:1px solid var(--line)}
+section h2{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 6px;font-weight:600}
+.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+label.chk{display:flex;align-items:center;gap:6px;cursor:pointer;padding:2px 0}
+input[type=range]{width:100%}
+input[type=color]{width:26px;height:20px;border:1px solid var(--line);padding:0;background:none;border-radius:4px}
+.list{display:flex;flex-direction:column;gap:2px;max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:4px}
+.list .it{display:flex;align-items:center;gap:6px;padding:2px 4px;border-radius:4px;cursor:pointer}
+.list .it:hover{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.list .it.on{background:color-mix(in srgb,var(--sel) 35%,transparent)}
+.sw{width:10px;height:10px;border-radius:2px;flex:none}
+#stage{position:relative;min-width:0;min-height:0;background:var(--bg)}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+#tip{position:absolute;pointer-events:none;background:var(--panel);border:1px solid var(--line);padding:4px 8px;border-radius:6px;font-size:12px;display:none;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+#hud{position:absolute;left:10px;bottom:10px;background:color-mix(in srgb,var(--panel) 85%,transparent);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:12px;color:var(--muted)}
+#hud b{color:var(--ink)}
+.rep{display:flex;flex-direction:column;gap:3px;max-height:260px;overflow:auto}
+.rep .r{display:flex;gap:6px;align-items:flex-start;line-height:1.35}
+.tag{flex:none;font-size:10px;padding:1px 5px;border-radius:3px;color:#fff;min-width:26px;text-align:center}
+.tag.치명{background:var(--crit)}.tag.오류{background:var(--crit)}.tag.경고{background:var(--warn)}.tag.정보{background:var(--info)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:2px 10px}
+.kv div:nth-child(odd){color:var(--muted)}
+textarea{width:100%;height:120px;font-family:"IBM Plex Mono",monospace;font-size:11px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:6px;box-sizing:border-box;resize:vertical}
+.badge{display:inline-block;padding:1px 6px;border-radius:10px;font-size:11px;background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--ink)}
+.hint{color:var(--muted);font-size:11px;line-height:1.4}
+@media (max-width:900px){main{grid-template-columns:1fr}aside{max-height:32vh;border:0;border-bottom:1px solid var(--line)}}
+</style>
+
+<header>
+  <h1 id="title">KYLE 납땜 뷰어</h1>
+  <span class="sub" id="subtitle"></span>
+  <span style="flex:1"></span>
+  <div class="seg" role="group" aria-label="보기">
+    <button id="b3d" class="on">3D</button><button id="b2d">2D</button>
+  </div>
+  <button class="btn" id="bflip" title="키 F">뒤집기 (뒷면)</button>
+  <div class="seg" role="group" aria-label="선 모양">
+    <button id="wStraight">직선 (뒷면)</button><button id="wMan" class="on">직각 (뒷면)</button><button id="wBack">앞면</button>
+  </div>
+  <button class="btn" id="bReset">시점 초기화</button>
+  <button class="btn primary" id="bReroute" title="설정을 바꾼 뒤 배선을 처음부터 다시 계산합니다">배선 다시</button>
+</header>
+
+<main>
+<aside class="left">
+  <section>
+    <h2>기판 <span class="hint">(바꾸면 배선을 다시 깝니다)</span></h2>
+    <div class="row">
+      <label class="chk">가로 <input type="number" id="inW" min="10" max="200" style="width:62px"></label>
+      <label class="chk">세로 <input type="number" id="inH" min="10" max="200" style="width:62px"></label>
+      <label class="chk">층수 <select id="inLayers"><option>1</option><option>2</option><option>3</option></select></label>
+    </div>
+    <div class="hint" id="boardInfo"></div>
+    <div id="panelBox" style="display:none;margin-top:4px">장(기판) <select id="selPanel"></select> <span class="hint">저장하면 이 장만 파일에 되돌려 넣습니다</span></div>
+    <div class="row" style="margin-top:4px">
+      <label class="chk">보는 층 <select id="inViewLayer"><option value="0">전부</option></select></label>
+    </div>
+  </section>
+  <section>
+    <h2>배선 설정 <span class="hint">(바꾸면 자동으로 다시 깔립니다)</span></h2>
+<label class="chk" ><input type="checkbox" id="sPersp" checked> 원근</label>
+  <label class="chk"><input type="checkbox" id="sShadow" checked> 그림자</label>
+  <label class="chk"><input type="checkbox" id="sLow"> 저사양</label>
+  <label class="chk" title="꺾을 때 구멍을 관통해 반대면으로 (바느질 배선)"><input type="checkbox" id="sStitch" checked> 바느질</label>
+  <label class="chk" title="구멍(납땜점) 하나 위를 지나갈 수 있는 선의 최대 개수. 2 이상이면 같은 점을 쓰는 선끼리 색이 다르게 배치된다">점당 선
+    <select id="selCap"><option value="1" selected>1 (겹침 없음 · 권장)</option><option value="2">2 (구멍에서 색 다른 선 교차 허용)</option><option value="3">3 (구멍에서 교차 허용)</option></select>
+  </label>
+  <label class="chk" title="직선이 이만큼 이어지면 중간에 한 번 관통해 기판에 눌러 고정한다">고정 간격
+    <select id="selPitch"><option value="0">끔</option><option value="4">4칸</option><option value="6" selected>6칸</option><option value="8">8칸</option></select>
+  </label>
+  <label class="chk" title="선 굵기 (AWG30 0.25 / AWG26 0.4 / AWG22 0.65mm)">선굵기
+    <select id="selGauge"><option value="0.25">AWG30 0.25mm</option><option value="0.4">AWG26 0.4mm</option><option value="0.5" selected>0.5mm</option><option value="0.65">AWG22 0.65mm</option><option value="0.8">0.8mm 굵음</option></select>
+  </label>
+    <button class="btn primary" id="bReroute2" style="margin-top:6px;width:100%">배선 다시 계산</button>
+    <div class="hint" id="routeStat"></div>
+  </section>
+  <section>
+    <h2>보이기 · 숨기기</h2>
+    <label class="chk"><input type="checkbox" id="sChips" checked> 칩 몸통</label>
+    <label class="chk"><input type="checkbox" id="sSockets" checked> 소켓</label>
+    <label class="chk"><input type="checkbox" id="sLift"> 칩 뽑아 올리기 (소켓 보기)</label>
+    <label class="chk"><input type="checkbox" id="sFails" checked> 미배선 표시 (빨간 선)</label>
+    <label class="chk"><input type="checkbox" id="sCaps" checked> 커패시터</label>
+    <label class="chk"><input type="checkbox" id="sPins" checked> 다리 (핀)</label>
+    <label class="chk"><input type="checkbox" id="sPinNo"> 핀 번호</label>
+    <label class="chk"><input type="checkbox" id="sPinName"> 핀 이름</label>
+    <label class="chk"><input type="checkbox" id="sWires" checked> 배선</label>
+    <label class="chk"><input type="checkbox" id="sPower"> 전원선 (VCC·GND)</label>
+    <label class="chk"><input type="checkbox" id="sHoles" checked> 기판 구멍</label>
+    <label class="chk"><input type="checkbox" id="sLabels" checked> 부품 이름</label>
+  </section>
+  <section>
+    <h2>부품 <span class="hint">(클릭: 숨김 토글 · 2D 에서 끌어서 이동)</span></h2>
+    <div class="list" id="partList"></div>
+  </section>
+  <section>
+    <h2>납땜 순서 (그룹)</h2>
+    <input type="range" id="step" min="0" max="0" value="0">
+    <div id="stepLabel" class="hint"></div>
+    <div class="list" id="groupList" style="max-height:200px"></div>
+  </section>
+</aside>
+
+<div id="stage">
+  <canvas id="cv" tabindex="0" aria-label="기판" style="cursor:grab"></canvas>
+  <div id="tip"></div>
+  <div id="hud">끌기: 회전 · 휠: 확대 · Shift+끌기: 이동 · 클릭: 네트 선택 · <b>F</b> 뒤집기 · <b>V</b> 2D/3D</div>
+</div>
+
+<aside class="right">
+  <section>
+    <h2>선택한 네트</h2>
+    <div id="netInfo" class="hint">핀이나 선을 클릭하세요.</div>
+    <div class="row" style="margin-top:6px">
+      <button class="btn" id="bRoute">경로 그리기</button>
+      <button class="btn" id="bVia" title="경로 그리는 중: 마지막 점에서 구멍을 관통해 반대면으로">관통 |</button>
+      <button class="btn" id="bRouteClear">경로 지우기</button>
+      <button class="btn" id="bDeselect">선택 해제</button>
+    </div>
+    <div class="hint" id="routeHint"></div>
+  </section>
+  <section>
+    <h2>연결 편집 <span class="hint">(포인터 표기: 같은 네트 번호 = 연결)</span></h2>
+    <div class="row">
+      <button class="btn" id="bLink">두 핀 잇기</button>
+      <button class="btn" id="bUnlink">핀 떼기</button>
+      <button class="btn" id="bRotate" title="키 R">부품 회전</button>
+    </div>
+    <div class="hint" id="editHint">핀을 클릭해 선택한 뒤 「두 핀 잇기」→ 다른 핀 클릭. 2D 에서 부품 위에 마우스 두고 R 로 회전.</div>
+  </section>
+  <section>
+    <h2>검증 <span class="badge" id="repSum"></span></h2>
+    <div class="row" style="margin-bottom:6px">
+      <button class="btn primary" id="bVerify">검증 다시 실행</button>
+      <button class="btn" id="bSave">파일로 저장</button>
+      <span class="hint" id="srvHint"></span>
+    </div>
+    <div class="rep" id="report"></div>
+  </section>
+  <section>
+    <h2>타이밍 (레지스터→레지스터 최장)</h2>
+    <div id="timing" class="hint mono"></div>
+  </section>
+  <section>
+    <h2>KYLE 저장 · 불러오기</h2>
+    <div class="row">
+      <button class="btn primary" id="bExport">KYLE 전체 내보내기</button>
+      <button class="btn" id="bImport">텍스트 적용</button>
+    </div>
+    <textarea id="solText" spellcheck="false" placeholder="part / route / color 줄을 붙여넣고 '텍스트 적용'"></textarea>
+    <div class="hint">part · pin · route · color · group 줄을 읽습니다. 「검증 다시 실행」은 serve.py 로 열었을 때만 진짜 sol.py 를 돌립니다.</div>
+  </section>
+</aside>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script id="sol-data" type="application/json">__DATA__</script>
+<script>
+(function(){
+'use strict';
+const SERVER = ('__SERVER__' === '1');
+const PANELS = (()=>{ try { return JSON.parse('__PANELS__'); } catch(e){ return null; } })();
+if (PANELS && PANELS.list && PANELS.list.length){ const bx=document.getElementById('panelBox'), sel=document.getElementById('selPanel'); bx.style.display='';
+  PANELS.list.forEach(n=>{ const o=document.createElement('option'); o.value=n; o.textContent=n+' 장'; if(n===PANELS.cur) o.selected=true; sel.appendChild(o); });
+  sel.onchange=()=>{ location.href='/panel?name='+encodeURIComponent(sel.value); }; }
+const D = JSON.parse(document.getElementById('sol-data').textContent);
+const P = D.pitch;
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const tip = document.getElementById('tip');
+const $ = id=>document.getElementById(id);
+
+// ───────── 상태 ─────────
+const S = {
+  mode:'3d', flipped:false, wire:'manhattan', persp:true, shadow:true, stitch:true, wireMM:0.5, holeCap:1, tackPitch:6, viewLayer:0, routeSeed:0,
+  yaw:-0.6, pitch:0.95, zoom:5.5, panX:0, panY:0,
+  lift:false, show:{fails:true,chips:true,sockets:true,caps:true,pins:true,pinNo:false,pinName:false,wires:true,power:false,holes:true,labels:true},
+  hidden:new Set(), selNet:null, selPin:null, hoverPart:null, step:0,
+  routing:false, routeSide:'front', routePts:[],
+  linking:false, drag:null, dirty:false,
+};
+// 부드러운 카메라: 목표값(T)으로 매 프레임 수렴
+const T = {yaw:S.yaw, pitch:S.pitch, zoom:S.zoom, panX:0, panY:0};
+let geomVer=0; const bumpGeom=()=>{ geomVer++; };
+let vel = {yaw:0, pitch:0};   // 관성
+const colors = Object.assign({}, D.colors);
+const groups = {}; for (const n in D.nets) groups[n]=D.nets[n].group||'';
+const groupsOrder=[]; for (const n in D.nets){ const g=groups[n]||'기타'; if(!groupsOrder.includes(g)) groupsOrder.push(g); }
+S.step=groupsOrder.length;
+const routes={}; for (const n in D.nets) if (D.nets[n].routes&&D.nets[n].routes.length) routes[n]=D.nets[n].routes.map(r=>({side:r.side,layer:r.layer||1,auto:!!r.auto,pts:r.pts.map(p=>[p[0],p[1]])}));
+// 설정은 KYLE 문장(wire/stitch/share)이 원본. 뷰어는 읽어서 보여 주고, 바꾸면 다시 KYLE 로 쓴다.
+const applySettings=st=>{ if(!st) return; if(st.wire) S.wireMM=+st.wire; if(st.stitch!=null) S.tackPitch=st.stitch|0; if(st.share) S.holeCap=st.share|0;
+  const set=(id,v)=>{ const e=document.getElementById(id); if(e) e.value=String(v); }; set('selGauge',S.wireMM); set('selPitch',S.tackPitch); set('selCap',S.holeCap); };
+
+const BOARD_T=1.6, SOCK_H=3.6, CHIP_H=4.0, LEG_DOWN=2.2, CAP_H=6.5, RES_H=2.6;
+const partMap={}; D.parts.forEach(p=>partMap[p.ref]=p);
+const isCap=p=>p.pkg.startsWith('CAP'), isChip=p=>p.pkg.startsWith('DIP'), isRes=p=>p.pkg.startsWith('RES');
+function recomputePins(p){ geomVer++;
+  const n=p.pins.length, half=n/2, w=p.width;
+  p.pins.forEach(pin=>{
+    let dx,dy;
+    if (p.pkg.startsWith('DIP')){ dx=pin.n<=half?0:w; dy=pin.n<=half?pin.n-1:2*half-pin.n; }
+    else if (p.pkg.startsWith('CONN')){ dx=(pin.n-1)%2; dy=Math.floor((pin.n-1)/2); }
+    else if (p.pkg.startsWith('RES')){ dx=0; dy=pin.n===1?0:3; }
+    else { dx=0; dy=pin.n-1; }
+    for (let k=0;k<((p.rot/90)|0);k++){ const t=dx; dx=-dy; dy=t; }
+    pin.col=p.col+dx; pin.row=p.row+dy; pin.layer=p.layer||1;
+  });
+}
+D.parts.forEach(p=>p.pins.forEach(q=>{ if(q.net==='NC') q.net=null; q.ref=p.ref; }));
+D.parts.forEach(recomputePins);
+const findPin=(ref,n)=>{ const p=partMap[ref]; return p&&p.pins[n-1]; };
+const netPins=net=>(D.nets[net]?.pins||[]).map(([r,n])=>findPin(r,n)).filter(Boolean);
+const realPins=p=>p.pins.filter(q=>q.kind!=='undef');
+
+// ───────── 카메라 · 투영 ─────────
+let W=0,H=0, fitted=false;
+const bw=D.board[0]*P, bh=D.board[1]*P;
+const CAM_DIST=520;            // mm — 원근 강도
+let rot={cy:1,sy:0,cp:0,sp:1};
+function updateRot(){ const yaw=S.mode==='2d'?0:S.yaw, pitch=S.mode==='2d'?Math.PI/2:S.pitch; rot={cy:Math.cos(yaw),sy:Math.sin(yaw),cp:Math.cos(pitch),sp:Math.sin(pitch)}; }
+function view(x,y,z){        // world(mm) → view space (xv 오른쪽, yv 아래, zv 관찰자 쪽 +)
+  let X=x-bw/2, Y=y-bh/2, Z=z; if (S.flipped){ X=-X; Z=-Z; }
+  const x1=X*rot.cy-Y*rot.sy, y1=X*rot.sy+Y*rot.cy;
+  return [x1, y1*rot.sp-Z*rot.cp, y1*rot.cp+Z*rot.sp];
+}
+const curLayer=()=>((D.layers||1)<=1?1:(S.viewLayer|0)||1);
+const layerShown=L=>((D.layers||1)<=1) ? true : (S.mode==='2d' ? (L||1)===curLayer() : (!S.viewLayer || (L||1)===(S.viewLayer|0)));
+function proj(x,y,z){
+  const [xv,yv,zv]=view(x,y,z);
+  const k=(S.persp&&S.mode!=='2d')? CAM_DIST/(CAM_DIST-zv) : 1;
+  return [W/2+xv*S.zoom*k+S.panX, H/2+yv*S.zoom*k+S.panY, zv];
+}
+function unproj2d(sx,sy){ let X=(sx-W/2-S.panX)/S.zoom, Y=(sy-H/2-S.panY)/S.zoom; if (S.flipped) X=-X; return [Math.round((X+bw/2)/P), Math.round((Y+bh/2)/P)]; }
+function fitView(){ if(!W||!H) return; const z=Math.max(1.2,Math.min((W-60)/bw,(H-90)/bh)); T.zoom=S.zoom=z; T.panX=T.panY=S.panX=S.panY=0; }
+function resize(){ const r=cv.getBoundingClientRect(); const DPR=window.devicePixelRatio||1; W=r.width;H=r.height; cv.width=W*DPR; cv.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0); if(!fitted){ fitView(); fitted=true; } draw(); }
+window.addEventListener('resize',resize);
+
+// 조명 (view space, 관찰자 왼쪽 위 앞)
+const LIGHT=norm3([-0.45,-0.7,0.9]);
+function norm3(v){ const l=Math.hypot(...v)||1; return v.map(a=>a/l); }
+function lit(hex, nWorld, amb=0.42){
+  // 월드 법선을 회전 → 램버트
+  let [nx,ny,nz]=nWorld; if (S.flipped){ nx=-nx; nz=-nz; }
+  const x1=nx*rot.cy-ny*rot.sy, y1=nx*rot.sy+ny*rot.cy;
+  const nv=[x1, y1*rot.sp-nz*rot.cp, y1*rot.cp+nz*rot.sp];
+  const lam=Math.max(0, nv[0]*LIGHT[0]+nv[1]*LIGHT[1]+nv[2]*LIGHT[2]);
+  const k=amb+(1-amb)*lam;
+  const m=hex.match(/#(..)(..)(..)/); if(!m) return hex;
+  const [r,g,b]=[1,2,3].map(i=>Math.min(255,Math.round(parseInt(m[i],16)*k)));
+  return `rgb(${r},${g},${b})`;
+}
+
+// ───────── 배선 경로 ─────────
+const hash=s=>{ s=String(s); let h=7; for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0; return h; };
+// 같은 그룹색이라도 네트마다 밝기를 조금씩 달리한다 (한 구멍을 나눠 쓰는 두 선을 눈으로 구분).
+function shadeHex(hex, k){ if(!k) return hex;
+  const f=1 + (k===1?0.22:k===2?-0.20:0.40);           // 밝게 / 어둡게 / 더 밝게
+  const n=parseInt(hex.slice(1),16); const cl=v=>Math.max(0,Math.min(255,Math.round(v)));
+  const r=cl(((n>>16)&255)*f), g=cl(((n>>8)&255)*f), b=cl((n&255)*f);
+  return '#'+((1<<24)|(r<<16)|(g<<8)|b).toString(16).slice(1); }
+// ───────── 격자 라우터: 만능기판 구멍 격자 위 2층(앞/뒤) A* ─────────
+//  장애물  앞면: 부품 자리(소켓·몸통 아래)      뒷면: 남의 핀 구멍, 전원 버스 줄(맨 구리선)
+//  한 줄에 한 선: 이미 깔린 선의 칸은 다른 선이 못 씀
+//  관통(바느질): 빈 구멍에서 반대면으로 넘어갈 수 있다 (비용 VIA)
+const routeCache={key:'', res:{}};
+function gridKey(){ return JSON.stringify([geomVer,S.wire,S.stitch,S.holeCap,S.tackPitch,S.routeSeed|0,D.parts.map(p=>[p.col,p.row,p.rot,p.layer]),D.layers,D.board,JSON.stringify(D.stacks||{}),Object.keys(D.nets).length,JSON.stringify(routes),JSON.stringify(D.buses||{})]); }
+function computeAllRoutes(){
+  // ★ 반칸 격자: 좌표 ×2. 짝수=구멍, 홀수=구멍 사이 통로.
+  // ★★ 규칙 하나로 통일: 「한 면의 한 칸에는 한 선」. 구멍이든 통로든, 다른 네트가 있는 칸엔 못 들어간다.
+  //    (예전엔 구멍을 통로와 따로 세어서 '점당 2' 로 두 네트가 한 납땜점에서 교차했다 — 화면의 꼬임이 그것)
+  const W=D.board[0]*2, H=D.board[1]*2;
+  const NL=Math.max(1, D.layers||1), NP=NL*2;        // 판=층×2(앞/뒤). 판 번호 = (층-1)*2 + 면
+  const idx=(c,r,s)=>((s*H+r)*W+c);                  // s = 판 번호
+  const PL=s=>(s>>1)+1, PS=s=>(s&1);                 // 판 → 층 / 면(0=앞,1=뒤)
+  const HOLE=(c,r)=>(c%2===0 && r%2===0);
+  const blocked=new Uint8Array(W*H*NP);          // 1=장애물 (앞: 부품 아래 / 뒤: 남의 핀)
+  const used=new Array(W*H*NP).fill(null);      // 칸을 차지한 네트 — 구멍·통로 모두, 판별
+  const perm=new Uint8Array(W*H*NP);             // 1=영구(핀·버스·전원 스텁) — 재배선 때도 안 놓는다
+  const hard=new Uint8Array(W*H*NP);             // 1=납땜점(핀·버스 구멍) — 점당 2·3 이라도 남과 공유 불가
+  const share=new Map();                        // 점당>1 일 때만: idx -> [{net,color}] (구멍 공유 목록)
+  const cap=Math.max(1,S.holeCap|0);
+  const netColorOf=n=>(D.nets[n]&&D.nets[n].supply)?(n==='GND'?'#1a1a1a':'#c81e1e'):(colors[groups[n]||'']||'#7f7f7f');
+  const netShadeOf=n=>(D.nets[n]&&D.nets[n].supply)?netColorOf(n):shadeHex(netColorOf(n), hash(n)%4);   // 실제 그려지는 색으로 비교 (클램프로 같아지는 경우 포함)
+  function cellOK(i,c,r,net){
+    const u=used[i]; if(u==null||u===net) return true;
+    if(cap<=1 || !HOLE(c,r) || hard[i]) return false;      // 기본(점당 1): 다른 선이 있는 칸엔 절대 못 간다. 납땜점(핀·버스)은 언제나
+    const list=share.get(i)||[{net:u,color:netShadeOf(u)}]; // 점당>1: 구멍에 한해 색이 다른 선끼리 공유 (사용자가 켠 경우만)
+    if(list.some(x=>x.net===net)) return true;
+    if(list.length>=cap) return false;
+    const col=netShadeOf(net); return !list.some(x=>x.color===col);
+  }
+  function take(i,net,keep){ if(keep) perm[i]=1;
+    if(used[i]==null||used[i]===net){ used[i]=net; return; }
+    const list=share.get(i)||[{net:used[i],color:netShadeOf(used[i])}]; if(!list.some(x=>x.net===net)) list.push({net,color:netShadeOf(net)}); share.set(i,list); }
+  function release(i,net){ if(perm[i]) return;
+    const list=share.get(i); if(list){ const o=list.filter(x=>x.net!==net); if(o.length){ share.set(i,o); used[i]=o[0].net; } else { share.delete(i); used[i]=null; } return; }
+    if(used[i]===net) used[i]=null; }
+  const pinAt=new Map();                        // "층:c,r" -> net
+  const footAt=new Map();                       // "층:c,r" -> ref
+  const stackPin=new Map();                     // "층:c,r" -> {ref,lo,hi}  층간 핀헤더의 다리
+  D.parts.forEach(p=>{ const cs=p.pins.map(q=>q.col), rs=p.pins.map(q=>q.row); const L=p.layer||1;
+    p.pins.forEach(q=>{ if(q.kind!=='undef') pinAt.set(L+':'+(q.col*2)+','+(q.row*2), q.net); });
+    if (p.pkg.startsWith('DIP')||p.pkg.startsWith('CONN')){ for(let x=Math.min(...cs)*2-1;x<=Math.max(...cs)*2+1;x++) for(let y=Math.min(...rs)*2-1;y<=Math.max(...rs)*2+1;y++) footAt.set(L+':'+x+','+y,p.ref); }
+    else p.pins.forEach(q=>footAt.set(L+':'+(q.col*2)+','+(q.row*2),p.ref)); });
+  for (const sref in (D.stacks||{})){ const st=D.stacks[sref]; const pp=partMap[sref]; if(!pp) continue;
+    pp.pins.forEach(q=>{ for(let L=st.lo; L<=st.hi; L++){ stackPin.set(L+':'+(q.col*2)+','+(q.row*2), {ref:sref, lo:st.lo, hi:st.hi, net:q.net});
+      if(L!==(pp.layer||1)){ pinAt.set(L+':'+(q.col*2)+','+(q.row*2), q.net); footAt.set(L+':'+(q.col*2)+','+(q.row*2), sref); } } }); }
+  for(let s=0;s<NP;s++){ const L=PL(s), side=PS(s);
+    for(let r=0;r<H;r++) for(let c=0;c<W;c++){ const k=L+':'+c+','+r;
+      if(side===0 && footAt.has(k)) blocked[idx(c,r,s)]=1;
+      if(side===1 && pinAt.has(k)) blocked[idx(c,r,s)]=1; } }
+  // 핀이 꽂힌 구멍은 그 네트가 앞·뒤 모두 영구 예약 (남이 먼저 지나가면 주인이 못 들어온다)
+  for (const [k,net] of pinAt){ if(net==null) continue; const [L,cr]=k.split(':'); const [c,r]=cr.split(',').map(Number);
+    take(idx(c,r,(L-1)*2),net,true); take(idx(c,r,(L-1)*2+1),net,true); hard[idx(c,r,(L-1)*2)]=1; hard[idx(c,r,(L-1)*2+1)]=1; }
+  const res={};
+  // ── 전원: 버스 줄(뒷면 맨 구리선)의 납땜 구멍은 전부 그 네트 것. 신호는 구멍 사이 통로로만 '직각으로' 넘어간다
+  //    (절연선이 맨 구리선 위를 지나는 것 — 만능기판의 표준 관행. 납땜점 위를 지나는 건 금지).
+  //    전원 스텁(핀→버스 짧은 선)은 통째로 막는다 — 절연선끼리 겹치는 것이라 안 된다.
+  const busRows={}; for (const n in (D.buses||{})) (D.buses[n]||[]).forEach(r=>{ const rr=r*2; if(rr>=0&&rr<H) busRows[rr]=n; });
+  const supplyInfo={};
+  for (const net in D.nets){ const N=D.nets[net]; if(!N.supply) continue;
+    const rows=(D.buses&&D.buses[net]&&D.buses[net].length)?D.buses[net]:[(D.supplies[net]>0)?-1:H];
+    const nearest=r=>rows.reduce((a,b)=>Math.abs(b-r)<Math.abs(a-r)?b:a);
+    const segs=[]; const lays=new Set(); netPins(net).forEach(p=>lays.add(p.layer||1)); if(!lays.size) lays.add(1);
+    lays.forEach(L=>{ const pl=(L-1)*2+1;
+      rows.forEach(r=>{ const rr=r*2; if(rr<0||rr>=H) return;
+        for(let c=0;c<W;c+=2){ const i=idx(c,rr,pl); const own=pinAt.get(L+':'+c+','+rr); if(own!==undefined&&own!==net) continue; if(used[i]==null||used[i]===net){ take(i,net,true); hard[i]=1; } }   // 구멍만. 통로는 직각 횡단용으로 비워 둔다
+        segs.push({side:'back',layer:L,pts:[[0,r],[D.board[0]-1,r]],rail:true}); }); });
+    res[net]=segs; supplyInfo[net]={rows,nearest}; }
+  // ── 이미 정해진 경로(손경로·파일에서 읽은 auto 경로)는 먼저 칸을 잡는다 — 안 그러면 나머지 네트가 그 위로 지나간다
+  //    (한때 이 블록이 다른 수정에 휩쓸려 사라졌고, 그 사이 '되읽으면 더 잘 깔린다' 는 착시가 생겼다 — 겹쳐 깔린 것이었다)
+  for (const net in routes){ const rs=routes[net]; if(!rs||!rs.length||!D.nets[net]) continue;
+    rs.forEach(sg=>{ const L=sg.layer||1, pl=(L-1)*2+((sg.side==='back')?1:0);
+      for(let i=1;i<sg.pts.length;i++){ const [x0,y0]=sg.pts[i-1],[x1,y1]=sg.pts[i]; const dx=Math.sign(x1-x0), dy=Math.sign(y1-y0), nn=Math.round((Math.abs(x1-x0)+Math.abs(y1-y0))*2);
+        for(let k=0;k<=nn;k++){ const c2=x0*2+dx*k, r2=y0*2+dy*k; if(c2<0||r2<0||c2>=W||r2>=H) continue; take(idx(c2,r2,pl),net,true); } } }); }
+  // ── 신호: 짧은 것부터. 「배선 다시」의 시도 번호(routeSeed)가 순서를 살짝 섞는다.
+  const sig=Object.keys(D.nets).filter(n=>!D.nets[n].supply && !(routes[n]&&routes[n].length) && netPins(n).length>=2);
+  const est=n=>{ const ps=netPins(n); let L=0; for(let i=1;i<ps.length;i++) L+=Math.abs(ps[i].col-ps[0].col)+Math.abs(ps[i].row-ps[0].row); return L; };
+  const seed=S.routeSeed|0; const jit=n=>seed?((hash(n+'|'+seed)%97)/97)*8:0;
+  sig.sort((a,b)=>(est(a)+jit(a))-(est(b)+jit(b)));
+  const thick=S.wireMM>=0.6;
+  const VIA=(!S.stitch?40:(thick?12:2)), BEND=6, HOP=6, SOFT=14, SOFT_H=6; const hist=new Float32Array(W*H*NP);   // hist: 걷어낸 횟수 (핑퐁 방지)   // 꺾임이 싸면 빈 칸을 계단처럼 비집고 다닌다
+  const openHeap=[]; const push=(f,i)=>{ openHeap.push([f,i]); let k=openHeap.length-1; while(k>0){ const p=(k-1)>>1; if(openHeap[p][0]<=openHeap[k][0]) break; [openHeap[p],openHeap[k]]=[openHeap[k],openHeap[p]]; k=p; } };
+  const pop=()=>{ const top=openHeap[0]; const last=openHeap.pop(); if(openHeap.length){ openHeap[0]=last; let k=0; for(;;){ let l=2*k+1,r=l+1,m=k; if(l<openHeap.length&&openHeap[l][0]<openHeap[m][0]) m=l; if(r<openHeap.length&&openHeap[r][0]<openHeap[m][0]) m=r; if(m===k) break; [openHeap[m],openHeap[k]]=[openHeap[k],openHeap[m]]; k=m; } } return top; };
+  const g=new Float32Array(W*H*NP), came=new Int32Array(W*H*NP), dir=new Int8Array(W*H*NP), closed=new Uint8Array(W*H*NP);
+  // goalSet 을 주면 '이미 이 네트가 지나는 아무 칸' 에 닿으면 성공 (버스를 손납땜할 때처럼 중간에서 갈라진다).
+  // 예전엔 핀→핀 사슬만 가능해서, 양쪽 끝이 DIP 핀줄에 파묻히면 길이 아예 없었다 (미배선의 주원인).
+  function astar(sc,sr,sL,gc,gr,gL,net,goalSet,soft){
+    g.fill(1e9); came.fill(-1); openHeap.length=0; closed.fill(0);
+    const hz=(c,r,L)=>Math.abs(gc-c)+Math.abs(gr-r)+Math.abs(gL-L)*HOP;
+    const s0=idx(sc,sr,(sL-1)*2+1); g[s0]=0; push(hz(sc,sr,sL), s0); dir[s0]=-1;
+    // 핀에는 뒷면(납땜면)에서만 닿는다 — 앞면의 핀 자리는 소켓·부품 몸통 아래라 납땜할 수 없다
+    const goalB=idx(gc,gr,(gL-1)*2+1);
+    const isG=goalSet ? (i=>goalSet.has(i)) : (i=>(i===goalB)); const own=(c,r,L,side)=>side===1 && pinAt.get(L+':'+c+','+r)===net;
+    let it=0;
+    while(openHeap.length && it++<2000000){
+      const [f,i]=pop(); if(isG(i)) break; if(closed[i]) continue; closed[i]=1;
+      const s=(i/(W*H))|0, r=((i/W)|0)%H, c=i%W; const L=PL(s), side=PS(s);
+      const nb=[[1,0,0],[-1,0,1],[0,1,2],[0,-1,3]];
+      for (const [dc,dr,dd] of nb){ const nc=c+dc, nr=r+dr; if(nc<0||nr<0||nc>=W||nr>=H) continue; const j=idx(nc,nr,s);
+        const isGoal=(nc===gc&&nr===gr&&L===gL&&side===1);
+        if (!isGoal && !own(nc,nr,L,side) && blocked[j]) continue;
+        let extra=0;
+        if (!cellOK(j,nc,nr,net)){                                 // ★ 한 면 한 칸 한 선
+          if (!soft || hard[j] || (perm[j] && !(used[j] in supplyInfo))) continue;   //   soft(재배선 협상): 남의 '선' 칸(전원 스텁 포함)은 비용을 물고 지난다 → 그 네트를 걷어내고 다시 깐다. 핀·버스(hard)는 절대 안 됨
+          extra = SOFT + SOFT_H*hist[j] + (perm[j]?SOFT:0); }
+        // 전원 버스 줄 '위를 따라' 가로로 달리지 않는다. 단, 구멍 사이 통로(홀수 행)는 버스 구리선이 없으니 허용 —
+        // 안 그러면 버스 행이 기판을 가로 띠로 잘라 그 안의 핀이 갇힌다 (좁은 기판에서 미배선의 주원인).
+        if (side===1 && busRows[nr]!==undefined && (nr%2===0) && dr===0) continue;
+        const cost=1 + extra + (dir[i]>=0&&dir[i]!==dd?BEND:0);
+        const ng=g[i]+cost; if(ng<g[j]){ g[j]=ng; came[j]=i; dir[j]=dd; push(ng+hz(nc,nr,L), j); } }
+      // 관통(바느질): 같은 층 앞↔뒤. 빈 구멍(핀 없음)이어야 하고, 앞면이 부품 아래면 안 된다
+      { const os=(s^1), jj=idx(c,r,os);
+        if (HOLE(c,r) && cellOK(jj,c,r,net) && !pinAt.has(L+':'+c+','+r) && !(PS(os)===0&&footAt.has(L+':'+c+','+r)) ){   // 핀 구멍에서는 관통 안 함
+          const ng=g[i]+VIA; if(ng<g[jj]){ g[jj]=ng; came[jj]=i; dir[jj]=-1; push(ng+hz(c,r,L), jj); } } }
+      // 층 갈아타기: 층간 핀헤더의 다리에서 위/아래 층 같은 자리로
+      const sp=stackPin.get(L+':'+c+','+r);
+      if (sp && HOLE(c,r) && (sp.net==null || sp.net===net)){
+        for (const L2 of [L-1,L+1]){ if(L2<sp.lo||L2>sp.hi) continue;
+          for (const sd of [1]){ const jj=idx(c,r,(L2-1)*2+sd);        // 뒷면(납땜면)으로만 — 핀헤더 다리는 어느 층에서든 뒷면에서 잇는다
+            if(!cellOK(jj,c,r,net)) continue;
+            const ng=g[i]+HOP; if(ng<g[jj]){ g[jj]=ng; came[jj]=i; dir[jj]=-1; push(ng+hz(c,r,L2), jj); } } } }
+    }
+    window.__lastIt=it; window.__lastHeap=openHeap.length;
+    let goal=goalB;
+    if (goalSet){ goal=-1; let bg=1e9;
+      goalSet.forEach(i=>{ if(g[i]<bg){ bg=g[i]; goal=i; } });
+      if(goal<0) goal=goalB; }
+    if (g[goal]>=1e9){ if(window.__routeDebug) window.__routeDebug.push({net, from:[sc/2,sr/2,sL], to:[gc/2,gr/2,gL], it, heap:openHeap.length}); return null; }
+    if(!(goal>=0)) return null;
+    const path=[]; let i=goal; while(i>=0){ const s=(i/(W*H))|0; path.push([i%W, ((i/W)|0)%H, PS(s), PL(s)]); i=came[i]; } path.reverse(); return path.length?path:null;
+  }
+  function toSegs(path){ // [c,r,면,층] 반칸 열 → {side,layer,pts,via} 구간들 (좌표는 ÷2 하여 구멍 단위)
+    const segs=[]; let cur=null;
+    for (let k=0;k<path.length;k++){ const [c2,r2,sd,L]=path[k]; const c=c2/2, r=r2/2; const side=sd?'back':'front';
+      if (!cur || cur.side!==side || cur.layer!==L){ const hop=!!cur && cur.layer!==L;
+        if(cur){ cur.pts.push([c,r]); cur.viaEnd=true; }
+        cur={side,layer:L,pts:[[c,r]],viaStart:!!cur, hop}; segs.push(cur); }
+      else cur.pts.push([c,r]); }
+    segs.forEach(sg=>{ const o=[sg.pts[0]]; for(let k=1;k<sg.pts.length-1;k++){ const a=o[o.length-1], b=sg.pts[k], c=sg.pts[k+1]; if((b[0]-a[0])*(c[1]-b[1])!==(b[1]-a[1])*(c[0]-b[0])) o.push(b); } o.push(sg.pts[sg.pts.length-1]); sg.pts=o; });
+    return segs;
+  }
+  function tackLong(segs,net){
+    // 직선이 tackPitch 칸 넘게 이어지면 중간 구멍에서 관통 → 기판에 눌러 고정.
+    // ★ 한 구간 안의 관통 수는 짝수여야 한다: 홀수면 그 뒤가 전부 반대 면으로 뒤집혀, 핀에 앞면으로 닿거나
+    //   다음 관통이 '면이 안 바뀌는 관통' 이 된다 (R28 이 잡았다). 홀수면 마지막 계획을 버린다.
+    // 그 구멍의 반대면이 막혀 있으면(부품 아래·남의 선·핀) 다음 구멍으로 미루고, 끝내 없으면 그냥 둔다.
+    const T=S.tackPitch|0; if(!T||!S.stitch) return segs;
+    const out=[];
+    segs.forEach(sg=>{
+      if (sg.pts.length<2){ out.push(sg); return; }
+      const L=sg.layer||1;
+      // 1) 계획: 이 구간의 직선 run 마다 tack 점 후보를 모은다 (면은 번갈아 바뀐다고 가정하고 반대면 검사)
+      const plan=[]; let side=sg.side;
+      for (let i=1;i<sg.pts.length;i++){
+        const a=sg.pts[i-1], b=sg.pts[i]; const dx=Math.sign(b[0]-a[0]), dy=Math.sign(b[1]-a[1]);
+        let len=Math.abs(b[0]-a[0])+Math.abs(b[1]-a[1]); let p=a;
+        while (len>T){
+          const step=Math.floor(T/2)*2 || 2; let q=null;
+          for (let tryK=0; tryK<3; tryK++){
+            const cand=[p[0]+dx*(step+2*tryK), p[1]+dy*(step+2*tryK)];
+            if (!Number.isInteger(cand[0])||!Number.isInteger(cand[1])) break;
+            const rem=Math.abs(b[0]-cand[0])+Math.abs(b[1]-cand[1]); if(rem<=0) break;
+            const c2=cand[0]*2, r2=cand[1]*2; const os=(side==='back')?0:1; const jj=idx(c2,r2,(L-1)*2+os);
+            if (blocked[jj] || !cellOK(jj,c2,r2,net) || pinAt.has(L+':'+c2+','+r2)) continue;
+            q=cand; break; }
+          if (!q) break;
+          plan.push({i, q}); side=(side==='back')?'front':'back';
+          len-=Math.abs(q[0]-p[0])+Math.abs(q[1]-p[1]); p=q;
+        }
+      }
+      if (plan.length%2===1) plan.pop();           // ★ 짝수로
+      // 2) 적용
+      let cur={side:sg.side, layer:L, pts:[sg.pts[0]], viaStart:sg.viaStart, hop:sg.hop}; side=sg.side; let pi=0;
+      for (let i=1;i<sg.pts.length;i++){
+        const b=sg.pts[i];
+        while (pi<plan.length && plan[pi].i===i){ const q=plan[pi].q; cur.pts.push(q); cur.viaEnd=true; out.push(cur);
+          side=(side==='back')?'front':'back'; cur={side, layer:L, pts:[q], viaStart:true, tack:true}; pi++; }
+        cur.pts.push(b);
+      }
+      cur.viaEnd=sg.viaEnd; out.push(cur);
+    });
+    return out;
+  }
+  // 최종 선분이 지나는 모든 칸 (구멍·통로·양 끝, 관통은 양면) → 규칙 위반이면 null, 아니면 칸 목록
+  function cellsOf(finalSegs,net){
+    const cells=[];
+    for (const sg of finalSegs){ const L=sg.layer||1, pl=(L-1)*2+((sg.side==='back')?1:0);
+      for(let i=1;i<sg.pts.length;i++){ const [x0,y0]=sg.pts[i-1],[x1,y1]=sg.pts[i];
+        const dx=Math.sign(x1-x0), dy=Math.sign(y1-y0), nn=Math.round((Math.abs(x1-x0)+Math.abs(y1-y0))*2);
+        for(let k=0;k<=nn;k++){ const c2=x0*2+dx*k, r2=y0*2+dy*k;
+          if(c2<0||r2<0||c2>=W||r2>=H) return null;
+          const ii=idx(c2,r2,pl);
+          if(blocked[ii] && (pinAt.get(L+':'+c2+','+r2)!==net || (pl&1)===0)) return null;   // 앞면의 막힌 칸은 자기 핀이라도 안 된다 (소켓 아래)
+          if(!cellOK(ii,c2,r2,net)) return null;
+          cells.push(ii); } } }
+    return cells;
+  }
+  const cellsRaw=(finalSegs)=>{ const cells=[]; for (const sg of finalSegs){ const L=sg.layer||1, pl=(L-1)*2+((sg.side==='back')?1:0);
+      for(let i=1;i<sg.pts.length;i++){ const [x0,y0]=sg.pts[i-1],[x1,y1]=sg.pts[i]; const dx=Math.sign(x1-x0), dy=Math.sign(y1-y0), nn=Math.round((Math.abs(x1-x0)+Math.abs(y1-y0))*2);
+        for(let k=0;k<=nn;k++){ const c2=x0*2+dx*k, r2=y0*2+dy*k; if(c2<0||r2<0||c2>=W||r2>=H) return null; cells.push(idx(c2,r2,pl)); } } } return cells; };
+  const routeNet=(net,soft)=>{
+    const pins=netPins(net); const order=[pins[0]]; const rest=pins.slice(1);
+    while(rest.length){ const a=order[order.length-1]; let bi=0,bd=1e9; rest.forEach((p,i)=>{const d=Math.abs(a.col-p.col)+Math.abs(a.row-p.row); if(d<bd){bd=d;bi=i;}}); order.push(rest.splice(bi,1)[0]); }
+    const segs=[]; const claimed=[]; const laid=new Set(); let ok=true;   // laid = 이 네트가 납땜되는 구멍 (분기 목표: 핀·관통점만. 선 중간에서는 못 갈라진다 — 피복 위에 납땜이 안 된다)
+    const solderPts=(fs)=>{ const out=[]; fs.forEach(sg=>{ const L=sg.layer||1; [sg.pts[0], sg.pts[sg.pts.length-1]].forEach(q=>{ if(Number.isInteger(q[0])&&Number.isInteger(q[1])){ out.push(idx(q[0]*2,q[1]*2,(L-1)*2)); out.push(idx(q[0]*2,q[1]*2,(L-1)*2+1)); } }); }); return out; };
+    for (let i=0;i<order.length-1;i++){ const a=order[i], b=order[i+1]; const aL=a.layer||1, bL=b.layer||1;
+      const fail=()=>{ ok=false; segs.push({side:'back',layer:aL,pts:[[a.col,a.row],[b.col,a.row],[b.col,b.row]],fail:true}); };
+      let path=astar(a.col*2,a.row*2,aL,b.col*2,b.row*2,bL,net,undefined,soft);
+      let finalSegs=null, cells=null;
+      const legal=(fs)=>soft?cellsRaw(fs):cellsOf(fs,net);
+      if (path){ finalSegs=tackLong(toSegs(path),net); cells=legal(finalSegs); }
+      if (!cells && laid.size){
+        // 사슬이 막혔다 → b 에서 출발해 '이미 깔린 이 네트의 납땜점' 으로 (버스 분기)
+        const p2=astar(b.col*2,b.row*2,bL,a.col*2,a.row*2,aL,net,laid,soft);
+        if (p2){ const f2=tackLong(toSegs(p2),net); const c2=legal(f2); if(c2){ finalSegs=f2; cells=c2; } }
+      }
+      if(window.__branch) window.__branch.push({net, chain:!!path, laid:laid.size, ok:!!cells});
+      if (!cells){ fail(); continue; }
+      if (soft){ cells.forEach(ii=>{ claimed.push(ii); }); }        // soft: 칸은 나중에(막는 네트를 걷어낸 뒤) 잡는다
+      else cells.forEach(ii=>{ take(ii,net,false); claimed.push(ii); });
+      solderPts(finalSegs).forEach(ii=>laid.add(ii));
+      finalSegs.forEach(sg=>segs.push(sg)); }
+    if (!ok){
+      // ★ 한 갈래라도 못 깔았으면 이 네트는 '미배선'. 깔린 반쪽을 그대로 두면 나중에 칸을 놓은 뒤 다른 선이 그 위를 지나가
+      //   화면에 남의 선·납땜점을 가로지르는 유령 선이 보인다 (사용자가 잡은 것). 갈래마다 빨간 고무줄만 남긴다.
+      const marks=[]; for (let i=0;i<order.length-1;i++){ const a=order[i], b=order[i+1]; marks.push({side:'back',layer:a.layer||1,pts:[[a.col,a.row],[b.col,a.row],[b.col,b.row]],fail:true}); }
+      return {segs:marks, ok, claimed}; }
+    return {segs, ok, claimed};
+  };
+  const __t0=performance.now(); let __stubFail=0;
+  // ── 전원 스텁: 핀 → 버스 줄의 구멍. 신호선과 똑같은 A*·똑같은 규칙 (예전엔 직선을 그어 남의 핀 위를 지나갔다 — R28 이 잡음)
+  const routeStubs=(net)=>{ const {rows,nearest}=supplyInfo[net]; let okAll=true;
+    // 층간 핀헤더(라이저)의 전원 핀은 걸친 모든 층에서 각 층의 버스에 이어야 한다 (위층 전원은 라이저로 올라온다)
+    const pinsAll=[]; netPins(net).forEach(p=>{ const st=D.stacks&&D.stacks[p.ref]; if(st){ for(let Lz=st.lo; Lz<=st.hi; Lz++) pinsAll.push(Object.assign({},p,{layer:Lz})); } else pinsAll.push(p); });
+    pinsAll.forEach(p=>{ const L=p.layer||1; const tr=nearest(p.row); if(tr===p.row||tr<0||tr>=D.board[1]) return;   // 핀이 버스 줄 위면 스텁 없음
+      let path=null;
+      const __ts=performance.now(); let __tries=0;
+      for (const dc of [0,1,-1,2,-2,3,-3]){ const gc=(p.col+dc)*2, gr=tr*2; if(gc<0||gc>=W) continue; const o=pinAt.get(L+':'+gc+','+gr); if(o!==undefined&&o!==net) continue;
+        __tries++; path=astar(p.col*2,p.row*2,L,gc,gr,L,net); if(path&&path.length) break; path=null; }   // (인자 7개! 한때 6개를 넘겨 goal=NaN, 빈 경로를 '성공' 으로 셌다)
+      if(window.__stubProf) window.__stubProf.push({net, pin:[p.col,p.row], tr, tries:__tries, ms:Math.round(performance.now()-__ts), ok:!!path, it:window.__lastIt, heap:window.__lastHeap, len:path?path.length:0});
+      if(!path){ __stubFail++; okAll=false; res[net].push({side:'back',layer:L,pts:[[p.col,p.row],[p.col,tr]],fail:true}); return; }
+      const fs=toSegs(path); const cells=cellsOf(fs,net); if(!cells){ okAll=false; res[net].push({side:'back',layer:L,pts:[[p.col,p.row],[p.col,tr]],fail:true}); return; }
+      cells.forEach(ii=>take(ii,net,true)); fs.forEach(sg=>res[net].push(sg)); });
+    return okAll; };
+  for (const net in supplyInfo){ const isSaved=routes[net]&&routes[net].length; if(isSaved) continue; routeStubs(net); }
+  const __t1=performance.now();
+  let pending=[];
+  for (const net of sig){ const r=routeNet(net); res[net]=r.segs; if(!r.ok) pending.push({net, claimed:r.claimed}); }
+  const __t2=performance.now();
+  // 재배선: 실패한 네트는 자기 칸을 놓고 다시 (다른 네트가 자리를 잡은 뒤라 빈 길이 달라진다). 최대 3바퀴
+  //   두 단계: 실패한 네트 '전부' 칸을 먼저 놓고 → 다시 깐다. (한 네트씩 놓고-깔면 다른 실패 네트의 반쪽 경로가 여전히 길을 막는다.
+  //   파일로 저장했다 되읽으면 그 반쪽이 없어져서 훨씬 잘 깔리던 것이 이 때문이었다.)
+  for (let round=0; round<6 && pending.length; round++){
+    { // 실패 네트가 쥔 칸을 전부 놓는다 — 공유 목록(share)도 같이 정리해야 한다.
+      // (used 만 null 로 지우면, 남아 있는 다른 네트가 '빈 칸' 으로 보여 색 검사 없이 셋째 선이 들어온다 — 점당 2·3 에서 같은 색 공유가 새던 원인)
+      const bad=new Set(pending.map(x=>x.net));
+      for (let i=0;i<used.length;i++){ if(used[i]==null||perm[i]) continue;
+        const list=share.get(i);
+        if (list){ const o=list.filter(x=>!bad.has(x.net)); if(o.length){ share.set(i,o); used[i]=o[0].net; } else { share.delete(i); used[i]=null; } }
+        else if (bad.has(used[i])) used[i]=null; } }
+    const again=[];
+    for (const {net} of pending){ const r2=routeNet(net); res[net]=r2.segs; if(!r2.ok) again.push({net, claimed:r2.claimed}); }
+    if (window.__rounds) window.__rounds.push({round, before:pending.length, after:again.length, segFail:Object.values(res).reduce((a,ss)=>a+ss.filter(s=>s.fail).length,0)});
+    if (again.length===pending.length && round>=2){ pending=again; break; }   // 더 못 줄이면 그만
+    pending=again; }
+  const releaseNet=(n)=>{ const sup=(n in supplyInfo); for (let i=0;i<used.length;i++){ if(used[i]==null||hard[i]) continue; if(perm[i]){ if(sup && used[i]===n){ perm[i]=0; used[i]=null; hist[i]+=1; } continue; } const list=share.get(i);
+      if (list){ if(!list.some(x=>x.net===n)) continue; const o=list.filter(x=>x.net!==n); if(o.length){ share.set(i,o); used[i]=o[0].net; } else { share.delete(i); used[i]=null; } hist[i]+=1; }
+      else if (used[i]===n){ used[i]=null; hist[i]+=1; } } };
+  if (pending.length) pending.forEach(x=>releaseNet(x.net));
+  // ── 협상 재배선: 못 깐 네트마다 「남의 선 칸을 비용을 물고 지나는 경로」를 찾아, 그 길을 막던 네트들을 걷어내고 깐 뒤 걷어낸 네트들을 다시 깐다.
+  //    걷어낸 네트가 하나라도 못 돌아오면 통째로 되돌린다 → 미배선 수는 절대 늘지 않는다 (처음 판은 되돌림 없이 돌려 348개까지 늘어난 적이 있다).
+  //    걷어낸 칸마다 hist 가 올라 같은 자리를 두고 핑퐁하지 않는다.
+  { const __t3=performance.now(); let rip=0, improved=0, tried=0;
+    const snapshot=()=>({used:used.slice(), perm:perm.slice(), share:new Map([...share].map(([k,v])=>[k,v.map(x=>({net:x.net,color:x.color}))])), res:Object.assign({},res)});
+    const restore=(sn)=>{ for(let i=0;i<used.length;i++){ used[i]=sn.used[i]; perm[i]=sn.perm[i]; } share.clear(); sn.share.forEach((v,k)=>share.set(k,v)); for(const k in res) delete res[k]; Object.assign(res,sn.res); };
+    let still=[];
+    for (let pass=0; pass<6 && pending.length; pass++){ const before=improved; still=[];
+    for (const {net} of pending){
+      tried++; const sn=snapshot();
+      const r=routeNet(net,true);
+      if (!r.ok){ still.push(net); continue; }
+      const blockers=new Set(); r.claimed.forEach(i=>{ const u=used[i]; if(u!=null && u!==net) blockers.add(u); (share.get(i)||[]).forEach(x=>{ if(x.net!==net) blockers.add(x.net); }); });
+      if (blockers.size>8){ still.push(net); continue; }
+      blockers.forEach(b=>{ releaseNet(b); res[b]=[]; });
+      const cellsAll=cellsOf(r.segs,net);
+      if (!cellsAll){ restore(sn); still.push(net); continue; }
+      cellsAll.forEach(i=>take(i,net,false)); res[net]=r.segs;
+      // 걷어낸 네트들을 보통 방식으로 다시 깐다 (자기들끼리 최대 3바퀴)
+      let q=[...blockers];
+      for (let round=0; round<3 && q.length; round++){
+        const again=[];
+        for (const bnet of q){
+          if (bnet in supplyInfo){ res[bnet]=[]; if(routeStubs(bnet)) continue; releaseNet(bnet); again.push(bnet); continue; }   // 전원: 스텁 전부 다시
+          const rb=routeNet(bnet,false); if(rb.ok) res[bnet]=rb.segs; else { releaseNet(bnet); again.push(bnet); } }
+        q=again; }
+      if (q.length){ restore(sn); still.push(net); continue; }
+      rip+=blockers.size; improved++; }
+    pending=still.map(net=>({net}));
+    if (improved===before) break; }                                   // 한 바퀴 돌아 하나도 못 줄이면 끝
+    if(window.__prof) window.__prof.push({negotiate:Math.round(performance.now()-__t3), tried, improved, rip, stuck:still.length}); }
+  if(window.__prof) window.__prof.push({stubs:Math.round(__t1-__t0), stubFail:__stubFail, pass1:Math.round(__t2-__t1), rounds:Math.round(performance.now()-__t2), firstFail:pending.length});
+  return res;
+}
+function autoRoute(net){
+  const N=D.nets[net]; if(!N) return [];
+  if (routes[net]&&routes[net].length){ // 손경로/저장경로: 이어지는 구간의 이음새는 관통. 전원이면 버스 줄(rail)도 붙인다
+    const rails=N.supply?((D.buses&&D.buses[net])||[]).map(r=>({side:'back',layer:1,pts:[[0,r],[D.board[0]-1,r]],rail:true})):[];
+    return rails.concat(routes[net].map((r,i,arr)=>({side:r.side,layer:r.layer||1,auto:!!r.auto,pts:r.pts,manual:true, viaStart:i>0&&arr[i-1].pts.length&&arr[i-1].pts[arr[i-1].pts.length-1].join()===r.pts[0].join(), viaEnd:i<arr.length-1&&arr[i+1].pts[0].join()===r.pts[r.pts.length-1].join()}))); }
+  const key=gridKey(); if (routeCache.key!==key){ routeCache.key=key; routeCache.res=computeAllRoutes(); }
+  return routeCache.res[net]||[];
+}
+const netColor=net=>{ if (D.nets[net]?.supply) return net==='GND'?'#1a1a1a':'#c81e1e'; return shadeHex(colors[groups[net]||'']||'#7f7f7f', hash(net)%4); };
+const groupVisible=net=>groupsOrder.indexOf(groups[net]||'기타')<S.step;
+
+// ───────── 프리미티브 수집 → 깊이 정렬 → 그리기 ─────────
+const hits=[], segHits=[];
+let prims=[];
+function addPoly(pts3, fill, stroke, z){ const pp=pts3.map(v=>proj(...v)); const d=pp.reduce((s,q)=>s+q[2],0)/pp.length; prims.push({t:'poly',pp,fill,stroke,d:d+(z||0)}); }
+function addLine(a3,b3,color,w,z,net,dash){ const A=proj(...a3),B=proj(...b3); prims.push({t:'line',A,B,color,w,d:(A[2]+B[2])/2+(z||0),net,dash}); if(net!=null) segHits.push({x1:A[0],y1:A[1],x2:B[0],y2:B[1],net}); }
+function addWire(pts3,col,w,alpha,net,dash){
+  const pp=pts3.map(v=>proj(...v)); const d=pp.reduce((s,q)=>s+q[2],0)/pp.length;
+  const a=alpha??1;
+  prims.push({t:'path',pp,color:`rgba(0,0,0,${0.45*a})`,w:w+1.8,d:d-0.03,dash});           // 테두리(그늘)
+  prims.push({t:'path',pp,color:withAlpha(col,a),w:w,d:d-0.02,dash});                       // 피복
+  prims.push({t:'path',pp:pp.map(q=>[q[0]-w*0.22,q[1]-w*0.28,q[2]]),color:`rgba(255,255,255,${0.28*a})`,w:Math.max(0.6,w*0.35),d:d-0.01,dash}); // 하이라이트
+  if (net!=null) for(let i=0;i<pp.length-1;i++) segHits.push({x1:pp[i][0],y1:pp[i][1],x2:pp[i+1][0],y2:pp[i+1][1],net});
+}
+function addDot(a3,r,fill,z,hit){ const A=proj(...a3); prims.push({t:'dot',A,r,fill,d:A[2]+(z||0)}); if(hit){ hit.x=A[0]; hit.y=A[1]; hits.push(hit); } }
+function addText(a3,txt,font,fill,z,align){ const A=proj(...a3); prims.push({t:'text',A,txt,font,fill,d:A[2]+(z||0),align}); }
+function addBox(x0,y0,x1,y1,z0,z1,colTop,colSide,stroke,zb){
+  // 6면, 각 면은 월드 법선으로 조명
+  const c=[[x0,y0,z0],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0],[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]];
+  const faces=[[[4,5,6,7],[0,0,1],colTop],[[0,1,2,3],[0,0,-1],colSide],[[0,1,5,4],[0,-1,0],colSide],[[1,2,6,5],[1,0,0],colSide],[[2,3,7,6],[0,1,0],colSide],[[3,0,4,7],[-1,0,0],colSide]];
+  faces.forEach(([f,n,col])=>{ const [nx,ny,nz]=n; // 뒷면 컬링: 뷰 공간 법선 z<0 이면 안 보임
+    let vx=nx,vy=ny,vz=nz; if(S.flipped){vx=-vx;vz=-vz;} const x1v=vx*rot.cy-vy*rot.sy, y1v=vx*rot.sy+vy*rot.cy; const nzv=y1v*rot.cp+vz*rot.sp;
+    if (nzv<=-0.02) return;
+    addPoly(f.map(i=>c[i]), lit(col,n), stroke, zb); });
+}
+
+function draw(){
+  updateRot();
+  if (S.mode==='3d' && window.__gl3d){ cv.style.visibility='hidden'; window.__gl3d.frame(); return; }
+  cv.style.visibility='visible'; if (window.__gl3d) window.__gl3d.hide();
+  hits.length=0; segHits.length=0; prims=[];
+  ctx.clearRect(0,0,W,H);
+  const css=getComputedStyle(document.documentElement); const C=k=>css.getPropertyValue(k).trim();
+  const topView=S.mode==='2d', fromBack=S.flipped;
+
+  // ── 기판 (배경으로 직접 그림) ──
+  const bc=[[0,0],[bw,0],[bw,bh],[0,bh]].map(([x,y])=>proj(x-P/2,y-P/2,0));
+  const bb=[[0,0],[bw,0],[bw,bh],[0,bh]].map(([x,y])=>proj(x-P/2,y-P/2,-BOARD_T));
+  const boardCol = C('--board');
+  if(!topView){ // 옆면 4개 (조명)
+    const sides=[[0,1,[0,-1,0]],[1,2,[1,0,0]],[2,3,[0,1,0]],[3,0,[-1,0,0]]];
+    sides.forEach(([i,j,n])=>{ ctx.fillStyle=lit(C('--board-edge'),n); ctx.beginPath(); ctx.moveTo(bc[i][0],bc[i][1]); ctx.lineTo(bc[j][0],bc[j][1]); ctx.lineTo(bb[j][0],bb[j][1]); ctx.lineTo(bb[i][0],bb[i][1]); ctx.closePath(); ctx.fill(); });
+  }
+  ctx.fillStyle=lit(boardCol,[0,0,fromBack?-1:1],0.6); ctx.beginPath(); bc.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle=C('--board-edge'); ctx.lineWidth=1; ctx.stroke();
+  // 구멍 + 패드 (한 패스로)
+  if (S.show.holes && S.zoom>1.8){
+    const zH=fromBack?-BOARD_T:0;
+    const rPad=Math.max(1.2,S.zoom*0.42), rHole=Math.max(0.5,S.zoom*0.2);
+    ctx.fillStyle='rgba(184,115,51,0.85)'; ctx.beginPath();
+    for(let col=0;col<D.board[0];col++) for(let row=0;row<D.board[1];row++){ const q=proj(col*P,row*P,zH); ctx.moveTo(q[0]+rPad,q[1]); ctx.arc(q[0],q[1],rPad,0,6.283); }
+    ctx.fill();
+    ctx.fillStyle=C('--hole'); ctx.beginPath();
+    for(let col=0;col<D.board[0];col++) for(let row=0;row<D.board[1];row++){ const q=proj(col*P,row*P,zH); ctx.moveTo(q[0]+rHole,q[1]); ctx.arc(q[0],q[1],rHole,0,6.283); }
+    ctx.fill();
+  }
+
+  // ── 그림자 (부품 아래 타원) ──
+  if (S.shadow && !topView && !fromBack){
+    ctx.fillStyle='rgba(0,0,0,0.22)';
+    D.parts.forEach(p=>{ if(S.hidden.has(p.ref)||(isCap(p)&&!S.show.caps)||!layerShown(p.layer)) return; const {x0,x1,y0,y1}=partBounds(p); const h=isChip(p)?SOCK_H+CHIP_H:CAP_H; const off=h*0.35; const q=[[x0+off*0.3,y0+off*0.6],[x1+off*0.3,y0+off*0.6],[x1+off*0.3,y1+off*0.6],[x0+off*0.3,y1+off*0.6]].map(([x,y])=>proj(x,y,0.05)); ctx.beginPath(); q.forEach((v,i)=>i?ctx.lineTo(v[0],v[1]):ctx.moveTo(v[0],v[1])); ctx.closePath(); ctx.fill(); });
+  }
+
+  // ── 배선 ──
+  if (S.show.wires) for (const net in D.nets){
+    if (D.nets[net].supply && !S.show.power) continue; if (!groupVisible(net)) continue;
+    const sel=S.selNet===net, col=sel?C('--sel'):netColor(net);
+    const alpha=S.selNet?(sel?1:0.10):0.95;
+    autoRoute(net).forEach(sg=>{
+      if(!layerShown(sg.layer)) return;
+      const back=sg.side==='back';
+      const w=Math.max(1.2, S.zoom*S.wireMM*0.9)*(sel?1.6:1)*(sg.rail?1.4:1);
+      const dim = topView && (back!==fromBack);
+      let pts;
+      const z = back ? -BOARD_T-0.5 : 0.5;              // 기판에 붙어서
+      pts=sg.pts.map(p=>[p[0]*P,p[1]*P,z]);
+      addWire(pts, sg.fail?'#ff3b30':col, sg.fail?w*1.4:w, alpha, net, (dim||sg.fail)?[4,3]:null);
+      if (sg.viaStart){ const q=sg.pts[0]; addDot([q[0]*P,q[1]*P,0.6],Math.max(2,S.zoom*0.5),withAlpha(col,alpha),1); addDot([q[0]*P,q[1]*P,-BOARD_T-0.6],Math.max(2,S.zoom*0.5),withAlpha(col,alpha),1); }
+    });
+  }
+  function arcPts(a,b){ const n=12, out=[]; const L=Math.hypot(b[0]-a[0],b[1]-a[1])*P; const h=Math.min(14,3+L*0.14); for(let i=0;i<=n;i++){ const t=i/n; out.push([(a[0]+(b[0]-a[0])*t)*P,(a[1]+(b[1]-a[1])*t)*P, 0.4+h*Math.sin(Math.PI*t)]); } return out; }
+
+  // ── 부품 ──
+  D.parts.forEach(p=>{ if(!S.hidden.has(p.ref)) drawPart(p,C,topView,fromBack); });
+
+  // 경로 그리는 중
+  if (S.routing && S.routePts.length){ const z=S.routeSide==='back'?-BOARD_T-1:1; for(let i=0;i<S.routePts.length-1;i++) addLine([S.routePts[i][0]*P,S.routePts[i][1]*P,z],[S.routePts[i+1][0]*P,S.routePts[i+1][1]*P,z],C('--sel'),2,5,null,[5,4]); addDot([S.routePts.at(-1)[0]*P,S.routePts.at(-1)[1]*P,z],4,C('--sel'),5); }
+  if (S.selPin){ addDot([S.selPin.col*P,S.selPin.row*P,fromBack?-BOARD_T-LEG_DOWN:0.3],Math.max(5,S.zoom*0.8),'rgba(255,213,74,0.35)',6); }
+
+  // ── 깊이 정렬 후 출력 (먼 것부터) ──
+  prims.sort((a,b)=>a.d-b.d);
+  for (const q of prims){
+    if (q.t==='poly'){ ctx.fillStyle=q.fill; ctx.beginPath(); q.pp.forEach((v,i)=>i?ctx.lineTo(v[0],v[1]):ctx.moveTo(v[0],v[1])); ctx.closePath(); ctx.fill(); if(q.stroke){ ctx.strokeStyle=q.stroke; ctx.lineWidth=0.7; ctx.stroke(); } }
+    else if (q.t==='path'){ ctx.strokeStyle=q.color; ctx.lineWidth=q.w; ctx.lineCap='round'; ctx.lineJoin='round'; if(q.dash) ctx.setLineDash(q.dash); ctx.beginPath(); q.pp.forEach((v,i)=>i?ctx.lineTo(v[0],v[1]):ctx.moveTo(v[0],v[1])); ctx.stroke(); if(q.dash) ctx.setLineDash([]); }
+    else if (q.t==='line'){ ctx.strokeStyle=q.color; ctx.lineWidth=q.w; ctx.lineCap='round'; if(q.dash) ctx.setLineDash(q.dash); ctx.beginPath(); ctx.moveTo(q.A[0],q.A[1]); ctx.lineTo(q.B[0],q.B[1]); ctx.stroke(); if(q.dash) ctx.setLineDash([]); }
+    else if (q.t==='dot'){ ctx.fillStyle=q.fill; ctx.beginPath(); ctx.arc(q.A[0],q.A[1],q.r,0,6.283); ctx.fill(); }
+    else if (q.t==='text'){ ctx.fillStyle=q.fill; ctx.font=q.font; ctx.textAlign=q.align||'left'; ctx.fillText(q.txt,q.A[0],q.A[1]); ctx.textAlign='left'; }
+  }
+  ctx.fillStyle=C('--muted'); ctx.font='11px "IBM Plex Mono",monospace';
+  let nFail=0; if(S.show.wires) for(const n in D.nets){ if(D.nets[n].supply) continue; nFail += (autoRoute(n)||[]).filter(s=>s.fail).length; }
+  ctx.fillText(`${nFail?('미배선 '+nFail+'개(빨간 점선) · '):''}${S.mode.toUpperCase()} · ${S.flipped?'뒷면':'앞면'} · ${S.wire==='straight'?'직선(뒷면)':S.wire==='manhattan'?'직각(뒷면)':'앞면'} · ${D.board[0]}×${D.board[1]} 구멍 = ${bw.toFixed(0)}×${bh.toFixed(0)}mm${S.dirty?' · 수정됨':''}`,12,18);
+}
+function withAlpha(hex,a){ const m=hex.match(/#(..)(..)(..)/); if(!m) return hex; return `rgba(${parseInt(m[1],16)},${parseInt(m[2],16)},${parseInt(m[3],16)},${a})`; }
+function partBounds(p){ const rp=realPins(p); const cs=rp.map(q=>q.col), rs=rp.map(q=>q.row); return {x0:(Math.min(...cs)-0.5)*P, x1:(Math.max(...cs)+0.5)*P, y0:(Math.min(...rs)-0.5)*P, y1:(Math.max(...rs)+0.5)*P}; }
+function footBounds(p){ const cs=p.pins.map(q=>q.col), rs=p.pins.map(q=>q.row); return {x0:(Math.min(...cs)-0.5)*P, x1:(Math.max(...cs)+0.5)*P, y0:(Math.min(...rs)-0.5)*P, y1:(Math.max(...rs)+0.5)*P}; }
+const BANDS={0:'#000',1:'#8b4513',2:'#e02020',3:'#f08a00',4:'#f2d21c',5:'#2e9e3e',6:'#2c5fd8',7:'#8a3fc8',8:'#8a8a8a',9:'#fff'};
+function resBands(ohm){ const e=Math.floor(Math.log10(ohm))-1; const m=Math.round(ohm/Math.pow(10,e)); return [BANDS[Math.floor(m/10)],BANDS[m%10],BANDS[e],'#c9a227']; }
+
+function drawPart(p,C,topView,fromBack){
+  const cap=isCap(p), chip=isChip(p), res=isRes(p); if (cap&&!S.show.caps) return;
+  const {x0,x1,y0,y1}=footBounds(p);
+  const sel=S.selNet!=null && p.pins.some(q=>q.net===S.selNet);
+  const hov=S.hoverPart===p.ref;
+  // 다리 (앞: 기판→소켓, 뒤: 납땜 자국)
+  if (S.show.pins){
+    realPins(p).forEach(q=>{
+      const isSel=S.selNet!=null && q.net===S.selNet;
+      const legCol=isSel?C('--sel'):'#c8c8cc';
+      const top = chip?SOCK_H*0.55 : (res?RES_H+2:(cap?CAP_H*0.6:2.5));
+      if (!topView && !fromBack) addLine([q.col*P,q.row*P,0.1],[q.col*P,q.row*P,top],legCol,Math.max(1,S.zoom*0.22),0);
+      if (!topView && fromBack) addLine([q.col*P,q.row*P,-BOARD_T],[q.col*P,q.row*P,-BOARD_T-LEG_DOWN],legCol,Math.max(1,S.zoom*0.22),0);
+      const zdot=fromBack?-BOARD_T-0.05:0.15;
+      // 납땜 자국(뒷면) / 핀 점(앞면)
+      const fill=isSel?C('--sel'):(fromBack?'#b9bcc4':(q.net==null?'#7a7a7a':netColor(q.net)));
+      addDot([q.col*P,q.row*P,zdot], fromBack?Math.max(2,S.zoom*0.5):Math.max(1.5,S.zoom*0.33), fill, 0.02, {r:Math.max(6,S.zoom*0.6),net:q.net,ref:p.ref,pin:q.n,name:q.name,pinObj:q});
+      if (S.show.pinNo||S.show.pinName) addText([q.col*P+0.6,q.row*P-0.6,zdot+0.1],(S.show.pinNo?q.n:'')+(S.show.pinNo&&S.show.pinName?' ':'')+(S.show.pinName?q.name:''),`${Math.max(8,S.zoom*1.5)}px "IBM Plex Mono",monospace`,C('--ink'),0.5);
+    });
+  }
+  if (fromBack) return;
+  const stroke='rgba(0,0,0,.45)';
+  if (chip){
+    if (S.show.sockets){
+      addBox(x0,y0,x1,y1,0,SOCK_H,'#1c1c20','#141416',stroke,0);
+      // 소켓 윗면 핀 구멍
+      realPins(p).forEach(q=>addDot([q.col*P,q.row*P,SOCK_H+0.02],Math.max(1,S.zoom*0.28),'#0a0a0c',0.03));
+    }
+    if (S.show.chips){
+      const z0=S.show.sockets?SOCK_H:1.0, z1=z0+CHIP_H;
+      const top = sel?'#6a5a24':(hov?'#4a4a58':'#34343c');
+      addBox(x0+0.35,y0+0.35,x1-0.35,y1-0.35,z0,z1,top,'#232328',stroke,0);
+      // 1번 핀 홈(반원) + 1번 점
+      const rp=realPins(p); const p1=rp[0]; const wpx=p.width*P;
+      const nx=(x0+x1)/2, ny=y0+0.35+0.9;
+      addDot([nx,ny,z1+0.02],Math.max(2,S.zoom*0.55),'#1a1a1e',0.05);
+      addDot([p1.col*P+0.9,p1.row*P+0.2,z1+0.02],Math.max(1.2,S.zoom*0.3),'#d8d8dc',0.05);
+      if (S.show.labels){
+        addText([(x0+x1)/2,(y0+y1)/2-0.3,z1+0.05],p.ref,`600 ${Math.max(9,S.zoom*1.8)}px "IBM Plex Sans KR",sans-serif`,'#f0f0f0',0.06,'center');
+        addText([(x0+x1)/2,(y0+y1)/2+2.4,z1+0.05],p.chip,`${Math.max(8,S.zoom*1.35)}px "IBM Plex Mono",monospace`,'#b8b8c2',0.06,'center');
+      }
+    }
+  } else if (cap){
+    const cx=(x0+x1)/2, cy=(y0+y1)/2;
+    if (p.chip==='CAP10u'){ addBox(cx-2.6,cy-2.6,cx+2.6,cy+2.6,1.5,CAP_H+2,'#2b3d8f','#233478',stroke,0); addBox(cx-2.6,cy-2.6,cx+2.6,cy-1.6,1.5,CAP_H+2,'#9aa4c8','#8a94b8',null,0.01); }
+    else { addBox(cx-2.2,cy-0.9,cx+2.2,cy+0.9,2.2,CAP_H,'#e2b23a','#c99a2a',stroke,0); addText([cx,cy+0.5,CAP_H+0.05],'104',`${Math.max(7,S.zoom*1.1)}px "IBM Plex Mono",monospace`,'#3a2a05',0.06,'center'); }
+    if (S.show.labels&&S.zoom>4) addText([cx+3,cy,CAP_H+0.2],p.ref,`${Math.max(8,S.zoom*1.2)}px "IBM Plex Mono",monospace`,C('--ink'),0.5);
+  } else if (res){
+    const rp=realPins(p); const a=rp[0], b=rp[1];
+    const ax=a.col*P, ay=a.row*P, bx=b.col*P, by=b.row*P; const vert=Math.abs(by-ay)>=Math.abs(bx-ax);
+    const mx=(ax+bx)/2, my=(ay+by)/2, L=4.2, R=1.2;
+    const bx0=vert?mx-R:mx-L, bx1=vert?mx+R:mx+L, by0=vert?my-L:my-R, by1=vert?my+L:my+R;
+    addBox(bx0,by0,bx1,by1,RES_H,RES_H+2*R,'#d9c8a0','#c4b28a',stroke,0);
+    const ohm=(p.chip.match(/(\d+)k(\d*)/)||[])[0]? parseFloat(p.chip.replace(/^RES/,'').replace('k','.').replace(/[^0-9.]/g,''))*1000 : 4700;
+    resBands(ohm).forEach((col,i)=>{ const t=-0.55+i*0.3; const w=0.55; if(vert) addBox(bx0-0.05,my+t*L-w/2,bx1+0.05,my+t*L+w/2,RES_H-0.02,RES_H+2*R+0.02,col,col,null,0.02); else addBox(mx+t*L-w/2,by0-0.05,mx+t*L+w/2,by1+0.05,RES_H-0.02,RES_H+2*R+0.02,col,col,null,0.02); });
+    // 몸통까지 다리 (수평 부분)
+    addLine([ax,ay,RES_H+R],[vert?ax:bx0,vert?by0:ay,RES_H+R],'#c8c8cc',Math.max(1,S.zoom*0.22),0.01);
+    addLine([bx,by,RES_H+R],[vert?bx:bx1,vert?by1:by,RES_H+R],'#c8c8cc',Math.max(1,S.zoom*0.22),0.01);
+    if (S.show.labels&&S.zoom>5) addText([bx1+0.8,my+0.4,RES_H+2*R],p.ref,`${Math.max(7,S.zoom*1.05)}px "IBM Plex Mono",monospace`,C('--ink'),0.5);
+  } else if (p.chip==='OSC_FULL'){
+    const {x0:fx0,y0:fy0,x1:fx1,y1:fy1}=footBounds(p);
+    addBox(fx0,fy0,fx1,fy1,0.8,0.8+5.2,'#c9ccd2','#9da2aa',stroke,0);
+    if (S.show.labels) addText([(fx0+fx1)/2,(fy0+fy1)/2,6.1],p.ref,`600 ${Math.max(9,S.zoom*1.6)}px "IBM Plex Sans KR"`,'#2a2a2e',0.06,'center');
+  } else {
+    addBox(x0,y0,x1,y1,0,2.5,'#232326','#1a1a1c',stroke,0);
+    realPins(p).forEach(q=>addLine([q.col*P,q.row*P,2.5],[q.col*P,q.row*P,8.5],'#d0d0d4',Math.max(1,S.zoom*0.24),0.05));
+    if (S.show.labels) addText([(x0+x1)/2,(y0+y1)/2,2.6],p.ref,`600 ${Math.max(9,S.zoom*1.6)}px "IBM Plex Sans KR"`,'#eee',0.06,'center');
+  }
+}
+
+// ───────── 부드러운 카메라 루프 ─────────
+let needDraw=true;
+function tick(){
+  let moving=false;
+  if (S.mode==='3d'){
+    if (!dragging){ T.yaw+=vel.yaw; T.pitch=Math.max(-1.55,Math.min(1.55,T.pitch+vel.pitch)); vel.yaw*=0.9; vel.pitch*=0.9; if(Math.abs(vel.yaw)+Math.abs(vel.pitch)<1e-4){vel.yaw=vel.pitch=0;} else moving=true; }
+    for (const k of ['yaw','pitch']){ const d=T[k]-S[k]; if(Math.abs(d)>1e-4){ S[k]+=d*0.35; moving=true; } else S[k]=T[k]; }
+  }
+  for (const k of ['zoom','panX','panY']){ const d=T[k]-S[k]; if(Math.abs(d)>(k==='zoom'?1e-3:0.05)){ S[k]+=d*0.35; moving=true; } else S[k]=T[k]; }
+  if (moving||needDraw){ draw(); needDraw=false; }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+const req=()=>{ needDraw=true; };
+
+// ───────── 연결 편집 ─────────
+function setPinNet(ref,n,net){
+  const q=findPin(ref,n); if(!q) return;
+  if (q.net!=null && D.nets[q.net]){ D.nets[q.net].pins=D.nets[q.net].pins.filter(([r,k])=>!(r===ref&&k===n)); if(!D.nets[q.net].pins.length && !D.nets[q.net].supply) delete D.nets[q.net]; }
+  q.net=net; if (net==null) q.nc=false; geomVer++;
+  if (net!=null){ if(!D.nets[net]){ D.nets[net]={pins:[],group:'',supply:false,routes:[]}; groups[net]=''; } D.nets[net].pins.push([ref,n]); }
+  S.dirty=true;
+}
+function newNetId(){ let m=100; for (const n in D.nets){ const v=parseInt(n,10); if(!isNaN(v)&&v>m) m=v; } return String(m+1); }
+function linkPins(a,b){
+  const pa=findPin(a.ref,a.pin), pb=findPin(b.ref,b.pin);
+  let net = pa.net ?? pb.net ?? newNetId();
+  if (pa.net!=null && pb.net!=null && pa.net!==pb.net){
+    const keep = D.nets[pa.net].supply? pa.net : (D.nets[pb.net].supply? pb.net : pa.net);
+    const drop = keep===pa.net? pb.net : pa.net;
+    (D.nets[drop].pins.slice()).forEach(([r,k])=>setPinNet(r,k,keep));
+    if (routes[drop]){ routes[keep]=(routes[keep]||[]).concat(routes[drop]); delete routes[drop]; }
+    delete D.nets[drop]; net=keep;
+  } else { setPinNet(a.ref,a.pin,net); setPinNet(b.ref,b.pin,net); }
+  return net;
+}
+
+// ───────── KYLE 텍스트 ─────────
+function toSOL(){
+  const L=['#KYLE 1', `title   ${D.title}`, `board   perf ${D.board[0]} ${D.board[1]}${(D.layers||1)>1?' layers '+D.layers:''}`, 'include chips.txt', `wire    ${S.wireMM}mm`, `stitch  ${S.tackPitch|0}`, `share   ${S.holeCap|0}`, ''];
+  for (const n in D.supplies) L.push(`supply  ${n} ${D.supplies[n]}V`+(n==='VCC'?' max 5A':''));
+  L.push('');
+  D.parts.forEach(p=>{ if(D.stacks&&D.stacks[p.ref]) return; /* 라이저는 stack 문으로만 (part 로도 쓰면 R23 이 자기 자신과 겹친다고 본다) */ L.push(`part    ${p.ref.padEnd(9)}${p.chip.padEnd(12)}at ${String(p.col).padStart(2)} ${String(p.row).padStart(2)}${p.rot?'  rot '+p.rot:''}${(p.layer||1)>1?'  layer '+p.layer:''}${p.near?'  near '+p.near:''}${p.fixed?'  fixed':''}`); });
+  for(const k in (D.stacks||{})){ const st=D.stacks[k]; L.push(`stack   ${k.padEnd(9)}${st.kind.padEnd(12)}at ${String(st.col).padStart(2)} ${String(st.row).padStart(2)} layers ${st.lo}-${st.hi}`); }
+  L.push('');
+  Object.entries(colors).forEach(([g,c])=>L.push(`color   ${g.padEnd(12)}${c}`));
+  L.push('');
+  D.parts.forEach(p=>{ L.push(`# ${p.ref}`); p.pins.forEach(q=>{ if (q.kind==='undef') return; if (q.net!=null) L.push(`pin     ${p.ref}[${q.n}:${q.net}]`); else if (q.nc) L.push(`pin     ${p.ref}[${q.n}:NC]`); }); });
+  L.push('');
+  for (const n in groups) if (groups[n]) L.push(`group   ${String(n).padEnd(6)}${groups[n]}`);
+  // ★ 전원 버스와 AI 의 expect 는 설계의 일부다 — 빠뜨리면 R16(접지선 길이)·R15(전압 교차검증)가 무너진다
+  for (const n in (D.buses||{})) if((D.buses[n]||[]).length) L.push(`bus     ${n} rows ${D.buses[n].join(',')}`);
+  for (const n in D.nets){ const ex=D.nets[n].expect; if(!ex||ex.hi==null) continue; L.push(`expect  ${String(n).padEnd(6)}${ex.hi} ${ex.lo!=null?ex.lo:ex.hi}${(ex.i!=null)?' '+(ex.i*1e3).toFixed(2)+'mA':''}`); }
+  // ★ 회로 시험(sim … end) 도 설계의 일부다 — 뷰어를 거쳐 저장해도 그대로 남아야 sol.py R30 이 계속 돌린다
+  (D.sims||[]).forEach(sc=>{ L.push(''); L.push(`sim     ${sc.name}`); sc.steps.forEach(st=>L.push('  '+st[0].padEnd(7)+' '+st.slice(1).join(' '))); L.push('end'); });
+  L.push('');
+  const fmt=v=>Number.isInteger(v)?String(v):v.toFixed(1);
+  const writeRoutes=(net,rs,auto)=>{ let i=0; while(i<rs.length){ const side=rs[i].side, Lz=rs[i].layer||1; const out=[...rs[i].pts]; let j=i+1;
+      while(j<rs.length && rs[j].pts.length && rs[j].pts[0].join()===out[out.length-1].join() && rs[j].side!==rs[j-1].side && (rs[j].layer||1)===Lz){ out.push('|'); out.push(...rs[j].pts.slice(1)); j++; }
+      L.push(`route   ${net} ${auto?'auto ':''}${side}${Lz!==1?' layer '+Lz:''} `+out.map(p=>p==='|'?'|':`(${fmt(p[0])},${fmt(p[1])})`).join(' ')); i=j; } };
+  // 손으로 그린 경로 (auto 아님) 는 그대로, 나머지 신호 네트는 지금 자동배선 결과를 auto 로 쓴다 — 파일만 있으면 배선이 재현된다
+  const manual={}; for(const n in routes) if(routes[n].length && !routes[n].every(r=>r.auto)) manual[n]=routes[n];
+  Object.entries(manual).forEach(([net,rs])=>writeRoutes(net,rs,false));
+  // 전 구간이 성공한 네트만 쓴다. 일부만 성공한 네트를 쓰면 되읽을 때 실패한 구간이 '없는 셈' 이 되어 미배선이 감춰진다.
+  for (const net in D.nets){ if(manual[net]) continue; const all=(autoRoute(net)||[]).filter(sg=>!sg.rail); if(!all.length||all.some(sg=>sg.fail)) continue; writeRoutes(net,all,true); }
+  return L.join('\n')+'\n';
+}
+function applySOL(txt){
+  let np=0,nr=0,nc=0,npin=0; const lines=txt.split('\n'); const hasPin=lines.some(l=>/^\s*pin\s/.test(l));
+  if (hasPin){ D.parts.forEach(p=>p.pins.forEach(q=>q.net=null)); for (const n in D.nets) D.nets[n].pins=[]; }
+  if (lines.some(l=>/^\s*route\s/.test(l))) for (const n in routes) if(routes[n].every(r=>r.auto)) delete routes[n];
+  lines.forEach(raw=>{
+    const line=raw.replace(/(^|\s)#.*$/,'$1').trim(); if(!line) return; const t=line.split(/\s+/);
+    if (t[0]==='board'){ if(t[1]==='perf'){ D.board=[+t[2],+t[3]]; const i=t.indexOf('layers'); D.layers=i>0?+t[i+1]:1; geomVer++; } }
+    else if (t[0]==='stack'){ const i=t.indexOf('at'), j=t.indexOf('layers'); const m=String(t[j+1]).match(/(\d+)-(\d+)/); if(!m) return;
+      D.stacks=D.stacks||{}; D.stacks[t[1]]={kind:t[2], col:+t[i+1], row:+t[i+2], lo:+m[1], hi:+m[2]}; geomVer++; }
+    else if (t[0]==='part'){ const p=partMap[t[1]]; if(!p) return; const i=t.indexOf('at'); p.col=+t[i+1]; p.row=+t[i+2]; p.rot=t.includes('rot')?+t[t.indexOf('rot')+1]:0; p.layer=t.includes('layer')?+t[t.indexOf('layer')+1]:1; p.near=t.includes('near')?t[t.indexOf('near')+1]:null; p.fixed=t.includes('fixed'); recomputePins(p); np++; }
+    else if (t[0]==='color'){ const m=raw.match(/color\s+(\S+)\s+(#[0-9a-fA-F]{6})/); if(m){ colors[m[1]]=m[2]; nc++; } }
+    else if (t[0]==='group'){ groups[t[1]]=t[2]; if(D.nets[t[1]]) D.nets[t[1]].group=t[2]; if(!groupsOrder.includes(t[2])) groupsOrder.push(t[2]); }
+    else if (t[0]==='pin'){ const m=t[1].match(/^(\w+)\[(\d+):([\w#]+)\]$/); if(!m) return; const q=findPin(m[1],+m[2]); if(!q) return; if (m[3]==='NC'){ q.net=null; q.nc=true; return; } if(!D.nets[m[3]]) D.nets[m[3]]={pins:[],group:groups[m[3]]||'',supply:(m[3] in D.supplies),routes:[]}; q.net=m[3]; D.nets[m[3]].pins.push([m[1],+m[2]]); npin++; }
+    else if (t[0]==='route'){ let i=2, auto=false; if(t[i]==='auto'){ auto=true; i++; } let side=t[i++]; let Lz=1; if(t[i]==='layer'){ Lz=+t[i+1]; i+=2; }
+      const toks=[...line.matchAll(/\((-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\)|(\|)/g)]; let seg=[]; routes[t[1]]=routes[t[1]]||[];
+      toks.forEach(m=>{ if(m[3]){ if(seg.length>=2){ routes[t[1]].push({side,layer:Lz,auto,pts:seg}); nr++; } const last=seg[seg.length-1]; seg=last?[last]:[]; side=side==='back'?'front':'back'; } else seg.push([+m[1],+m[2]]); });
+      if(seg.length>=2){ routes[t[1]].push({side,layer:Lz,auto,pts:seg}); nr++; } geomVer++; }
+    else if (t[0]==='wire'||t[0]==='stitch'||t[0]==='share'){ const v=parseFloat(String(t[1]).replace(/[^0-9.]/g,'')); applySettings(t[0]==='wire'?{wire:v}:t[0]==='stitch'?{stitch:v}:{share:v}); geomVer++; }
+  });
+  if (hasPin) for (const n in D.nets) if(!D.nets[n].pins.length && !D.nets[n].supply) delete D.nets[n];
+  S.step=groupsOrder.length; S.dirty=true; return {np,nr,nc,npin};
+}
+
+// ───────── 검증 결과 ─────────
+function renderReport(rep,timing){
+  const box=$('report'); box.innerHTML=''; const cnt={치명:0,오류:0,경고:0,정보:0};
+  (rep||[]).forEach(r=>{ cnt[r.level]=(cnt[r.level]||0)+1; const d=document.createElement('div'); d.className='r'; d.innerHTML=`<span class="tag ${r.level}">${r.rule}</span><span>${esc(r.msg)}</span>`; box.appendChild(d); });
+  $('repSum').textContent=`치명 ${cnt.치명} · 오류 ${cnt.오류} · 경고 ${cnt.경고} · 정보 ${cnt.정보}`;
+  $('timing').innerHTML=(timing&&timing.best_ns)?`<b>${timing.best_ns.toFixed(0)} ns → 최대 ${(1000/timing.best_ns).toFixed(1)} MHz</b><br>`+timing.best_path.map(esc).join(' →<br>'):'(레지스터 경로 없음)';
+}
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function voltTip(net){ const N=D.nets[net]; if(!N) return ''; if(N.supply) return ` · <b>${D.supplies[net]} V</b>`; const V=N.volt; if(!V||V.kind!=='signal') return ''; return ` · H ${V.voh.toFixed(1)}~${V.vmax.toFixed(1)}V / L ≤${V.vol.toFixed(2)}V`; }
+window.__voltTip=voltTip;
+renderReport(D.report,D.timing);
+
+// ───────── UI ─────────
+$('title').textContent=(D.title||'KYLE 납땜 뷰어')+(('__FILE__'.startsWith('__')||!'__FILE__')?'':'  ·  '+'__FILE__');   // 파일 이름·저장 시각: 옛 화면을 보고 있는지 바로 알 수 있게
+$('subtitle').textContent=`부품 ${D.parts.length} · 네트 ${Object.keys(D.nets).length}`;
+function setMode(m){ S.mode=m; $('b3d').classList.toggle('on',m==='3d'); $('b2d').classList.toggle('on',m==='2d'); $('hud').innerHTML=m==='2d'?'끌기: 부품 이동 (격자 스냅) · 빈 곳 끌기: 화면 이동 · 휠: 확대 · 클릭: 네트 선택 · <b>R</b> 회전 · <b>F</b> 뒤집기 · <b>V</b> 3D':(window.__gl3d?'WebGL · ':'')+'끌기: 회전 · 휠: 확대(커서 기준) · Shift/오른쪽 끌기: 이동 · 클릭: 핀/선 선택 · <b>F</b> 뒤집기 · <b>V</b> 2D (편집)'; if(m==='3d'){T.yaw=S.yaw;T.pitch=S.pitch;} draw(); }
+$('b3d').onclick=()=>setMode('3d'); $('b2d').onclick=()=>setMode('2d');
+function setFlip(f){ S.flipped=f; $('bflip').textContent=f?'뒤집기 (앞면)':'뒤집기 (뒷면)'; draw(); }
+$('bflip').onclick=()=>setFlip(!S.flipped);
+const wireBtns={straight:'wStraight',manhattan:'wMan',front:'wBack'};
+Object.entries(wireBtns).forEach(([k,id])=>$(id).onclick=()=>{ S.wire=k; Object.values(wireBtns).forEach(i=>$(i).classList.remove('on')); $(id).classList.add('on'); draw(); });
+$('bReset').onclick=()=>{ T.yaw=-0.6;T.pitch=0.95; vel.yaw=vel.pitch=0; fitView(); if(window.__gl3d) window.__gl3d.reset(); req(); };
+function routeScore(res){ let ok=0,fail=0,bends=0,len=0;
+  for(const n in res){ if(D.nets[n].supply) continue; res[n].forEach(sg=>{ if(sg.fail){fail++;return;} ok++; bends+=Math.max(0,sg.pts.length-2);
+    for(let i=1;i<sg.pts.length;i++) len+=Math.abs(sg.pts[i][0]-sg.pts[i-1][0])+Math.abs(sg.pts[i][1]-sg.pts[i-1][1]); }); }
+  return {ok,fail,bends,len}; }
+const better=(a,b)=>!b || a.fail<b.fail || (a.fail===b.fail && a.bends<b.bends) || (a.fail===b.fail && a.bends===b.bends && a.len<b.len);
+function reroute(){
+  // 라우터는 같은 입력이면 같은 답을 낸다. 그래서 「다시」는 배선 순서를 바꿔 몇 번 시도하고,
+  // 지금 것까지 후보에 넣어 가장 좋은 것(미배선 ↓, 꺾임 ↓, 길이 ↓)을 남긴다.
+  const btns=[$('bReroute'),$('bReroute2')].filter(Boolean);
+  btns.forEach(b=>{ b.disabled=true; b.textContent='계산 중…'; });
+  setTimeout(()=>{
+    for (const n in routes) if(routes[n].length && routes[n].every(r=>r.auto)) delete routes[n];   // 저장된 자동배선은 버리고 새로
+    routeCache.key=''; const t0=performance.now(); const cands=[];
+    const key0=gridKey(); if(routeCache.key===key0 && routeCache.res) cands.push({seed:S.routeSeed|0, res:routeCache.res, sc:routeScore(routeCache.res), prev:true});
+    const base=(S.routeSeed|0); let tries=0;
+    while (tries<5 && (performance.now()-t0)<6000){ S.routeSeed=base+1+tries; const res=computeAllRoutes(); cands.push({seed:S.routeSeed, res, sc:routeScore(res)}); tries++; }
+    let best=null; cands.forEach(c=>{ if(!best||better(c.sc,best.sc)) best=c; });
+    S.routeSeed=best.seed; routeCache.key=gridKey(); routeCache.res=best.res;
+    const ms=performance.now()-t0; const sc=best.sc;
+    $('routeStat').innerHTML = `${tries}번 시도 → ${best.prev?'이전 결과가 가장 좋아 유지':'새 결과'}: 배선 ${sc.ok}구간 · <span style="color:${sc.fail?'var(--crit)':'var(--ok)'}">미배선 ${sc.fail}</span> · 꺾임 ${sc.bends} · ${(ms/1000).toFixed(1)}s`;
+    btns.forEach(b=>{ b.disabled=false; b.textContent = b.id==='bReroute'?'배선 다시':'배선 다시 계산'; });
+    geomVer++; draw();
+  }, 20);
+}
+$('bReroute').onclick=reroute; if($('bReroute2')) $('bReroute2').onclick=reroute;
+$('sPersp').onchange=e=>{S.persp=e.target.checked; draw();}; $('sLow').onchange=e=>{S.low=e.target.checked; if(S.low){S.shadow=false; $('sShadow').checked=false;} draw();}; $('sStitch').onchange=e=>{S.stitch=e.target.checked; geomVer++; draw();}; $('selGauge').onchange=e=>{S.wireMM=parseFloat(e.target.value); geomVer++; draw();}; $('selCap').onchange=e=>{S.holeCap=parseInt(e.target.value); geomVer++; draw();}; $('selPitch').onchange=e=>{S.tackPitch=parseInt(e.target.value); geomVer++; draw();}; $('sShadow').onchange=e=>{S.shadow=e.target.checked; draw();};
+$('sLift').onchange=e=>{S.lift=e.target.checked; draw();};
+[['sFails','fails'],['sChips','chips'],['sSockets','sockets'],['sCaps','caps'],['sPins','pins'],['sPinNo','pinNo'],['sPinName','pinName'],['sWires','wires'],['sPower','power'],['sHoles','holes'],['sLabels','labels']].forEach(([id,k])=>$(id).onchange=e=>{S.show[k]=e.target.checked; draw();});
+const pl=$('partList');
+D.parts.forEach(p=>{ const d=document.createElement('div'); d.className='it'; d.innerHTML=`<input type="checkbox" checked> <span class="mono">${p.ref}</span> <span class="hint">${p.chip}</span>`; const cb=d.querySelector('input'); cb.onchange=()=>{ cb.checked?S.hidden.delete(p.ref):S.hidden.add(p.ref); draw(); }; d.onmouseenter=()=>{S.hoverPart=p.ref;req();}; d.onmouseleave=()=>{S.hoverPart=null;req();}; pl.appendChild(d); });
+const gl=$('groupList');
+function renderGroups(){
+  gl.innerHTML='';
+  groupsOrder.forEach((g,i)=>{ const d=document.createElement('div'); d.className='it'+(i<S.step?' on':''); const col=colors[g]||'#7f7f7f'; d.innerHTML=`<span class="sw" style="background:${col}"></span><span style="flex:1">${i+1}. ${g}</span><input type="color" value="${col}" title="색 바꾸기">`; d.querySelector('input').oninput=e=>{ colors[g]=e.target.value; d.querySelector('.sw').style.background=e.target.value; S.dirty=true; draw(); }; gl.appendChild(d); });
+  $('step').max=groupsOrder.length; $('step').value=S.step;
+  $('stepLabel').textContent=S.step>=groupsOrder.length?`전부 표시 (${groupsOrder.length} 그룹)`:`${S.step}/${groupsOrder.length} — 다음: ${groupsOrder[S.step]}`;
+}
+function refreshBoardUI(){
+  $('inW').value=D.board[0]; $('inH').value=D.board[1]; $('inLayers').value=String(D.layers||1);
+  $('boardInfo').textContent = `${D.board[0]}×${D.board[1]} 구멍 = ${(D.board[0]*P).toFixed(0)}×${(D.board[1]*P).toFixed(0)}mm · ${D.layers||1}층` + ((D.stacks&&Object.keys(D.stacks).length)?` · 층간 핀헤더 ${Object.keys(D.stacks).length}개`:'');
+  const sel=$('inViewLayer'); const cur=sel.value; sel.innerHTML='<option value="0">전부</option>';
+  for(let i=1;i<=(D.layers||1);i++){ const o=document.createElement('option'); o.value=String(i); o.textContent=i+'층'; sel.appendChild(o); }
+  sel.value=cur;
+}
+refreshBoardUI();
+$('inW').onchange=$('inH').onchange=()=>{ D.board=[Math.max(10,+$('inW').value||D.board[0]), Math.max(10,+$('inH').value||D.board[1])]; refreshBoardUI(); geomVer++; fitView(); draw(); };
+$('inLayers').onchange=e=>{ D.layers=parseInt(e.target.value)||1; refreshBoardUI(); geomVer++; draw(); };
+$('inViewLayer').onchange=e=>{ S.viewLayer=parseInt(e.target.value)||0; draw(); };
+renderGroups();
+$('step').oninput=e=>{ S.step=+e.target.value; renderGroups(); draw(); };
+function showNet(net){
+  S.selNet=net; const box=$('netInfo');
+  if (net==null){ box.innerHTML='핀이나 선을 클릭하세요.'; draw(); return; }
+  const N=D.nets[net]; if(!N){ box.textContent='네트 '+net; draw(); return; }
+  const pins=N.pins.map(([r,n])=>{ const q=findPin(r,n); return `<div class="mono">${r}.${q?q.name:''}(${n}) <span class="hint">${q?q.kind:''}</span></div>`; }).join('');
+  const V=N.volt, EX=N.expect;
+  let volt = N.supply?`<b>${D.supplies[net]} V</b> (전원)`:`논리 신호 — 그룹 <span class="badge">${groups[net]||'기타'}</span>`;
+  if (V && V.kind==='signal'){
+    const mh=V.margin_hi, ml=V.margin_lo; const warn=(mh<0||ml<0);
+    volt += `<div class="mono" style="margin-top:4px;line-height:1.5">HIGH <b>${V.voh.toFixed(2)}</b>~${V.vmax.toFixed(1)} V &nbsp; LOW 0~<b>${V.vol.toFixed(2)}</b> V<br>수신 VIH ${V.vih.toFixed(2)} / VIL ${V.vil.toFixed(2)} V<br>여유 H <span style="color:${mh<0?'var(--crit)':'var(--ok)'}">${mh>=0?'+':''}${mh.toFixed(2)}</span> · L <span style="color:${ml<0?'var(--crit)':'var(--ok)'}">${ml>=0?'+':''}${ml.toFixed(2)}</span> V<br>I(LOW) ${(V.i_low*1e3).toFixed(2)} mA${V.pullup&&V.pullup.length?` · 풀업 ${V.pullup[0]}Ω`:''}${V.iol?` / 허용 ${(V.iol*1e3).toFixed(1)}`:''}<br><span class="hint">드라이버 ${esc(V.driver)}</span></div>`;
+  } else if (V && V.kind==='supply'){ volt += `<div class="mono hint">정지전류 합 ${(V.i*1e3).toFixed(1)} mA</div>`; }
+  else if (V && V.kind==='floating'){ volt += `<div style="color:var(--crit)">드라이버 없음 — 전압 미정</div>`; }
+  if (EX){ volt += `<div class="mono hint" style="margin-top:3px">AI 예상: HIGH ${EX.hi} / LOW ${EX.lo} V${EX.i!=null?` · ${(EX.i*1e3).toFixed(2)}mA`:''} ${(()=>{ if(!V||V.kind!=='signal') return ''; const TOL=0.1; const bad=(EX.hi>V.vmax+TOL)||(EX.hi<V.voh-TOL)||(EX.lo<-TOL)||(EX.lo>V.vol+TOL)||(EX.hi<V.vih); return bad?'<span style="color:var(--crit)">≠ 계산 (R15)</span>':'<span style="color:var(--ok)">타당 (±0.1V)</span>'; })()}</div>`; }
+  box.innerHTML=`<div class="kv"><div>네트</div><div class="mono"><b>${net}</b></div><div>전압</div><div>${volt}</div><div>핀 ${N.pins.length}개</div><div>${pins}</div></div>`;
+  draw();
+}
+$('bDeselect').onclick=()=>{ S.selPin=null; showNet(null); };
+function startRoute(){ if(S.selNet==null){ $('routeHint').textContent='먼저 네트를 선택하세요.'; return; } if(S.mode!=='2d') setMode('2d'); S.routing=true; S.routePts=[]; S.routeSegs=[]; S.routeSide=S.flipped?'back':'front'; $('bRoute').textContent='경로 끝 (저장)'; $('routeHint').textContent=`2D 기판을 클릭해 경유점을 찍으세요 (${S.routeSide==='back'?'뒷면':'앞면'}). 다시 누르면 저장.`; }
+function finishRoute(){ if (S.routePts.length>=2){ routes[S.selNet]=routes[S.selNet]||[]; (S.routeSegs||[]).forEach(sg=>routes[S.selNet].push(sg)); routes[S.selNet].push({side:S.routeSide,pts:S.routePts.slice()}); S.dirty=true; geomVer++; $('routeHint').textContent='저장됨. 「KYLE 전체 내보내기」에 route 줄로 나옵니다.'; } else $('routeHint').textContent='점이 2개 미만이라 저장 안 함.'; S.routing=false; S.routePts=[]; $('bRoute').textContent='경로 그리기'; draw(); }
+$('bRoute').onclick=()=>S.routing?finishRoute():startRoute();
+$('bVia').onclick=()=>{ if(!S.routing||S.routePts.length<1){ $('routeHint').textContent='경로를 그리는 중에, 점을 하나 이상 찍은 뒤 누르세요.'; return; } const last=S.routePts[S.routePts.length-1]; if(S.routePts.length>=2) S.routeSegs.push({side:S.routeSide,pts:S.routePts.slice()}); S.routeSide=S.routeSide==='back'?'front':'back'; S.routePts=[last]; setFlip(S.routeSide==='back'); $('routeHint').textContent=`(${last[0]},${last[1]}) 구멍을 관통 → 이제 ${S.routeSide==='back'?'뒷면':'앞면'} 에 계속 찍으세요.`; };
+$('bRouteClear').onclick=()=>{ if(S.selNet!=null && routes[S.selNet]){ delete routes[S.selNet]; S.dirty=true; draw(); $('routeHint').textContent='손으로 그린 경로를 지웠습니다 (자동 배선으로 돌아감).'; } };
+$('bLink').onclick=()=>{ if(!S.selPin){ $('editHint').textContent='먼저 핀을 하나 클릭하세요.'; return; } S.linking=true; $('editHint').textContent=`${S.selPin.ref}.${S.selPin.n} 과 이을 핀을 클릭하세요.`; };
+$('bUnlink').onclick=()=>{ if(!S.selPin){ $('editHint').textContent='먼저 핀을 클릭하세요.'; return; } const q=S.selPin; if(q.net==null){ $('editHint').textContent='이미 아무 데도 안 붙은 핀입니다.'; return; } const old=q.net; setPinNet(q.ref,q.n,null); $('editHint').textContent=`${q.ref}.${q.n} 을 네트 ${old} 에서 뗐습니다.`; showNet(D.nets[old]?old:null); };
+function rotatePart(p){ if(!p) return; p.rot=(p.rot+90)%360; recomputePins(p); S.dirty=true; draw(); }
+$('bRotate').onclick=()=>{ const p=partMap[S.hoverPart]||(S.selPin&&partMap[S.selPin.ref]); if(!p){ $('editHint').textContent='2D 에서 부품 위에 마우스를 두거나 그 부품의 핀을 선택하세요.'; return; } rotatePart(p); $('editHint').textContent=`${p.ref} 회전 → ${p.rot}°`; };
+$('bExport').onclick=()=>{ $('solText').value=toSOL(); };
+$('bImport').onclick=()=>{ const r=applySOL($('solText').value); renderGroups(); draw(); $('routeHint').textContent=`적용: 배치 ${r.np}, 연결 ${r.npin}, 색 ${r.nc}, 경로 ${r.nr}`; };
+if (!SERVER){ $('bVerify').disabled=true; $('bSave').disabled=true; $('srvHint').textContent='python3 serve.py 로 열면 활성'; }
+else { // 살아있음 신호: 탭을 닫으면 서버가 15초 안에 스스로 끝난다
+  setInterval(()=>{ fetch('/ping').catch(()=>{}); }, 3000); fetch('/ping').catch(()=>{});
+  window.addEventListener('pagehide', ()=>{ try{ navigator.sendBeacon('/ping'); }catch(e){} });
+}
+$('bVerify').onclick=async()=>{ $('srvHint').textContent='검증 중…'; try{ const r=await fetch('/verify',{method:'POST',body:toSOL()}); const j=await r.json(); renderReport(j.report,j.timing); $('srvHint').textContent='sol.py 결과로 갱신됨'; }catch(e){ $('srvHint').textContent='서버 응답 없음: '+e; } };
+$('bSave').onclick=async()=>{ $('srvHint').textContent='저장 중…'; try{ const r=await fetch('/save',{method:'POST',body:toSOL()}); const j=await r.json(); $('srvHint').textContent=j.ok?`저장됨 → ${j.path} (백업 .bak)`:'저장 실패: '+(j.errors||j.error); if(j.ok) S.dirty=false; draw(); }catch(e){ $('srvHint').textContent='서버 응답 없음: '+e; } };
+
+// ───────── 마우스 · 키보드 ─────────
+let last=null, dragging=false, hoverPending=null;
+const pos=e=>{ const r=cv.getBoundingClientRect(); return [e.clientX-r.left,e.clientY-r.top]; };
+function distSeg(px,py,x1,y1,x2,y2){ const dx=x2-x1, dy=y2-y1; const L2=dx*dx+dy*dy; let t=L2?((px-x1)*dx+(py-y1)*dy)/L2:0; t=Math.max(0,Math.min(1,t)); return Math.hypot(px-(x1+t*dx),py-(y1+t*dy)); }
+function hitAt(x,y){ let best=null,bd=1e9; hits.forEach(h=>{ const d=Math.hypot(h.x-x,h.y-y); if(d<h.r+2&&d<bd){bd=d;best=h;} }); if (best) return best; let bs=null,bsd=6; segHits.forEach(s=>{ const d=distSeg(x,y,s.x1,s.y1,s.x2,s.y2); if(d<bsd){bsd=d;bs=s;} }); return bs?{net:bs.net}:null; }
+function hitPart(x,y){ let best=null,bd=1e9; D.parts.forEach(p=>{ if(S.hidden.has(p.ref)) return; const {x0,x1,y0,y1}=footBounds(p); const a=proj(x0,y0,0), b=proj(x1,y1,0); const inside=x>=Math.min(a[0],b[0])-2&&x<=Math.max(a[0],b[0])+2&&y>=Math.min(a[1],b[1])-2&&y<=Math.max(a[1],b[1])+2; if(inside){ const d=Math.hypot((a[0]+b[0])/2-x,(a[1]+b[1])/2-y); if(d<bd){bd=d;best=p;} } }); return best; }
+cv.addEventListener('contextmenu',e=>e.preventDefault());
+cv.addEventListener('pointerdown',e=>{
+  cv.setPointerCapture(e.pointerId); cv.focus({preventScroll:true}); const [x,y]=pos(e);
+  last={x,y,px:x,py:y,moved:false,shift:e.shiftKey||e.button===2||e.button===1,t:performance.now()}; dragging=true; vel.yaw=vel.pitch=0;
+  if (S.mode==='2d' && !last.shift && !S.routing){ const hp=hitPart(x,y); if(hp) S.drag={p:hp,ox:x,oy:y,c0:hp.col,r0:hp.row}; }
+  cv.style.cursor='grabbing';
+});
+cv.addEventListener('pointermove',e=>{
+  const [x,y]=pos(e);
+  if (last && (e.buttons&7)){
+    const dx=x-last.x, dy=y-last.y; if(Math.abs(x-last.px)+Math.abs(y-last.py)>3) last.moved=true;
+    if (S.drag){ const [c,rr]=unproj2d(x,y), [c0,r0]=unproj2d(S.drag.ox,S.drag.oy); const nc=S.drag.c0+(c-c0), nr=S.drag.r0+(rr-r0); if(nc!==S.drag.p.col||nr!==S.drag.p.row){ S.drag.p.col=nc; S.drag.p.row=nr; recomputePins(S.drag.p); S.dirty=true; req(); } }
+    else if (last.shift || S.mode==='2d'){ T.panX+=dx; T.panY+=dy; S.panX=T.panX; S.panY=T.panY; req(); }
+    else { const k=0.008; T.yaw+=dx*k; T.pitch=Math.max(-1.55,Math.min(1.55,T.pitch-dy*k)); vel.yaw=dx*k*0.6; vel.pitch=-dy*k*0.6; }
+    last.x=x; last.y=y; return;
+  }
+  // 호버는 프레임당 1회
+  hoverPending=[x,y]; if(!hoverRAF){ hoverRAF=requestAnimationFrame(()=>{ hoverRAF=0; const [hx,hy]=hoverPending; const hp=S.mode==='2d'?hitPart(hx,hy):null; const hpRef=hp?hp.ref:null; if(hpRef!==S.hoverPart){ S.hoverPart=hpRef; req(); }
+    const h=hitAt(hx,hy);
+    if (h){ tip.style.display='block'; tip.style.left=(hx+14)+'px'; tip.style.top=(hy+14)+'px'; tip.innerHTML=h.ref?`<span class="mono"><b>${h.ref}</b> 핀 ${h.pin} ${h.name||''}</span><br>네트 <span class="mono">${h.net??'—'}</span> ${h.net!=null&&D.nets[h.net]?'· '+(groups[h.net]||'')+voltTip(h.net):''}`:`네트 <span class="mono">${h.net}</span> ${groups[h.net]||''}${voltTip(h.net)}`; cv.style.cursor='pointer'; }
+    else if (hp){ tip.style.display='block'; tip.style.left=(hx+14)+'px'; tip.style.top=(hy+14)+'px'; tip.innerHTML=`<b>${hp.ref}</b> ${hp.chip} · (${hp.col},${hp.row}) rot ${hp.rot}`; cv.style.cursor='move'; }
+    else { tip.style.display='none'; cv.style.cursor='grab'; } }); }
+});
+let hoverRAF=0;
+cv.addEventListener('pointerup',e=>{
+  const [x,y]=pos(e); dragging=false; cv.style.cursor='grab';
+  if (S.drag && last && last.moved){ S.drag=null; last=null; req(); return; }
+  S.drag=null;
+  if (last && !last.moved){
+    vel.yaw=vel.pitch=0;
+    if (S.routing && S.mode==='2d'){ S.routePts.push(unproj2d(x,y)); draw(); }
+    else { const h=hitAt(x,y);
+      if (h && h.ref){ const q=h.pinObj;
+        if (S.linking && S.selPin && !(S.selPin.ref===h.ref && S.selPin.n===h.pin)){ const net=linkPins({ref:S.selPin.ref,pin:S.selPin.n},{ref:h.ref,pin:h.pin}); S.linking=false; $('editHint').textContent=`${S.selPin.ref}.${S.selPin.n} — ${h.ref}.${h.pin} 이음 → 네트 ${net}`; S.selPin=null; renderGroups(); showNet(net); }
+        else { S.selPin=q; showNet(q.net); } }
+      else { S.selPin=null; S.linking=false; showNet(h?h.net:null); } }
+  }
+  last=null;
+});
+cv.addEventListener('wheel',e=>{
+  e.preventDefault(); const [x,y]=pos(e);
+  const k=Math.exp(-e.deltaY*0.0015); const nz=Math.max(1.0,Math.min(60,T.zoom*k)); const ratio=nz/T.zoom;
+  // 커서 아래 점이 그대로 있도록 pan 보정
+  T.panX = (x-W/2) - ((x-W/2)-T.panX)*ratio; T.panY = (y-H/2) - ((y-H/2)-T.panY)*ratio; T.zoom=nz;
+},{passive:false});
+window.addEventListener('keydown',e=>{ if(e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT') return; const k=e.key.toLowerCase(); if(k==='f') setFlip(!S.flipped); if(k==='v') setMode(S.mode==='3d'?'2d':'3d'); if(k==='r') rotatePart(partMap[S.hoverPart]||(S.selPin&&partMap[S.selPin.ref])); if(e.key==='Escape'){ if(S.routing){S.routing=false;S.routePts=[];$('bRoute').textContent='경로 그리기';} S.linking=false; S.selPin=null; showNet(null);} });
+window.addEventListener('beforeunload',e=>{ if(S.dirty && !SERVER){ e.preventDefault(); e.returnValue=''; } });
+
+window.__sol={computeAllRoutes,routeScore,bumpGeom,netColor,shadeHex,hash,fitView,hitPart,hitAt,S,T,D,routes,colors,groups,groupsOrder,draw,autoRoute,recomputePins,partMap,hits,segHits,showNet,setMode,setFlip,toSOL,applySOL,linkPins,setPinNet,rotatePart,findPin};
+applySettings(D.settings); geomVer++;
+resize();
+})();
+</script>
+<script>
+// ═══════════════════════════════════════════════════════════════════
+//  3D (WebGL / Three.js r128) — 사진에 가깝게: 환경광 반사, 깎인 모서리,
+//  인쇄 마킹, 어깨 꺾인 다리 + 납땜 필렛, 개뼈 저항, FR4 결, 광택 배선
+//  2D 편집은 캔버스. THREE 가 못 뜨면 조용히 빠지고 캔버스 3D 가 대신 그린다.
+// ═══════════════════════════════════════════════════════════════════
+(function(){
+'use strict';
+if (!window.THREE || !window.__sol) return;
+const sol=window.__sol, S=sol.S, D=sol.D, P=D.pitch;
+const stage=document.getElementById('stage');
+const gl=document.createElement('canvas'); gl.id='gl'; gl.tabIndex=0; gl.setAttribute('aria-label','3D 기판');
+gl.style.cssText='position:absolute;inset:0;width:100%;height:100%;display:none;touch-action:none;cursor:grab;outline:none';
+stage.insertBefore(gl, stage.firstChild);
+let renderer;
+try { renderer=new THREE.WebGLRenderer({canvas:gl, antialias:true, preserveDrawingBuffer:true, alpha:false, powerPreference:'high-performance'}); }
+catch(e){ console.warn('WebGL 없음 → 캔버스 3D 로 대체', e); return; }
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 1.5));
+renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap; renderer.shadowMap.autoUpdate=false;   // 지오메트리 바뀔 때만 (카메라 회전은 그림자와 무관)
+renderer.outputEncoding=THREE.sRGBEncoding; renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.0;
+
+const bw=D.board[0]*P, bh=D.board[1]*P, BT=1.6, SOCK_H=3.6, CHIP_H=3.8, LIFT=11;
+const LAYER_H=26;                       // 층 간격 (mm): 핀헤더 11 + 부품 높이 여유
+const scene=new THREE.Scene();
+const css=()=>getComputedStyle(document.documentElement);
+const bgColor=()=>new THREE.Color(css().getPropertyValue('--bg').trim()||'#f3f1ec');
+scene.background=bgColor();
+const camera=new THREE.PerspectiveCamera(30, 1, 2, 5000);
+const cam={yaw:-0.6, pitch:0.95, dist:Math.max(bw,bh)*1.9, tx:bw/2, ty:0, tz:bh/2};
+const camT={...cam}; let vel={yaw:0,pitch:0}; let dragging=false;
+function applyCamera(){
+  const pitch=(S.flipped? -1:1)*cam.pitch; const cp=Math.cos(pitch), sp=Math.sin(pitch);
+  camera.position.set(cam.tx+cam.dist*Math.sin(cam.yaw)*cp, cam.ty+cam.dist*sp, cam.tz+cam.dist*Math.cos(cam.yaw)*cp);
+  camera.up.set(0,1,0); camera.lookAt(cam.tx,cam.ty,cam.tz);
+}
+
+// ── 환경광 (작업대 위 형광등 + 창문 느낌의 등장방형 맵 → PMREM) ──
+function makeEnv(){
+  const c=document.createElement('canvas'); c.width=1024; c.height=512; const x=c.getContext('2d');
+  const g=x.createLinearGradient(0,0,0,512); g.addColorStop(0,'#f4f6fa'); g.addColorStop(0.45,'#c9ced8'); g.addColorStop(0.55,'#7c7669'); g.addColorStop(1,'#3a352e');
+  x.fillStyle=g; x.fillRect(0,0,1024,512);
+  x.fillStyle='rgba(255,255,255,0.95)'; x.fillRect(120,40,300,90); x.fillRect(620,60,260,70);      // 형광등 두 개
+  x.fillStyle='rgba(255,250,235,0.6)'; x.fillRect(430,140,120,120);                                  // 창
+  const t=new THREE.CanvasTexture(c); t.mapping=THREE.EquirectangularReflectionMapping; t.encoding=THREE.sRGBEncoding;
+  const pm=new THREE.PMREMGenerator(renderer); pm.compileEquirectangularShader(); const env=pm.fromEquirectangular(t).texture; pm.dispose(); return env;
+}
+scene.environment=makeEnv();
+
+// ── 조명 ──
+scene.add(new THREE.HemisphereLight(0xeef2ff, 0x3b3128, 0.35));
+const sun=new THREE.DirectionalLight(0xfff3e2, 1.35); sun.position.set(bw/2-160, 300, bh/2+190); sun.target.position.set(bw/2,0,bh/2); scene.add(sun, sun.target);
+sun.castShadow=true; sun.shadow.mapSize.set(1024,1024); { const sc=sun.shadow.camera, R=Math.max(bw,bh)*0.75; sc.left=-R; sc.right=R; sc.top=R; sc.bottom=-R; sc.near=60; sc.far=900; } sun.shadow.bias=-0.0005; sun.shadow.normalBias=0.35; sun.shadow.radius=3;
+const fillL=new THREE.DirectionalLight(0xd6e0ff, 0.3); fillL.position.set(bw/2+220, 140, bh/2-160); scene.add(fillL);
+const under=new THREE.DirectionalLight(0xffffff, 0.45); under.position.set(bw/2, -240, bh/2+80); scene.add(under);
+
+// ── 재질 ──
+const std=(o)=>new THREE.MeshStandardMaterial(Object.assign({roughness:0.5, metalness:0.0, envMapIntensity:0.9}, o));
+const M={
+  socketPlastic: std({color:0x121214, roughness:0.86}),
+  chipPlastic:   std({color:0x1f1f24, roughness:0.62}),
+  chipHi:        std({color:0x1f1f24, roughness:0.62, emissive:0x7a6210, emissiveIntensity:0.8}),
+  chipHover:     std({color:0x2a2a36, roughness:0.62, emissive:0x1d3a6e, emissiveIntensity:0.6}),
+  tin:           std({color:0xcfd2d6, roughness:0.28, metalness:0.95}),
+  solder:        std({color:0xc4c7cc, roughness:0.22, metalness:0.9}),
+  hole:          std({color:0x050506, roughness:1}),
+  print:         std({color:0xe9e9ec, roughness:0.7}),
+  resBody:       std({color:0xd9c39c, roughness:0.32, envMapIntensity:1.1}),
+  capCer:        std({color:0xe1b13f, roughness:0.45}),
+  capSleeve:     std({color:0x233270, roughness:0.35, envMapIntensity:1.0}),
+  capTop:        std({color:0xb9bdc7, roughness:0.35, metalness:0.85}),
+  oscCan:        std({color:0xbfc3c9, roughness:0.32, metalness:0.9}),
+  header:        std({color:0x17171a, roughness:0.8}),
+  boardEdge:     std({color:0x1a4a2d, roughness:0.85}),
+  sel:           std({color:0xffd54a, emissive:0x8a6a00, roughness:0.4, metalness:0.3}),
+};
+const BAND={0:0x141414,1:0x7a3b12,2:0xd12424,3:0xf07f12,4:0xf2cf1c,5:0x2c9a3d,6:0x2557d6,7:0x8b3fc7,8:0x8a8a8a,9:0xffffff,gold:0xd1a52a};
+function resBands(ohm){ const e=Math.floor(Math.log10(ohm))-1; const m=Math.round(ohm/Math.pow(10,e)); return [BAND[Math.floor(m/10)],BAND[m%10],BAND[e],BAND.gold]; }
+
+// ── 깎인 모서리 상자 (Y 가 높이) ──
+function bevelBox(w,h,d,bevel=0.3,mat){
+  const sh=new THREE.Shape(); const hw=w/2-bevel, hd=d/2-bevel;
+  sh.moveTo(-hw,-hd); sh.lineTo(hw,-hd); sh.lineTo(hw,hd); sh.lineTo(-hw,hd); sh.closePath();
+  const geo=new THREE.ExtrudeGeometry(sh,{depth:h-2*bevel, bevelEnabled:true, bevelThickness:bevel, bevelSize:bevel, bevelSegments:2, curveSegments:2});
+  geo.rotateX(-Math.PI/2); geo.translate(0, bevel, 0);   // 바닥이 y=0
+  const m=new THREE.Mesh(geo, mat); m.castShadow=true; m.receiveShadow=true; return m;
+}
+const cyl=(r,h,seg=8)=>new THREE.CylinderGeometry(r,r,h,seg);
+function add(m,x,y,z,parent,rot){ m.position.set(x,y,z); if(rot) m.rotation.set(rot[0],rot[1],rot[2]); (parent||partsGroup).add(m); return m; }
+function mesh(geo,mat){ const m=new THREE.Mesh(geo,mat); m.castShadow=true; m.receiveShadow=true; return m; }
+
+// ── 기판: FR4 결 + 솔더마스크 광택 + 구리 링 ──
+function boardTextures(withHoles){
+  const ppm=5, c=document.createElement('canvas'); c.width=Math.round(bw*ppm); c.height=Math.round(bh*ppm); const x=c.getContext('2d');
+  x.fillStyle='#2b7147'; x.fillRect(0,0,c.width,c.height);
+  x.globalAlpha=0.10; x.strokeStyle='#0a3a20'; x.lineWidth=1; for(let i=0;i<c.width;i+=2.4){ x.beginPath(); x.moveTo(i,0); x.lineTo(i,c.height); x.stroke(); } for(let j=0;j<c.height;j+=2.4){ x.beginPath(); x.moveTo(0,j); x.lineTo(c.width,j); x.stroke(); } x.globalAlpha=1;
+  const r=document.createElement('canvas'); r.width=c.width; r.height=c.height; const rx=r.getContext('2d'); rx.fillStyle='#8a8a8a'; rx.fillRect(0,0,r.width,r.height);   // roughness map (회색=0.54)
+  if (withHoles) for(let col=0;col<D.board[0];col++) for(let row=0;row<D.board[1];row++){
+    const cx=(col*P+P/2)*ppm, cy=(row*P+P/2)*ppm;
+    x.fillStyle='#b4772e'; x.beginPath(); x.arc(cx,cy,1.05*ppm,0,6.283); x.fill();
+    x.fillStyle='#e0ad62'; x.beginPath(); x.arc(cx-0.22*ppm,cy-0.22*ppm,0.62*ppm,0,6.283); x.fill();
+    x.fillStyle='#0b1710'; x.beginPath(); x.arc(cx,cy,0.5*ppm,0,6.283); x.fill();
+    rx.fillStyle='#3a3a3a'; rx.beginPath(); rx.arc(cx,cy,1.05*ppm,0,6.283); rx.fill();   // 구리는 매끈
+  }
+  const t=new THREE.CanvasTexture(c); t.encoding=THREE.sRGBEncoding; t.anisotropy=8;
+  const tr=new THREE.CanvasTexture(r);
+  return {map:t, rough:tr};
+}
+const texH=boardTextures(true), texP=boardTextures(false);
+const boardMat=std({map:texH.map, roughnessMap:texH.rough, roughness:1.0, metalness:0.08, envMapIntensity:0.7});
+const boards=[];
+function rebuildBoards(){
+  boards.forEach(b=>scene.remove(b)); boards.length=0;
+  const n=Math.max(1, D.layers||1);
+  for(let i=0;i<n;i++){
+    const b=mesh(new THREE.BoxGeometry(bw,BT,bh), [M.boardEdge,M.boardEdge,boardMat,boardMat,M.boardEdge,M.boardEdge]);
+    b.position.set(bw/2-P/2, -BT/2 + i*LAYER_H, bh/2-P/2); b.castShadow=(i>0); b.userData.layer=i+1; scene.add(b); boards.push(b);
+  }
+}
+rebuildBoards();
+
+// ── 마킹 텍스처 ──
+const labelCache={};
+function labelTex(lines, w, h, dark){
+  const key=lines.join('|')+w+h+dark; if (labelCache[key]) return labelCache[key];
+  const c=document.createElement('canvas'); c.width=640; c.height=Math.max(96,Math.round(640*h/w)); const x=c.getContext('2d');
+  x.clearRect(0,0,c.width,c.height); x.textAlign='center'; x.textBaseline='middle';
+  const n=lines.length; lines.forEach((ln,i)=>{ const big=i===0; x.fillStyle=dark?'#2b2b30':(big?'#ececf0':'#b9b9c4'); x.font=`${big?600:400} ${Math.min(c.height*(big?0.34:0.2), 110)}px ${big?'"IBM Plex Sans KR", sans-serif':'"IBM Plex Mono", monospace'}`; x.fillText(ln, c.width/2, c.height*((i+0.55)/(n+0.1))); });
+  const t=new THREE.CanvasTexture(c); t.encoding=THREE.sRGBEncoding; t.anisotropy=8; labelCache[key]=t; return t;
+}
+function printPlane(lines,w,h,dark){ const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h), new THREE.MeshStandardMaterial({map:labelTex(lines,w,h,dark), transparent:true, depthWrite:false, roughness:0.75})); m.rotation.x=-Math.PI/2; return m; }
+
+const partsGroup=new THREE.Group(), wiresGroup=new THREE.Group(); scene.add(partsGroup, wiresGroup);
+const pinMeshes=[], chipMeshes=[], wireMeshes=[];
+const realPins=p=>p.pins.filter(q=>q.kind!=='undef');
+function bounds(p){ const rp=realPins(p); const cs=rp.map(q=>q.col), rs=rp.map(q=>q.row); return {x0:(Math.min(...cs)-0.5)*P, x1:(Math.max(...cs)+0.5)*P, z0:(Math.min(...rs)-0.5)*P, z1:(Math.max(...rs)+0.5)*P}; }
+
+// 다리/필렛/팁/소켓구멍은 인스턴싱 (드로우콜 수천 → 4개). 픽킹은 instanceId → pinRef 로.
+const INST={ legs:[], fillets:[], tips:[], holes:[], resBody:[], bands:[], cerCap:[] };   // 각 원소: {mat:Matrix4, ud}
+const _m4=new THREE.Matrix4(), _q=new THREE.Quaternion(), _s=new THREE.Vector3(), _p=new THREE.Vector3();
+function inst(list, x,y,z, sx,sy,sz, ud, rx=0,ry=0,rz=0){ _q.setFromEuler(new THREE.Euler(rx,ry,rz)); _p.set(x,y,z); _s.set(sx,sy,sz); list.push({mat:new THREE.Matrix4().compose(_p,_q,_s), ud}); }
+function leg(g, p, q, shoulderY, bodyEdgeX, bodyEdgeZ, vertOnly){
+  const x=q.col*P, z=q.row*P; const ud={ref:p.ref,pin:q.n,net:q.net,pinObj:q,kind:'pin',cat:'pins'};
+  if (!vertOnly){ const dx=x-bodyEdgeX, dz=z-bodyEdgeZ; const L=Math.hypot(dx,dz); if (L>0.05) inst(INST.legs,(x+bodyEdgeX)/2,shoulderY,(z+bodyEdgeZ)/2, 0.55,0.28,L, ud, 0,Math.atan2(dx,dz),0); }
+  const h=shoulderY+BT+1.6; inst(INST.legs, x,(shoulderY-BT-1.6)/2,z, 0.5,h,0.28, ud);
+  inst(INST.fillets, x,-BT-0.45,z, 1,1,1, ud, Math.PI,0,0);
+  inst(INST.tips, x,-BT-1.2,z, 1,1,1, ud);
+}
+const instMeshes={};
+function flushInstances(){
+  for (const k in instMeshes){ partsGroup.remove(instMeshes[k]); delete instMeshes[k]; }
+  const prof=[[0.28,-3.5],[0.85,-3.25],[1.22,-2.75],[1.12,-1.9],[1.05,0],[1.12,1.9],[1.22,2.75],[0.85,3.25],[0.28,3.5]].map(([r,yy])=>new THREE.Vector2(r,yy));
+  const defs={ legs:[new THREE.BoxGeometry(1,1,1), M.tin, 'pins'], fillets:[new THREE.ConeGeometry(0.95,0.9,8), M.solder, 'pins'], tips:[new THREE.CylinderGeometry(0.22,0.22,0.6,6), M.tin, 'pins'], holes:[new THREE.BoxGeometry(1.0,0.5,1.0), M.hole, 'sockets'],
+    resBody:[new THREE.LatheGeometry(prof,14), M.resBody, 'chips'], bands:[new THREE.CylinderGeometry(1.2,1.2,0.5,12), std({color:0xffffff, roughness:0.35, envMapIntensity:1.1}), 'chips'], cerCap:[new THREE.CylinderGeometry(2.3,2.3,1.4,14), M.capCer, 'caps'] };
+  for (const k in defs){ const list=INST[k]; if(!list.length) continue; const [geo,mat,cat]=defs[k];
+    const im=new THREE.InstancedMesh(geo, mat.clone(), list.length); im.castShadow=(k!=='holes'); im.receiveShadow=true;
+    list.forEach((it,i)=>{ im.setMatrixAt(i,it.mat); im.setColorAt(i,new THREE.Color(it.ud.color!=null?it.ud.color:0xffffff)); });
+    im.instanceMatrix.needsUpdate=true; if(im.instanceColor) im.instanceColor.needsUpdate=true;
+    im.userData={cat, kind:(k==='holes'?'hole':'pin'), list}; instMeshes[k]=im; partsGroup.add(im); }
+}
+function buildPart(p){
+  const g=new THREE.Group(); g.userData.ref=p.ref; g.userData.layer=p.layer||1;
+  g.position.y = ((p.layer||1)-1)*LAYER_H; partsGroup.add(g);
+  const chip=p.pkg.startsWith('DIP'), cap=p.pkg.startsWith('CAP'), res=p.pkg.startsWith('RES');
+  const b=bounds(p); const cx=(b.x0+b.x1)/2, cz=(b.z0+b.z1)/2, w=b.x1-b.x0, d=b.z1-b.z0;
+  const rp=realPins(p);
+  if (chip){
+    // 소켓 (DIP 듀얼와이프, 개방형): 핀 줄을 따라 두 개의 레일(폭 2.6) + 양 끝을 잇는 낮은 다리, 가운데는 뚫려 기판이 보인다.
+    //   레일 위에 사각 접점 구멍(인스턴스), 1번 핀 쪽 다리에 반원 홈. 높이 3.6mm (실물 저프로파일 소켓).
+    const vertS=d>=w; const RW=2.6, BR=1.6, BH=SOCK_H*0.75;
+    const rail=(x,z,len,along)=>{ const m=add(bevelBox(along==='z'?RW:len, SOCK_H, along==='z'?len:RW, 0.2, M.socketPlastic), x,0,z,g); m.userData.cat='sockets'; return m; };
+    const cs0=rp.map(r=>r.col), rs0=rp.map(r=>r.row);
+    if (vertS){ [Math.min(...cs0),Math.max(...cs0)].forEach(c=>rail(c*P,cz,d,'z'));
+      [b.z0+BR/2, b.z1-BR/2].forEach(z=>{ const m=add(bevelBox(w-RW,BH,BR,0.15,M.socketPlastic),cx,0,z,g); m.userData.cat='sockets'; }); }
+    else { [Math.min(...rs0),Math.max(...rs0)].forEach(r=>rail(cx,r*P,w,'x'));
+      [b.x0+BR/2, b.x1-BR/2].forEach(x=>{ const m=add(bevelBox(BR,BH,d-RW,0.15,M.socketPlastic),x,0,cz,g); m.userData.cat='sockets'; }); }
+    { const p1s=rp[0]; const sn=mesh(cyl(0.8,0.5,10), M.hole); sn.castShadow=false;
+      sn.position.set(vertS?cx:(p1s.col*P<cx?b.x0+BR/2:b.x1-BR/2), BH-0.05, vertS?(p1s.row*P<cz?b.z0+BR/2:b.z1-BR/2):cz); sn.userData.cat='sockets'; g.add(sn); }
+    const lg=new THREE.Group(); lg.userData.lift=true; g.add(lg);   // 칩 몸통·마킹은 이 그룹 — 「칩 뽑아 올리기」로 통째로 들린다
+    rp.forEach(q=>{ inst(INST.holes, q.col*P, SOCK_H-0.15, q.row*P, 1,1,1, {cat:'sockets',ref:p.ref}); leg(g,p,q,SOCK_H-0.2,q.col*P,q.row*P,true);
+      // 칩 다리 (보이는 부분): 몸통 옆면 → 어깨(수평 1.1mm) → 수직으로 소켓 구멍까지
+      const x=q.col*P, z=q.row*P; const ud={ref:p.ref,pin:q.n,net:q.net,pinObj:q,kind:'pin',cat:'chips'};
+      const cs=rp.map(r=>r.col), rs=rp.map(r=>r.row); let ex=x, ez=z;
+      if (q.col===Math.min(...cs) && Math.max(...cs)!==Math.min(...cs)) ex=b.x0+0.25; else if (q.col===Math.max(...cs) && Math.max(...cs)!==Math.min(...cs)) ex=b.x1-0.25;
+      else if (q.row===Math.min(...rs)) ez=b.z0+0.25; else ez=b.z1-0.25;
+      const yS=SOCK_H+0.15+CHIP_H*0.45;                          // 어깨 높이 (몸통 중간)
+      const L=Math.hypot(x-ex,z-ez); if (L>0.05) inst(INST.legs,(x+ex)/2,yS,(z+ez)/2, 0.55,0.28,L, ud, 0,Math.atan2(x-ex,z-ez),0);
+      inst(INST.legs, x,(yS+SOCK_H)/2,z, 0.5,yS-SOCK_H,0.28, ud); });
+    // 칩 몸통 (깎인 모서리) + 마킹 + 홈 + 1번 점
+    const body=add(bevelBox(w-0.5,CHIP_H,d-0.5,0.35,M.chipPlastic),cx,SOCK_H+0.15,cz,lg); body.userData={ref:p.ref,cat:'chips',kind:'chip'}; chipMeshes.push(body);
+    const vert=d>=w; const p1=rp[0];
+    const notch=mesh(cyl(1.05,0.6,12), M.hole); notch.castShadow=false; notch.position.set(vert?cx:(p1.col*P<cx?b.x0+0.25:b.x1-0.25), SOCK_H+0.15+CHIP_H-0.05, vert?(p1.row*P<cz?b.z0+0.25:b.z1-0.25):cz); notch.userData.cat='chips'; lg.add(notch);
+    const dot=mesh(cyl(0.5,0.12,8), M.print); dot.castShadow=false; dot.position.set(p1.col*P+(vert?1.3:0), SOCK_H+0.15+CHIP_H+0.02, p1.row*P+(vert?0:1.3)); dot.userData.cat='chips'; lg.add(dot);
+    const lw=Math.max(w,d)-4.0, lh=Math.min(w,d)-2.0;
+    const lab=printPlane([p.ref, p.chip, 'KYLE '+String(D.board[0])], lw, lh, false); lab.rotation.z=vert?-Math.PI/2:0; lab.position.set(cx,SOCK_H+0.15+CHIP_H+0.03,cz); lab.userData.cat='labels'; lg.add(lab);
+  } else if (res){
+    const a=rp[0], q2=rp[1]; const vert=Math.abs(q2.row-a.row)>=Math.abs(q2.col-a.col);
+    const ax=a.col*P, az=a.row*P, bx=q2.col*P, bz=q2.row*P; const mx=(ax+bx)/2, mz=(az+bz)/2; const y=3.4;
+    const rx=vert?Math.PI/2:0, rz=vert?0:Math.PI/2;
+    inst(INST.resBody, mx,y,mz, 1,1,1, {cat:'chips',ref:p.ref}, rx,0,rz);
+    const ohm=parseFloat((p.chip.replace(/^RES/,'').replace('k','.'))||'4.7')*1000;
+    resBands(ohm).forEach((col,i)=>{ const t=-2.15+i*1.2; inst(INST.bands, mx+(vert?0:t), y, mz+(vert?t:0), 1,1,1, {cat:'chips',ref:p.ref,color:col}, rx,0,rz); });
+    [[a,ax,az,-1],[q2,bx,bz,1]].forEach(([q,x,z,sgn])=>{ const ex=vert?mx:mx+sgn*3.4, ez=vert?mz+sgn*3.4:mz; const L=Math.hypot(x-ex,z-ez); const ud={ref:p.ref,pin:q.n,net:q.net,pinObj:q,kind:'pin',cat:'pins'}; if(L>0.05) inst(INST.legs,(x+ex)/2,y,(z+ez)/2, 0.5,0.5,L, ud, 0,Math.atan2(x-ex,z-ez),0); leg(g,p,q,y,x,z,true); });
+  } else if (cap){
+    if (p.chip==='CAP10u'){
+      const can=mesh(cyl(2.5,7.0,14), M.capSleeve); can.position.set(cx,2.0+3.5,cz); can.userData.cat='caps'; g.add(can);
+      const top=mesh(cyl(2.55,0.35,14), M.capTop); top.position.set(cx,2.0+7.0,cz); top.userData.cat='caps'; g.add(top);
+      const stripe=mesh(new THREE.BoxGeometry(0.9,6.6,0.15), std({color:0xd5d8e2, roughness:0.4})); stripe.position.set(cx-2.5,2.0+3.5,cz); stripe.userData.cat='caps'; g.add(stripe);
+      const lab=printPlane(['10µF','50V'],3.6,3.6,true); lab.position.set(cx,2.0+7.0+0.2,cz); lab.userData.cat='labels'; g.add(lab);
+    } else { inst(INST.cerCap, cx,4.9,cz, 1,1,1, {cat:'caps',ref:p.ref}, 0,0,Math.PI/2); }
+    rp.forEach(q=>leg(g,p,q,4.0,q.col*P,q.row*P,true));
+  } else if (p.chip==='OSC_FULL'){
+    const can=add(bevelBox(w-0.4,5.3,d-0.4,0.6,M.oscCan),cx,0.8,cz,g); can.userData={cat:'chips',ref:p.ref,kind:'chip'}; chipMeshes.push(can);
+    const base=mesh(new THREE.BoxGeometry(w-0.4,0.8,d-0.4), M.header); base.position.set(cx,0.4,cz); base.userData.cat='chips'; g.add(base);
+    const lab=printPlane([p.ref,'OSC 24.000M','CMOS 5V'], d-3, w-2, true); lab.rotation.z=-Math.PI/2; lab.position.set(cx,0.8+5.3+0.05,cz); lab.userData.cat='labels'; g.add(lab);
+    rp.forEach(q=>leg(g,p,q,0.6,q.col*P,q.row*P,true));
+  } else {
+    const hb=add(bevelBox(w,2.5,d,0.2,M.header),cx,0,cz,g); hb.userData={cat:'chips',ref:p.ref,kind:'chip'}; chipMeshes.push(hb);
+    rp.forEach(q=>{ inst(INST.legs, q.col*P,2.5+3.0,q.row*P, 0.64,6.0,0.64, {ref:p.ref,pin:q.n,net:q.net,pinObj:q,kind:'pin',cat:'pins'}); leg(g,p,q,0.3,q.col*P,q.row*P,true); });
+    const lab=printPlane([p.ref], Math.max(w,d)-2, Math.min(w,d)-0.4, false); if(d>w) lab.rotation.z=-Math.PI/2; lab.position.set(cx,2.56,cz); lab.userData.cat='labels'; g.add(lab);
+  }
+  return g;
+}
+
+// ── 배선: 광택 PVC 튜브 + 구멍 근처 주석선 노출 ──
+const netColor=net=>{ if (D.nets[net]?.supply) return net==='GND'?'#1a1a1a':'#c81e1e'; return sol.shadeHex(sol.colors[sol.groups[net]||'']||'#7f7f7f', sol.hash(net)%4); };
+function mergeGeos(geos){
+  let nv=0, ni=0; geos.forEach(g=>{ nv+=g.attributes.position.count; ni+=g.index.count; });
+  const pos=new Float32Array(nv*3), nor=new Float32Array(nv*3), idx=new (nv>65535?Uint32Array:Uint16Array)(ni); let vo=0, io=0;
+  geos.forEach(g=>{ pos.set(g.attributes.position.array, vo*3); nor.set(g.attributes.normal.array, vo*3); const gi=g.index.array; for(let i=0;i<gi.length;i++) idx[io+i]=gi[i]+vo; vo+=g.attributes.position.count; io+=gi.length; g.dispose(); });
+  const out=new THREE.BufferGeometry(); out.setAttribute('position',new THREE.BufferAttribute(pos,3)); out.setAttribute('normal',new THREE.BufferAttribute(nor,3)); out.setIndex(new THREE.BufferAttribute(idx,1)); out.computeBoundingSphere(); return out;
+}
+function buildWires(){
+  while(wiresGroup.children.length) wiresGroup.remove(wiresGroup.children[0]); wireMeshes.length=0;
+  for (const net in D.nets){
+    const segs=sol.autoRoute(net); if(!segs.length) continue; const supply=!!D.nets[net].supply;
+    // ★ 층마다 따로 묶는다 — 「보는 층」으로 한 층만 볼 때 다른 층의 선이 공중에 떠 보이면 안 된다
+    const byL={}, failByL={}; const bucket=(o,L)=>(o[L]||(o[L]=[]));
+    segs.forEach(sg=>{
+      const back=sg.side==='back'; let pts;
+      const Lz=(sg.layer||1); const geos=bucket(byL,Lz), failGeos=bucket(failByL,Lz);
+      const Ly = (Lz-1)*LAYER_H;
+      // ★ 미배선 구간: 선이 아니다. 핀↔핀을 잇는 빨간 고무줄로 기판 위 8mm 에 띄워 그린다 (2D 의 빨간 점선과 같은 뜻).
+      //   예전엔 보통 선처럼 그려서, 다른 선을 뚫고 지나가는 '가짜 교차' 로 보였다.
+      if (sg.fail){ const a=sg.pts[0], b=sg.pts[sg.pts.length-1];
+        // ★ 미배선 표시: 기판 '표면에 붙은' 빨간 점선 (2D 의 빨간 점선과 같은 모양). 앞면·뒷면 양쪽에 그려 어느 쪽에서 봐도 보이고,
+        //   칩 아래로 지나는 부분은 칩에 가려진다. (예전엔 12mm 공중에 기둥까지 세워 '떠 있는 선' 으로 보였다)
+        for (const yF of [0.35+Ly, -BT-0.35+Ly]){
+          const A=new THREE.Vector3(a[0]*P,yF,a[1]*P), B=new THREE.Vector3(b[0]*P,yF,b[1]*P); const L=A.distanceTo(B); if(L<0.5) continue;
+          const dash=1.4, gap=1.0, n=Math.max(1,Math.floor(L/(dash+gap)));
+          for(let k=0;k<n;k++){ const t0=(k*(dash+gap))/L, t1=Math.min(1,(k*(dash+gap)+dash)/L); failGeos.push(new THREE.TubeGeometry(new THREE.LineCurve3(A.clone().lerp(B,t0),A.clone().lerp(B,t1)),1,0.2,5,false)); } }
+        return; }
+      // 실물: 손납땜 선은 기판에 붙어 간다. 뒷면 = 납땜면(기본), 앞면 = 기판 표면 위 (소켓 사이로)
+      const y = (back ? -BT-0.50 : 0.50) + Ly;
+      pts = sg.pts.map(p=>new THREE.Vector3(p[0]*P, y, p[1]*P));
+      const clean=[pts[0]]; for(let i=1;i<pts.length;i++) if(pts[i].distanceTo(clean[clean.length-1])>0.05) clean.push(pts[i]);
+      if (sg.viaStart){ const q=sg.pts[0]; const rr=Math.max(0.15,(S.wireMM||0.5)/2); const v=new THREE.CylinderGeometry(rr,rr,BT+1.4,8); v.translate(q[0]*P, -BT/2, q[1]*P); geos.push(v); }   // 관통(바느질) 구멍
+      if (clean.length<2) return;
+      // 곧은 구간마다 곧은 튜브 (스플라인은 90° 모서리를 비스듬히 깎아 '선이 삐딱하게' 보였다)
+      const rr=Math.max(0.15,(S.wireMM||0.5)/2)*(sg.rail?1.3:1);
+      for (let i=1;i<clean.length;i++) geos.push(new THREE.TubeGeometry(new THREE.LineCurve3(clean[i-1],clean[i]), 1, rr, 7, false));
+      for (let i=1;i<clean.length-1;i++){ const b=new THREE.SphereGeometry(rr,6,6); b.translate(clean[i].x,clean[i].y,clean[i].z); geos.push(b); }
+    });
+    for (const Lz in failByL){ const failGeos=failByL[Lz]; if(!failGeos.length) continue;
+      const fm=mesh(mergeGeos(failGeos), std({color:new THREE.Color('#ff2d20'), emissive:new THREE.Color('#7a0000'), roughness:0.6, transparent:true, opacity:1}));
+      fm.userData={net,supply,kind:'wire',fail:true,layer:+Lz}; wiresGroup.add(fm); wireMeshes.push(fm); }
+    for (const Lz in byL){ const geos=byL[Lz]; if(!geos.length) continue;
+      const mat=std({color:new THREE.Color(netColor(net)), roughness:0.42, metalness:0.0, envMapIntensity:0.8, transparent:true, opacity:1});
+      const m=mesh(mergeGeos(geos),mat); m.userData={net,supply,kind:'wire',layer:+Lz}; wiresGroup.add(m); wireMeshes.push(m); }
+  }
+}
+function rebuildAll(){ while(partsGroup.children.length) partsGroup.remove(partsGroup.children[0]); pinMeshes.length=0; chipMeshes.length=0; for(const k in INST) INST[k].length=0; D.parts.forEach(buildPart); flushInstances(); buildWires(); }
+
+const groupVisible=net=>sol.groupsOrder.indexOf(sol.groups[net]||'기타')<S.step;
+function applyStyle(){
+  const VL=S.viewLayer|0;
+  boards.forEach(b=>b.visible = !VL || b.userData.layer===VL);
+  partsGroup.children.forEach(g=>{ const p=sol.partMap[g.userData.ref];
+    const layOK = !VL || (g.userData.layer||1)===VL;
+    g.visible=layOK && !(S.hidden.has(g.userData.ref)||(p&&p.pkg.startsWith('CAP')&&!S.show.caps));
+    g.traverse(o=>{ if(o.userData&&o.userData.lift) o.position.y = S.lift?LIFT:0;
+      const c=o.userData&&o.userData.cat; if(!c) return; o.visible = c==='chips'?S.show.chips : c==='sockets'?S.show.sockets : c==='pins'?S.show.pins : c==='labels'?(S.show.labels&&S.show.chips) : c==='caps'?S.show.caps : true; }); });
+  chipMeshes.forEach(m=>{ const p=sol.partMap[m.userData.ref]; const sel=S.selNet!=null&&p&&p.pins.some(q=>q.net===S.selNet); const base=(p&&p.chip==='OSC_FULL')?M.oscCan:(p&&!p.pkg.startsWith('DIP')?M.header:M.chipPlastic); m.material= sel?M.chipHi:(S.hoverPart===m.userData.ref?M.chipHover:base); });
+  const yellow=new THREE.Color(0xffd54a), white=new THREE.Color(0xffffff);
+  for (const k in instMeshes){ const im=instMeshes[k]; im.visible = (im.userData.cat==='pins')? S.show.pins : S.show.sockets;
+    if(k==='holes'||k==='resBody'||k==='bands'||k==='cerCap'){ im.visible = k==='holes'?S.show.sockets:(k==='cerCap'?S.show.caps:S.show.chips); im.userData.list.forEach((it,i)=>{ im.setMatrixAt(i, (S.hidden.has(it.ud.ref)||(VL&&((sol.partMap[it.ud.ref]||{}).layer||1)!==VL))? new THREE.Matrix4().makeScale(0,0,0) : it.mat); }); im.instanceMatrix.needsUpdate=true; continue; }
+    im.userData.list.forEach((it,i)=>{ const q=it.ud.pinObj; const chipLeg=it.ud.cat==='chips'; const hidden=S.hidden.has(it.ud.ref)||(chipLeg&&!S.show.chips)||(VL&&((sol.partMap[it.ud.ref]||{}).layer||1)!==VL);   /* 보는 층이 아니면 저항·캡·핀도 숨긴다 */ const sel=(S.selNet!=null&&q.net===S.selNet)||(S.selPin&&S.selPin.ref===it.ud.ref&&S.selPin.n===it.ud.pin); im.setColorAt(i, sel?yellow:white);
+      if(hidden){ im.setMatrixAt(i, new THREE.Matrix4().makeScale(0,0,0)); } else if(chipLeg&&S.lift){ im.setMatrixAt(i, new THREE.Matrix4().makeTranslation(0,LIFT,0).multiply(it.mat)); } else im.setMatrixAt(i,it.mat); });
+    im.instanceMatrix.needsUpdate=true; if(im.instanceColor) im.instanceColor.needsUpdate=true; }
+  if (instMeshes.legs){ instMeshes.legs.material.emissive.set(S.selNet!=null||S.selPin?0x000000:0x000000); }
+  wireMeshes.forEach(m=>{ const {net,supply}=m.userData; const vis=S.show.wires&&groupVisible(net)&&(!supply||S.show.power)&&(!VL||(m.userData.layer||1)===VL); m.visible=vis; if(!vis) return; const sel=S.selNet===net;
+    // ★ 미배선 고무줄은 언제나 빨강. (예전엔 여기서 네트 색으로 덮어써서, 마우스만 올려도 빨간 점선이 색색의 '끊어진 선' 으로 변했다)
+    if (m.userData.fail){ m.visible=vis&&S.show.fails; m.material.opacity=S.selNet!=null?(sel?1:0.25):0.85; return; }
+    m.material.color.set(sel?'#ffd54a':netColor(net)); m.material.emissive.set(sel?'#6a5000':'#000000'); m.material.opacity=S.selNet!=null?(sel?1:0.12):1; });
+  boardMat.map=S.show.holes?texH.map:texP.map; boardMat.roughnessMap=S.show.holes?texH.rough:texP.rough; boardMat.needsUpdate=true;
+  scene.background=bgColor();
+}
+
+let geomSig='', styleSig='', needRender=true;
+const sigGeom=()=>JSON.stringify([D.parts.map(p=>[p.col,p.row,p.rot,p.layer,p.pins.map(q=>q.net)]),D.layers,D.board,Object.keys(D.nets).length,JSON.stringify(sol.routes),S.wire,S.stitch,S.wireMM,S.holeCap,S.tackPitch,S.show.power]);
+const sigStyle=()=>JSON.stringify([S.viewLayer,S.lift,S.selNet,S.selPin&&[S.selPin.ref,S.selPin.n],[...S.hidden],S.show,S.step,sol.colors,S.hoverPart,S.flipped,S.persp,S.shadow]);
+function frame(){
+  gl.style.display='block';
+  const gs=sigGeom(); if (gs!==geomSig){ geomSig=gs; rebuildBoards(); rebuildAll(); styleSig=''; renderer.shadowMap.needsUpdate=true; }
+  const ss=sigStyle(); if (ss!==styleSig){ styleSig=ss; applyStyle(); renderer.shadowMap.needsUpdate=true; }
+  if (renderer.shadowMap.enabled!==S.shadow){ renderer.shadowMap.enabled=S.shadow; renderer.shadowMap.needsUpdate=true; scene.traverse(o=>{ if(o.material) o.material.needsUpdate=true; }); }
+  const low=!!S.low; renderer.setPixelRatio(low?1:Math.min(window.devicePixelRatio||1,1.5)); scene.traverse(o=>{ if(o.material&&o.material.envMapIntensity!==undefined){ const want=low?0:(o.material.userData.envI??(o.material.userData.envI=o.material.envMapIntensity)); if(o.material.envMapIntensity!==want) o.material.envMapIntensity=want; } });
+  camera.fov=S.persp?30:7; if(!S.persp&&camT.dist<Math.max(bw,bh)*6) camT.dist=Math.max(bw,bh)*7.5; camera.updateProjectionMatrix();
+  needRender=true;
+}
+function hide(){ gl.style.display='none'; }
+function resize(){ const r=stage.getBoundingClientRect(); renderer.setSize(r.width,r.height,false); camera.aspect=r.width/Math.max(1,r.height); camera.updateProjectionMatrix(); needRender=true; }
+window.addEventListener('resize',resize); resize();
+(function loop(){
+  let moving=false;
+  if (!dragging){ camT.yaw+=vel.yaw; camT.pitch=Math.max(-1.52,Math.min(1.52,camT.pitch+vel.pitch)); vel.yaw*=0.9; vel.pitch*=0.9; if(Math.abs(vel.yaw)+Math.abs(vel.pitch)<1e-4) vel.yaw=vel.pitch=0; else moving=true; }
+  for (const k of ['yaw','pitch','dist','tx','ty','tz']){ const d=camT[k]-cam[k]; if(Math.abs(d)>(k==='dist'?0.02:1e-4)){ cam[k]+=d*0.45; moving=true; } else cam[k]=camT[k]; }
+  if (gl.style.display!=='none' && (moving||needRender)){ applyCamera(); renderer.render(scene,camera); needRender=false; }
+  requestAnimationFrame(loop);
+})();
+
+// ── 조작 ──
+const ray=new THREE.Raycaster(); const plane=new THREE.Plane(new THREE.Vector3(0,1,0),0); const tmp=new THREE.Vector3();
+const ndc=e=>{ const r=gl.getBoundingClientRect(); return new THREE.Vector2(((e.clientX-r.left)/r.width)*2-1, -((e.clientY-r.top)/r.height)*2+1); };
+function pick(e, cheap){ ray.setFromCamera(ndc(e),camera);
+  let pin=null; for (const k of ['legs','fillets','tips']){ const im=instMeshes[k]; if(!im||!im.visible) continue; const h=ray.intersectObject(im,false); if(h.length && (!pin||h[0].distance<pin.d)) pin={d:h[0].distance, ud:im.userData.list[h[0].instanceId].ud}; }
+  let wire=null; if (!cheap){ const hw=ray.intersectObjects(wireMeshes.filter(m=>m.visible),false); if(hw.length) wire={d:hw[0].distance, ud:hw[0].object.userData}; }
+  let chip=null; { const hc=ray.intersectObjects(chipMeshes.filter(m=>m.visible&&m.parent&&m.parent.visible),false); if(hc.length) chip={d:hc[0].distance, ud:hc[0].object.userData}; }
+  // 우선순위: 핀(작은 표적) > 배선 > 칩 몸통.  핀은 소켓/칩 아래 있어도 잡힌다
+  if (pin && (!wire || pin.d<=wire.d+0.6)) return pin.ud;
+  if (wire && (!chip || wire.d<chip.d)) return wire.ud;
+  return (pin||chip||wire) ? (pin||chip||wire).ud : null; }
+let hoverT=0;
+let last=null;
+gl.addEventListener('contextmenu',e=>e.preventDefault());
+gl.addEventListener('pointerdown',e=>{ gl.setPointerCapture(e.pointerId); gl.focus({preventScroll:true}); const r=gl.getBoundingClientRect(); const x=e.clientX-r.left,y=e.clientY-r.top; last={x,y,px:x,py:y,moved:false,pan:e.shiftKey||e.button===2||e.button===1}; dragging=true; vel.yaw=vel.pitch=0; gl.style.cursor='grabbing'; });
+gl.addEventListener('pointermove',e=>{
+  const r=gl.getBoundingClientRect(); const x=e.clientX-r.left, y=e.clientY-r.top;
+  if (last && (e.buttons&7)){ const dx=x-last.x, dy=y-last.y; if(Math.abs(x-last.px)+Math.abs(y-last.py)>3) last.moved=true;
+    if (last.pan){ const k=cam.dist*0.0016; const right=new THREE.Vector3(), up=new THREE.Vector3(); camera.matrixWorld.extractBasis(right,up,tmp); camT.tx-=(right.x*dx-up.x*dy)*k; camT.ty-=(right.y*dx-up.y*dy)*k; camT.tz-=(right.z*dx-up.z*dy)*k; }
+    else { const k=0.0075; camT.yaw-=dx*k; camT.pitch=Math.max(-1.52,Math.min(1.52,camT.pitch+dy*k)); vel.yaw=-dx*k*0.5; vel.pitch=dy*k*0.5; }
+    last.x=x; last.y=y; return; }
+  const now=performance.now(); if (now-hoverT<60) return; hoverT=now;
+  const u=pick(e, true); const tip=document.getElementById('tip'); const hp=u&&u.ref?u.ref:null;
+  if (hp!==S.hoverPart){ S.hoverPart=hp; styleSig=''; applyStyle(); needRender=true; }
+  if (u){ tip.style.display='block'; tip.style.left=(x+14)+'px'; tip.style.top=(y+14)+'px';
+    if (u.kind==='pin'){ const q=u.pinObj; tip.innerHTML=`<span class="mono"><b>${u.ref}</b> 핀 ${u.pin} ${q.name||''}</span><br>네트 <span class="mono">${u.net??'—'}</span> ${u.net!=null&&D.nets[u.net]?'· '+(sol.groups[u.net]||'')+(D.nets[u.net].supply?' · '+D.supplies[u.net]+'V':''):''}`; gl.style.cursor='pointer'; }
+    else if (u.kind==='wire'){ tip.innerHTML=`네트 <span class="mono">${u.net}</span> ${sol.groups[u.net]||''}${u.supply?' · '+D.supplies[u.net]+'V':''}`; gl.style.cursor='pointer'; }
+    else { const p=sol.partMap[u.ref]; tip.innerHTML=`<b>${p.ref}</b> ${p.chip} · (${p.col},${p.row}) rot ${p.rot}`; gl.style.cursor='grab'; } }
+  else { tip.style.display='none'; gl.style.cursor='grab'; }
+});
+gl.addEventListener('pointerup',e=>{ dragging=false; gl.style.cursor='grab';
+  if (last && !last.moved){ vel.yaw=vel.pitch=0; const u=pick(e,false);
+    if (u&&u.kind==='pin'){ const q=u.pinObj; if (S.linking&&S.selPin&&!(S.selPin.ref===u.ref&&S.selPin.n===u.pin)){ const net=sol.linkPins({ref:S.selPin.ref,pin:S.selPin.n},{ref:u.ref,pin:u.pin}); S.linking=false; document.getElementById('editHint').textContent=`${S.selPin.ref}.${S.selPin.n} — ${u.ref}.${u.pin} 이음 → 네트 ${net}`; S.selPin=null; sol.showNet(net); } else { S.selPin=q; sol.showNet(q.net); } }
+    else if (u&&u.kind==='wire'){ S.selPin=null; sol.showNet(u.net); }
+    else { S.selPin=null; S.linking=false; sol.showNet(null); } }
+  last=null; });
+gl.addEventListener('wheel',e=>{ e.preventDefault(); const k=Math.exp(e.deltaY*0.0012); const nd=Math.max(20,Math.min(Math.max(bw,bh)*9,camT.dist*k)); const ratio=nd/camT.dist;
+  ray.setFromCamera(ndc(e),camera); const hit=new THREE.Vector3(); if (ray.ray.intersectPlane(plane,hit)){ camT.tx=hit.x+(camT.tx-hit.x)*ratio; camT.ty=hit.y+(camT.ty-hit.y)*ratio; camT.tz=hit.z+(camT.tz-hit.z)*ratio; }
+  camT.dist=nd; },{passive:false});
+function reset(){ camT.yaw=-0.6; camT.pitch=0.95; camT.dist=Math.max(bw,bh)*1.9; camT.tx=bw/2; camT.ty=0; camT.tz=bh/2; vel.yaw=vel.pitch=0; }
+window.__gl3d={frame,hide,reset,resize,renderer,scene,camera,cam,camT,rebuildAll,pinMeshes,wireMeshes,chipMeshes,pick,instMeshes};
+sol.draw();   // 모듈이 main 보다 늦게 뜨므로 첫 프레임을 여기서 요청
+})();
+</script>
