@@ -12,6 +12,9 @@
 !/urdf/
 !/stl/
 !/README.md
+!/RACHEL.md
+!/DUSK_BOOM.md
+!/ARM_STUDIO.md
 !/docs/
 !/.gitignore
 
@@ -59,12 +62,7 @@ __pycache__/
 *.bak[0-9]*
 
 # ------------------------------------------------------------
-# 11-08: ④ Spot 제어 (책꽂이 공정 · ARM STUDIO 다중 로봇) — 소스만
-#   로봇 모델 파일(assets) · 외부 라이브러리(vendor) · 걷기 AI 가중치(policies) 는 올리지 않는다
+# 11-08: Spot (책꽂이 공정 · arm_studio_multi · duo_studio · world_rachel) 은 별개 프로젝트라 올리지 않는다
+#   (노트북·뮤의 파일은 그대로 둔다 — 저장소에서만 뺌)
 # ------------------------------------------------------------
-!/arm_studio_multi/
-!/duo_studio/
-!/world_rachel/
-/duo_studio/web/assets/
-/duo_studio/web/vendor/
-/world_rachel/policies/
+/dusk_boom_fpga_v35/mu/dusk_tpu/start_spot.sh

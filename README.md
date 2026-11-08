@@ -1,151 +1,149 @@
-말로 명령하는 블록 코딩 로봇팔 제어 · 디지털 트윈 - 인규암
+# 인규암 (Industry Gyu Arm)
 
-영상 링크 (https://www.youtube.com/watch?v=rnEmlPO3QYE)
+**자연어 음성 제어 · 디지털 트윈 검증 기반 피지컬 AI 로봇팔 플랫폼**
 
-사용 디바이스
-- SO-ARM101 로봇팔 (Feetech STS3215 서보 6축)
-- NVIDIA DGX Spark (LLM/STT 서버)
-- 제어 PC (Ubuntu 22.04 / WSL2)
+제24회 임베디드SW경진대회 [자유공모]
 
-### 공장 꾸미기
-- 설비 STL 드래그 앤 드롭 배치 — 실물 모양이 커서를 따라오고, 핀 2개를 목심에 클릭해 자리·회전 확정
-- 개체별 이름·색 지정, 바닥 플레이트 편집, 로봇 위치 이동
+## 🎬 영상
 
-### 블록 코딩
-- 스크래치식 팔레트: **이동 / 잡기 / 놓기 / 그리퍼 / 하강 / 상승**
-- 이동 블록은 실행 시점에 대상 위치를 재계산 — 물체가 중간에 옮겨져도 따라간다
-- Ctrl+Z 실행취소, 전체 블록 3D 미리보기
-
-### 음성 명령
-- 마이크 → Whisper(한국어 STT, 실시간 자막) → **파인튜닝 LLM** → 블록 자동 생성
-- "빨간 도킹의 초록 펜을 노란 데 놓고 다시 주황으로 옮겨" 같은 2단계 이송까지 실측 2~4초
-- 서버가 없으면 규칙 파서로 자동 전환 (오프라인 동작)
-
-### 실물 실행
-- 시뮬과 실물이 같은 파이프라인 공유 — 3D는 이론 자세, 실물에만 보정값 적용
-- 그리퍼 파지 감지: 닫는 중 위치가 멈추면 잡은 것으로 판정, 과부하 방지
-- 정지 시 즉시 토크 해제, 관절 한계 EEPROM 기록
-
-## 🔬 핵심 기술
-
-### 기구학 직접 구현
-- URDF 파싱 → 관절 체인 구성, 순기구학은 동차변환 행렬 곱
-- 역기구학은 시드 기반 반복 최적화로 직접 구현 (목적별 3종: 일반 6축 / 툴 중심 / 수평 구속)
-- **수평 구속**: j2·j3·j4가 같은 회전축을 공유하므로 세 관절각의 합이 엔드이펙터
-  기울기를 결정한다. 이 합을 경로 전 구간 상수로 유지하고 j5를 잠가,
-  물건을 든 채 이동해도 기울지 않는다. 미세조정 보정도 같은 구속을 지킨다.
-- 작업공간 도달표 사전 계산, 로봇 상대좌표 저장 — 로봇·설비를 옮겨도 재계산 0초
-- fcl 충돌검사, trimesh 메쉬 처리
-
-### LLM 파인튜닝
-- **Gemma 4 E4B** 를 자체 제작 한국어 명령 데이터셋 **1,568쌍**으로 LoRA 파인튜닝
-  (데이터셋 생성: `make_llm_data.py`, 모델 가중치는 용량 관계로 미포함)
-- 출력을 블록 JSON 한 줄로 제한 (평균 58자) → 작은 모델로도 1~4초 응답
-- LLM 출력 검증 계층: id 정규화, 잡기 앞 이동 블록 보장, 장면에 없는 대상은
-  블록 폐기 후 되물음 — **LLM은 블록만 고르고, 관절값·경로는 전부 기구학 계산**
-
-### 제어 정밀도
-| 게인 | 정지 오차 |
+| [![임베디드SW경진대회 시연 영상](https://img.youtube.com/vi/rnEmlPO3QYE/hqdefault.jpg)](https://www.youtube.com/watch?v=rnEmlPO3QYE) | [![RACHEL 기반 자연어 음성 로봇팔 제어](https://img.youtube.com/vi/7IwZH8eliuM/hqdefault.jpg)](https://www.youtube.com/watch?v=7IwZH8eliuM) |
 |---|---|
-| 공장 기본 (Kp32/Kd32/Ki0) | 1.58° |
-| 실측 튜닝 (Kp64/Kd64/Ki4) | **0.35° · 진동 0** |
+| **임베디드SW경진대회 시연 영상** (2026-09) | **한이음 드림업 — 자체 개발 AI 'RACHEL' 기반 자연어 음성 로봇팔 제어 · 디지털 트윈** (2026-09) |
 
-도달 허용치 6 raw ≈ 0.53° ≈ 엔드이펙터 3mm
+두 영상은 9월에 찍었다. 그 뒤에 두 팔 제어, 더블 레이첼, DUSK_BOOM TPU 가 더해졌다.
 
-## 🛠 시스템 요구사항
+---
 
-### 하드웨어
-- SO-ARM101 (STS3215 × 6) + USB 시리얼 어댑터
-- 마이크 (음성 명령용, 선택)
-- LLM/STT 서버 (선택 — 없어도 규칙 파서로 동작)
+## 왜 만들었나
 
-### 소프트웨어
-- Python 3.10+ / Conda
-- Chrome 또는 Firefox
+**로봇은 늘어나는데, 다룰 사람이 없다.**
+- 산업통상자원부 목표: 2030년까지 로봇 100만 대 이상 보급, 그중 제조·물류 현장에 68만 대. 국내 로봇 시장 5.6조 원 → 20조 원 이상.
+- 2024년 로봇산업 실태조사: 로봇산업 인력은 1년간 2.4% 늘었지만 2031년 인력 수요는 약 5만 명. 로봇 분야 인력부족률 35% (한국경제연구원, 2020). 제조업용 로봇 분야 인력은 오히려 0.1% 줄었다.
+- 현장에서 로봇이 실제로 하는 일은 **이송·적재 같은 간단한 반복 동작**이다. 다만 물건의 위치와 작업 순서를 판단해야 해서, 작업 과정 전체를 이해하는 AI 가 필요하다.
 
-## 📦 설치 및 실행
+**그런데 AI 를 로봇에서 돌리는 비용이 오르고 있다.**
+- 2026년 로봇용 추론 장치 가격은 메모리 가격 여파로 최대 101% 올랐다.
+- 대표적인 로봇 AI 모델 OpenVLA 는 실행에만 GPU 메모리 15GB 이상이 필요하다 → 중소 현장은 도입이 어렵다.
 
-### 1. 환경 설정
+## 목표 세 가지
+
+| 목표 | 해결 |
+|---|---|
+| 비전공자도 쉽게 쓸 수 있을 것 | **자연어 제어** — 말로 시키면 블록 코딩으로 바뀐다 |
+| 낮은 컴퓨팅 파워로 AI 를 돌릴 것 | **로컬 AI + TPU** — 25MB 자작 모델 [RACHEL](RACHEL.md), 직접 설계한 FPGA TPU [DUSK_BOOM](DUSK_BOOM.md) |
+| AI 에 전적으로 의존하지 않을 것 | **디지털 트윈** — AI 는 블록까지만. 움직임은 계산하고, 시뮬레이션으로 먼저 검증 → [ARM STUDIO](ARM_STUDIO.md) |
+
+## 작동 파이프라인
+
+| 단계 | 하는 일 | 어디서 |
+|---|---|---|
+| 1. 말하기 | 마이크에 대고 한국어로 명령 | |
+| 2. 자연어 인식 | 음성 → 글자 (STT), 글자 → 블록 (**RACHEL**) | LattePanda Mu CPU + DUSK_BOOM TPU |
+| 3. 디지털 트윈 | 블록 → 경로 계산 → 3D 시뮬레이션으로 검증 (경로 · 충돌 · 물병 규칙) | ARM STUDIO |
+| 4. 실물 실행 | 검증된 동작만 두 팔 로봇으로 | ARM STUDIO → 모터 |
+
+예: "펜을 잡고 파란색 도킹스테이션으로 옮기고, 다음에 빨간색으로 옮겨"
+→ 잡기 펜 → 이동 파랑 → 놓기 → 잡기 펜 → 이동 빨강 → 놓기 → 3D 확인 → 실물 실행
+
+---
+
+## 핵심 기술
+
+### 1. [RACHEL — 말을 블록으로 바꾸는 25MB 자체 AI](RACHEL.md)  ★ 메인
+
+- 사람의 언어(자연어)와 로봇의 언어(모터 제어) 사이의 **중간 다리 = 블록**.
+- PyTorch 로 직접 짠 글자 단위 트랜스포머. 파라미터 2,560만 개, int8 가중치 25.6MB.
+- 학습 데이터는 규칙으로 합성 (사람이 라벨링한 데이터 0줄), DGX Spark GPU 1장으로 학습.
+- 출력은 계산으로 9가지를 검사한 뒤에만 블록이 된다. 의심스러우면 실행하지 않는다.
+- 사용자의 실제 음성 명령 87문장 **87/87**. 같은 200문장에서 Gemma 4 E4B 39.0% vs RACHEL 98.5%.
+
+### 2. [DUSK_BOOM — 직접 설계한 행렬곱 TPU](DUSK_BOOM.md)
+
+- Zynq XC7Z010 FPGA 에 Verilog 로 설계한 TPU. 곱셈기 64개(8×8), int8 × int16.
+- 최대 2.5W (N305 CPU 최대 21W). 더블 레이첼 한 문장 2.66초, 노트북 CPU 와 60/60 같은 답.
+- 보드 리눅스 부팅, HDMI 출력 회로, TPU 시연 화면까지 직접.
+
+### 3. [ARM STUDIO — 블록 코딩 · 디지털 트윈 · 실물 제어](ARM_STUDIO.md)
+
+- 블록 → 도달표 → 수직선 정렬 → 최단 경로 → 검증(물병 규칙) → 3D 시뮬레이션 → 실물.
+- 기구학 직접 구현, 두 팔 제어, 사람이 맞춘 자리 보정을 그대로 사용.
+- 블록은 물건의 상태와도, 로봇의 종류와도 상관없이 쓸 수 있다.
+
+---
+
+## 하드웨어 구성
+
+```
+LattePanda Mu — 메인 컴퓨터 (N305 16GB + 자체 설계 캐리어보드)
+├─ USB ◀─ 마이크
+├─ HDMI ─▶ 모니터 (ARM STUDIO 화면)
+├─ USB 시리얼 ─▶ DUSK_BOOM (Zynq XC7Z010 · 512MB · TPU 8×8)
+│     └─ HDMI ─▶ 모니터 (TPU 계산 화면)
+└─ USB ─▶ 모터 드라이버
+      ├─ TTL ─▶ A팔 (STS3215 · 12V 5A)
+      └─ TTL ─▶ B팔 (STS3215 · 12V 5A)
+```
+
+## 개발 환경
+
+| 구분 | | 내용 |
+|---|---|---|
+| S/W | OS | Ubuntu 22.04 (실행 보드), Windows 11 + WSL2 (개발 노트북) |
+| | 개발 환경 | VS Code, Python 3.10, ROS 2 Humble |
+| | 개발 도구 | PyTorch, FastAPI, three.js, RViz, trimesh, python-fcl, Vivado |
+| | AI 모델 | 음성 인식 (Whisper large-v3-turbo · Moonshine), 더블 레이첼 (자체 개발 블록 AI, int8 25.6MB) |
+| | 언어 | Python, C++, C, JavaScript, Verilog |
+| H/W | 실행 장치 | LattePanda Mu N305 16GB + 자체 설계 캐리어보드 |
+| | 학습 장치 | NVIDIA DGX Spark (학습 전용) |
+| | AI 가속기 | DUSK_BOOM (Zynq XC7Z010 + 자체 설계 행렬곱 TPU) |
+| | 로봇 팔 | SO-ARM101 개선판 (Feetech STS3215) × 2, OpenManipulator |
+| | 기타 | USB 마이크, 아두이노 비상정지 버튼, 도킹 스테이션 · 바닥판 (3D 프린트) |
+| 관리 | 형상 관리 | GitHub |
+| | 의사소통 | Slack, Notion, Zoom |
+
+---
+
+## 저장소 구조
+
+```
+├── README.md            ← 지금 이 문서
+├── RACHEL.md            ← 자작 AI (메인)
+├── DUSK_BOOM.md         ← FPGA TPU
+├── ARM_STUDIO.md        ← 블록 코딩 · 디지털 트윈 · 실물 제어
+├── Industry_gyu_arm/
+│   ├── nano_double/     # 더블 레이첼: 데이터 생성 · 학습 · 검사 · 채점
+│   ├── nano_norm/       # 말투 엔진 · 글자 사전 · 모델 구조 (PyTorch)
+│   ├── nano_llm/        # 한 팔 RACHEL (v1~v9)
+│   ├── rachel_cpp/      # C++ 추론 엔진
+│   ├── dusk/            # 정수 전용 추론 엔진 DUSK
+│   ├── arm_studio_web.py, arm_studio_pro.py, pro_ui/   # ARM STUDIO
+│   └── start_pro.sh
+├── dusk_boom_fpga_v35/
+│   ├── rtl/             # TPU · HDMI 회로 (Verilog)
+│   ├── sim/ vivado/ constraints/
+│   ├── tpu/sw/          # 보드 TPU 판 RACHEL
+│   ├── tpu_show/        # TPU 시연 화면
+│   ├── linux/           # 보드 리눅스
+│   └── mu/              # LattePanda Mu 실행 스크립트
+├── urdf/                # 로봇 모델 (SO-ARM STS3215 · OpenManipulator Dynamixel)
+└── stl/                 # 설비 · 물체 메쉬
+```
+
+모델 가중치, 로봇별 보정 데이터(`calib.json`)는 저장소에 넣지 않았다. 만드는 방법은 각 문서에 있다.
+
+## 빠른 실행 (노트북)
+
 ```bash
 git clone https://github.com/Mlngyu-Park/2026ESWContest_free_A_IndustryGyuArm.git
 cd 2026ESWContest_free_A_IndustryGyuArm
-conda create -n gyu_arm python=3.10
-conda activate gyu_arm
+conda create -n gyu_arm python=3.10 && conda activate gyu_arm
 pip install fastapi uvicorn numpy trimesh python-fcl ikpy pyserial
+Industry_gyu_arm/start_pro.sh          # 브라우저에서 http://localhost:7900
 ```
 
-### 2. (WSL 사용 시) USB 연결
-```powershell
-# Windows PowerShell
-usbipd attach --wsl --busid <busid>
-```
+WSL 에서 로봇 USB 연결, LattePanda Mu 실행은 [ARM_STUDIO.md](ARM_STUDIO.md) 8장.
 
-### 3. 실행
-```bash
-Industry_gyu_arm/start_pro.sh
-# 브라우저에서 http://localhost:7900  (3D 뷰어: 7870)
-```
-
-LLM/STT 서버 터널 주소는 `Industry_gyu_arm/spark_tunnel.txt` 에 넣는다.
-없으면 규칙 파서로 동작한다.
-
-## 📁 프로젝트 구조
-
-```
-2026ESWContest_free_A_IndustryGyuArm/
-├── Industry_gyu_arm/
-│   ├── arm_studio_web.py      # 코어: 기구학·경로·모터·LLM 연동 (약 1만 줄)
-│   ├── arm_studio_pro.py      # FastAPI 서버 (/api/call 라우팅)
-│   ├── pro_ui/                # 블록 코딩 UI (바닐라 JS + three.js)
-│   ├── make_llm_data.py       # LLM 학습 데이터셋 생성 (1,568쌍)
-│   ├── start_pro.sh           # 실행 스크립트
-│   ├── sts_zero.py 등         # 모터 캘리브레이션 데이터
-│   └── dock_mate_fixed.py 등  # 실측 결합 치수
-├── urdf/                      # 로봇 모델 (SO-ARM · Dynamixel · UR15)
-├── stl/                       # 설비·물체 메쉬
-└── docs/                      # 문서·이미지
-```
-
-## 🎮 사용 방법
-
-1. **① 공장 꾸미기** 탭에서 설비를 드래그해 배치
-2. **② 시뮬레이션** 탭에서 블록을 조립하거나, 마이크 버튼을 누르고 말하기
-3. ▶ 미리보기로 3D 검증
-4. **③ 연동** 탭에서 실물 로봇 선택 후 실행
-
-## 🔧 기술 스택
-
-### 제어/기구학
-- **numpy**: 동차변환·IK 수치 최적화
-- **trimesh + fcl**: 메쉬 처리·충돌검사
-- **pyserial**: STS3215 서보 통신
-
-### AI
-- **llama.cpp**: Gemma 4 E4B 파인튜닝 모델 서빙
-- **whisper.cpp**: 한국어 STT (large-v3-turbo)
-
-### UI/서버
-- **FastAPI**: API 서버
-- **three.js**: 3D 디지털 트윈 뷰어
-- **바닐라 JS**: 블록 코딩 UI
-
-## ❗ 문제 해결
-
-### USB 인식 안 됨 (WSL)
-```powershell
-usbipd list
-usbipd attach --wsl --busid <busid>
-```
-
-### 음성 인식이 안 됨
-- LLM/STT 서버 연결 확인 — 끊겨 있으면 규칙 파서로 동작하며 기본 명령만 인식
-- 브라우저 마이크 권한 허용 확인
-
-### 포트 충돌
-```bash
-# start_pro.sh 가 자동 정리하지만, 수동으로는:
-pkill -f arm_studio_pro.py
-```
+---
 
 ## 👥 만든 사람
 
