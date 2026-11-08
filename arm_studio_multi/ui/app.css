@@ -1,0 +1,461 @@
+/* ================= ARM STUDIO PRO ================= */
+/* 모니터 크기에 비례해 전체 UI 가 스케일: rem 기반 + 뷰포트 연동 폰트 */
+:root{
+  font-size: clamp(11px, 0.42vw + 0.42vh + 4.5px, 19px);
+  --bg:      #0e1116;
+  --panel:   #161a22;
+  --panel2:  #1d222d;
+  --line:    #262c39;
+  --text:    #e7ebf3;
+  --dim:     #8b93a7;
+  --accent:  #4c8dff;
+  --accent2: #2f6ae0;
+  --ok:      #34c77b;
+  --warn:    #f5a623;
+  --danger:  #ef5350;
+  --pose:    #4c8dff;
+  --movec:   #8b93a7;
+  --grip:    #f5a623;
+  --grasp:   #34c77b;
+  --release: #ef6363;
+  --rad:     0.8rem;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg);color:var(--text);
+  font-family:'Pretendard Variable',Pretendard,-apple-system,BlinkMacSystemFont,
+    'Segoe UI','Malgun Gothic','Apple SD Gothic Neo',sans-serif;
+  overflow:hidden;
+}
+.hidden{display:none !important}
+.mono{font-family:'JetBrains Mono','D2Coding',ui-monospace,Consolas,monospace;
+  font-size:.82rem;white-space:pre-wrap;word-break:break-all}
+.dim{color:var(--dim)}
+.hint{color:var(--dim);font-size:.75rem;font-weight:400;margin-left:.4rem}
+.grow{flex:1;min-width:0}
+
+/* ================= 상단바 ================= */
+#topbar{
+  height:3.4rem;display:flex;align-items:center;gap:1rem;
+  padding:0 1.1rem;background:var(--panel);border-bottom:1px solid var(--line);
+}
+.brand{font-weight:800;letter-spacing:.14em;font-size:1.05rem;display:flex;
+  align-items:center;gap:.55rem}
+.brand .dot{width:.62rem;height:.62rem;border-radius:50%;background:var(--accent);
+  box-shadow:0 0 .6rem var(--accent)}
+/* 전광판 티커 */
+.ticker{
+  flex:1;height:2.2rem;margin:0 .5rem;cursor:pointer;position:relative;
+  background:#07090d;border:1px solid #202634;border-radius:.5rem;
+  overflow:hidden;display:flex;align-items:center;
+  box-shadow:inset 0 0 .8rem rgba(0,0,0,.8);
+}
+.ticker::before,.ticker::after{ /* 좌우 페이드 */
+  content:'';position:absolute;top:0;bottom:0;width:1.6rem;z-index:1;
+  pointer-events:none;
+}
+.ticker::before{left:0;background:linear-gradient(90deg,#07090d,transparent)}
+.ticker::after{right:0;background:linear-gradient(270deg,#07090d,transparent)}
+.ticker span{
+  display:inline-block;white-space:nowrap;padding-left:100%;
+  font-family:'JetBrains Mono','D2Coding',ui-monospace,Consolas,monospace;
+  font-size:.85rem;letter-spacing:.08em;color:#ffc14d;
+  text-shadow:0 0 .5rem rgba(255,193,77,.55);
+  animation:marquee 14s linear infinite;
+}
+.ticker.busy span{color:#ff8c5a;text-shadow:0 0 .5rem rgba(255,140,90,.6)}
+.ticker:hover{border-color:var(--accent)}
+@keyframes marquee{to{transform:translateX(-100%)}}
+.topRight{display:flex;align-items:center;gap:.7rem}
+.chip{padding:.3rem .8rem;border-radius:999px;font-size:.78rem;
+  background:var(--panel2);border:1px solid var(--line);color:var(--dim)}
+.chip.on{color:var(--ok);border-color:var(--ok)}
+
+/* ================= 본문 그리드 ================= */
+main{
+  display:grid;height:calc(100% - 3.4rem);
+  /* 왼쪽 = 정사각형 뷰어가 세로를 꽉 채우는 폭 */
+  grid-template-columns:minmax(20rem,calc(100vh - 5.2rem)) 1fr;
+  gap:.9rem;padding:.9rem;
+}
+@media (max-width:900px){
+  body{overflow:auto}
+  main{grid-template-columns:1fr;height:auto}
+}
+/* ★ 화면이 낮으면(노트북·PSVR 등) 페이지 전체를 내릴 수 있게 ★
+   body 가 overflow:hidden 이라 넓은 화면에서는 아예 안 내려갔다.
+   세로가 짧으면 칸을 위아래로 쌓고 스크롤을 연다. */
+@media (max-height:820px){
+  body{overflow:auto}
+  main{height:auto;min-height:calc(100% - 3.4rem)}
+  #left{min-height:60vh}
+  #right{min-height:60vh}
+  .pane{overflow-y:visible}
+}
+.card{background:var(--panel);border:1px solid var(--line);
+  border-radius:var(--rad);overflow:hidden}
+
+/* ---- 왼쪽: 뷰어(정사각형, 꽉 채움) ---- */
+#left{display:flex;flex-direction:column;min-height:0}
+#viewerCard{
+  flex:1;display:flex;flex-direction:column;min-height:0;
+  width:100%;
+}
+.viewHead{display:flex;align-items:center;justify-content:space-between;
+  padding:.55rem .9rem;border-bottom:1px solid var(--line)}
+.viewTitle{font-weight:700;font-size:.9rem;letter-spacing:.06em}
+#viewer{flex:1;width:100%;border:0;background:#303030}
+.cardHead{padding:.5rem .9rem;font-weight:700;font-size:.85rem;
+  border-bottom:1px solid var(--line);color:var(--dim);letter-spacing:.05em;
+  display:flex;align-items:center;justify-content:space-between}
+#console{flex:1;overflow-y:auto;padding:.5rem .9rem;font-size:.78rem;
+  font-family:ui-monospace,Consolas,monospace;line-height:1.55}
+#console .t{color:var(--dim);margin-right:.5rem}
+#console .err{color:var(--danger)}
+
+/* 전체 로그 오버레이 */
+#logOverlay{
+  position:fixed;inset:0;z-index:50;background:rgba(5,7,10,.6);
+  backdrop-filter:blur(3px);
+  display:flex;align-items:center;justify-content:center;
+}
+#logOverlay .logPanel{
+  width:min(56rem,92vw);height:min(34rem,82vh);
+  display:flex;flex-direction:column;box-shadow:0 1rem 3rem rgba(0,0,0,.6);
+}
+
+/* ---- 오른쪽: 탭 ---- */
+#right{display:flex;flex-direction:column;min-height:0}
+#tabs{display:flex;gap:.25rem;padding:.55rem .7rem 0;border-bottom:1px solid var(--line)}
+#tabs button{
+  appearance:none;border:0;background:none;color:var(--dim);cursor:pointer;
+  font:inherit;font-weight:700;font-size:.92rem;padding:.55rem 1rem;
+  border-radius:.6rem .6rem 0 0;border-bottom:2px solid transparent;
+}
+#tabs button:hover{color:var(--text)}
+#tabs button.on{color:var(--accent);border-bottom-color:var(--accent);
+  background:linear-gradient(180deg,transparent,rgba(76,141,255,.07))}
+.pane{display:none;flex:1;overflow-y:auto;padding:.9rem;min-height:0}
+.pane.on{display:block}
+
+/* ================= 공통 컴포넌트 ================= */
+.group{background:var(--panel2);border:1px solid var(--line);
+  border-radius:.7rem;padding:.8rem;margin-bottom:.8rem}
+.groupHead{font-weight:700;font-size:.88rem;margin-bottom:.6rem}
+details.group>summary{cursor:pointer;list-style:none;margin-bottom:0}
+details[open].group>summary{margin-bottom:.6rem}
+details.group>summary::before{content:'▸ ';color:var(--dim)}
+details[open].group>summary::before{content:'▾ '}
+.row{display:flex;align-items:center;gap:.5rem;margin-bottom:.55rem;flex-wrap:wrap}
+.row:last-child{margin-bottom:0}
+.lbl{color:var(--dim);font-size:.8rem;min-width:3.6rem}
+.lbl.sm{min-width:0}
+p.hint{margin:0 0 .6rem}
+
+.btn{
+  appearance:none;cursor:pointer;font:inherit;font-size:.85rem;font-weight:600;
+  color:var(--text);background:#242b38;border:1px solid var(--line);
+  border-radius:.55rem;padding:.5rem .9rem;transition:.12s;
+}
+.btn:hover{border-color:var(--accent);background:#2a3244}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:var(--accent2);border-color:var(--accent2)}
+.btn.primary:hover{background:var(--accent)}
+.btn.danger{background:none;border-color:var(--danger);color:var(--danger)}
+.btn.danger:hover{background:var(--danger);color:#fff}
+.btn.big{font-size:.95rem;padding:.55rem 1.2rem;font-weight:800}
+.btn.sm{font-size:.78rem;padding:.38rem .7rem}
+.btn.wide{flex:1}
+.btn.file{display:inline-flex;align-items:center}
+.btn:disabled{opacity:.45;pointer-events:none}
+button.recording{background:var(--danger);border-color:var(--danger);
+  animation:pulse 1.2s infinite}
+@keyframes pulse{50%{opacity:.6}}
+
+select,input[type=text],input:not([type]){
+  font:inherit;font-size:.85rem;color:var(--text);background:#242b38;
+  border:1px solid var(--line);border-radius:.55rem;padding:.45rem .6rem;
+  min-width:0;
+}
+select:focus,input:focus{outline:none;border-color:var(--accent)}
+input[type=color]{width:2.4rem;height:2.2rem;padding:.15rem;background:#242b38;
+  border:1px solid var(--line);border-radius:.55rem;cursor:pointer}
+input[type=range]{accent-color:var(--accent);height:1.1rem}
+.chk{display:flex;align-items:center;gap:.45rem;font-size:.85rem;
+  cursor:pointer;margin-bottom:.4rem}
+.chk input{accent-color:var(--accent);width:1rem;height:1rem}
+output{color:var(--accent);font-weight:700;margin:0 .25rem;
+  font-variant-numeric:tabular-nums}
+
+/* 세그먼트(라디오 대체) */
+.seg{display:inline-flex;background:#242b38;border:1px solid var(--line);
+  border-radius:.55rem;overflow:hidden}
+.seg.wrap{flex-wrap:wrap}
+.seg button{appearance:none;border:0;background:none;color:var(--dim);
+  font:inherit;font-size:.8rem;font-weight:600;padding:.42rem .75rem;
+  cursor:pointer;border-right:1px solid var(--line)}
+.seg button:last-child{border-right:0}
+.seg button:hover{color:var(--text)}
+.seg button.on{background:var(--accent2);color:#fff}
+
+/* 자세 칩 */
+.chipList{display:flex;flex-wrap:wrap;gap:.4rem}
+.chipList button{
+  appearance:none;cursor:pointer;font:inherit;font-size:.82rem;font-weight:600;
+  color:var(--text);background:#242b38;border:1px solid var(--line);
+  border-radius:999px;padding:.35rem .85rem;transition:.12s;
+}
+.chipList button:hover{border-color:var(--pose)}
+.chipList button.on{background:var(--pose);border-color:var(--pose);color:#fff}
+
+/* 슬라이더 행 */
+.sliderRow{display:grid;grid-template-columns:2.2rem 1fr 3.6rem;
+  align-items:center;gap:.6rem;margin-bottom:.45rem}
+.sliderRow .jname{color:var(--dim);font-weight:700;font-size:.8rem}
+.sliderRow .jval{text-align:right;font-size:.8rem;color:var(--accent);
+  font-variant-numeric:tabular-nums}
+
+/* ================= 파이프라인 블록 ================= */
+#pipeline{display:flex;flex-direction:column;margin-bottom:.6rem}
+.blk{
+  position:relative;display:flex;align-items:center;gap:.6rem;cursor:pointer;
+  background:#242b38;border:1px solid var(--line);border-radius:.6rem;
+  padding:.5rem .8rem;margin-bottom:.35rem;font-size:.85rem;font-weight:600;
+  border-left:.28rem solid var(--dim);transition:.12s;
+}
+.blk:hover{filter:brightness(1.15)}
+.blk.on{outline:2px solid var(--accent);outline-offset:1px}
+.blk .idx{color:var(--dim);font-size:.72rem;min-width:1.2rem}
+.blk.pose{border-left-color:var(--pose)}
+.blk.grip{border-left-color:var(--grip)}
+.blk.brick{border-left-color:var(--grasp)}
+.blk.brick.rel{border-left-color:var(--release)}
+.blk.move{
+  background:none;border:1px dashed var(--line);border-left:.28rem solid var(--movec);
+  color:var(--dim);font-weight:400;font-size:.78rem;
+  margin-left:1.1rem;padding:.32rem .8rem;
+}
+.blk.move.on{outline-color:var(--warn)}
+
+/* 체크리스트 */
+.checkList{display:flex;flex-direction:column;gap:.2rem;margin-bottom:.55rem;
+  max-height:11rem;overflow-y:auto}
+
+/* 설비 썸네일 카드 (드래그해서 3D로) */
+.thumbList{display:grid;grid-template-columns:repeat(auto-fill,minmax(6.2rem,1fr));
+  gap:.45rem;margin-bottom:.55rem;max-height:14rem;overflow-y:auto}
+.thumbCard{position:relative;display:flex;flex-direction:column;align-items:center;
+  gap:.25rem;padding:.45rem .3rem .35rem;cursor:grab;
+  background:#12151c;border:1px solid var(--line);border-radius:.6rem;
+  user-select:none}
+.thumbCard:hover{border-color:var(--acc,#5b8cff)}
+.thumbCard:active{cursor:grabbing}
+.thumbCard img{width:3.6rem;height:3.6rem;object-fit:contain;pointer-events:none}
+.thumbCard .thumbNm{font-size:.68rem;color:var(--dim);text-align:center;
+  word-break:break-all;line-height:1.15}
+.thumbCard input[type=checkbox]{position:absolute;top:.3rem;right:.3rem}
+.thumbCard .thumbCol{position:absolute;top:.25rem;left:.25rem;width:1.35rem;
+  height:1.35rem;padding:0;border:none;background:none;cursor:pointer}
+
+/* 맵 */
+#mapBox{margin-bottom:.6rem}
+#mapBox svg{border-radius:.6rem}
+
+/* 실행 줄 강조 */
+.runRow .btn{padding:.65rem .9rem;font-size:.9rem}
+
+pre#robotStat,pre#plateInfo{background:#12151c;border:1px solid var(--line);
+  border-radius:.55rem;padding:.5rem .7rem;min-height:2.4rem}
+
+/* ================= 오른쪽 탭 컴팩트 (좁은 세로 컬럼용) ================= */
+#tabs button{font-size:.85rem;padding:.45rem .8rem}
+#right .pane{padding:.65rem}
+#right .group{padding:.6rem;margin-bottom:.6rem;border-radius:.6rem}
+#right .groupHead{font-size:.8rem;margin-bottom:.45rem}
+#right .row{gap:.4rem;margin-bottom:.4rem}
+#right .lbl{font-size:.72rem;min-width:3rem}
+#right .hint{font-size:.68rem}
+#right .btn{font-size:.76rem;padding:.34rem .6rem}
+#right .btn.sm{font-size:.7rem;padding:.28rem .5rem}
+#right .runRow .btn{padding:.5rem .7rem;font-size:.8rem}
+#right select,#right input[type=text],#right input:not([type]){
+  font-size:.76rem;padding:.3rem .5rem}
+#right .chk{font-size:.76rem}
+#right .chipList button{font-size:.74rem;padding:.24rem .65rem}
+#right .seg button{font-size:.72rem;padding:.3rem .55rem}
+#right .sliderRow{grid-template-columns:1.8rem 1fr 2.8rem;gap:.45rem;
+  margin-bottom:.28rem}
+#right .sliderRow .jname,#right .sliderRow .jval{font-size:.72rem}
+#right .mono{font-size:.72rem}
+#right .blk{font-size:.76rem;padding:.4rem .65rem;margin-bottom:.28rem}
+#right .blk.move{font-size:.7rem;padding:.26rem .65rem}
+
+/* 3D 클릭 -> 이름·색 그룹 강조 */
+.group.flash{outline:2px solid var(--accent);outline-offset:2px}
+
+/* ================= 블록 팔레트 (스크래치식) ================= */
+#blkPalette{display:flex;flex-wrap:wrap;gap:.35rem;align-items:center}
+.palCat{width:100%;color:var(--dim);font-size:.68rem;font-weight:700;
+  margin-top:.35rem;letter-spacing:.04em}
+.palCat:first-child{margin-top:0}
+.blkChip{
+  cursor:grab;user-select:none;font-size:.76rem;font-weight:600;
+  color:var(--text);background:#242b38;border:1px solid var(--line);
+  border-radius:.5rem;border-left:.28rem solid var(--dim);
+  padding:.34rem .6rem;transition:.12s;
+}
+.blkChip:hover{filter:brightness(1.2);transform:translateY(-1px)}
+.blkChip:active{cursor:grabbing}
+.blkChip.pose{border-left-color:var(--pose)}
+.blkChip.grip{border-left-color:var(--grip)}
+.blkChip.brick{border-left-color:var(--grasp)}
+.blkChip.brick.rel{border-left-color:var(--release)}
+/* 드롭 위치 표시선 */
+.dropMark{height:.22rem;background:var(--accent);border-radius:99px;
+  margin:.12rem 0;box-shadow:0 0 .45rem var(--accent)}
+
+/* ===== 스크래치 스타일 블록: 진한 단색 + 퍼즐 요철 + 흰 글씨 ===== */
+:root{
+  --sc-move:#4c97ff;   /* 이동 (스크래치 동작 파랑) */
+  --sc-grasp:#59c059;  /* 잡기 (초록) */
+  --sc-rel:#ff6680;    /* 놓기 (분홍빨강) */
+  --sc-grip:#ffab19;   /* 그리퍼 (주황) */
+}
+/* 이중 블록: [로봇][동작][사물 슬롯] */
+.blk{cursor:grab}
+.blk:active{cursor:grabbing}
+.blk .act{font-weight:800;white-space:nowrap}
+/* 동작 블록 = 스크래치처럼 통째로 단색 */
+#pipeline .blk.pose,#pipeline .blk.grip,#pipeline .blk.brick{
+  position:relative;border:0;color:#fff;
+  border-radius:.45rem;padding:.5rem .8rem .56rem;
+  margin-bottom:.5rem;                 /* 아래 탭 들어갈 자리 */
+  box-shadow:0 2px 0 rgba(0,0,0,.3);
+}
+#pipeline .blk.pose{background:var(--sc-move)}
+#pipeline .blk.grip{background:var(--sc-grip)}
+#pipeline .blk.brick{background:var(--sc-grasp)}
+#pipeline .blk.brick.rel{background:var(--sc-rel)}
+/* 퍼즐 요철: 위 오목 홈 + 아래 볼록 탭 (스크래치 느낌) */
+#pipeline .blk.pose::before,#pipeline .blk.grip::before,
+#pipeline .blk.brick::before{
+  content:'';position:absolute;top:0;left:1.2rem;width:1.5rem;height:.3rem;
+  background:var(--panel2);border-radius:0 0 .35rem .35rem;
+}
+#pipeline .blk.pose::after,#pipeline .blk.grip::after,
+#pipeline .blk.brick::after{
+  content:'';position:absolute;bottom:-.3rem;left:1.2rem;width:1.5rem;height:.3rem;
+  background:inherit;border-radius:0 0 .35rem .35rem;
+}
+#pipeline .blk.on{outline:3px solid #fff;outline-offset:1px}
+/* 도달 불가 = 왼쪽 위 빨간 느낌표 (에러 배지) */
+.errBadge{
+  position:absolute;top:-.5rem;left:-.5rem;z-index:2;
+  width:1.15rem;height:1.15rem;border-radius:50%;
+  background:#e51400;color:#fff;font-weight:900;font-size:.8rem;
+  display:flex;align-items:center;justify-content:center;
+  border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.6);
+  cursor:help;
+}
+/* 시작/끝 고정 블록 (스크래치의 모자/마감 블록) */
+#pipeline .blk.cap{
+  position:relative;border:0;color:#fff;font-weight:800;cursor:default;
+  padding:.5rem .9rem .56rem;margin-bottom:.5rem;
+  box-shadow:0 2px 0 rgba(0,0,0,.3);
+}
+#pipeline .blk.cap.start{background:#3fae49;
+  border-radius:1.1rem 1.1rem .45rem .45rem}
+#pipeline .blk.cap.start::after{
+  content:'';position:absolute;bottom:-.3rem;left:1.2rem;width:1.5rem;
+  height:.3rem;background:inherit;border-radius:0 0 .35rem .35rem}
+#pipeline .blk.cap.end{background:#5a6273;margin-bottom:0;
+  border-radius:.45rem .45rem 1.1rem 1.1rem}
+#pipeline .blk.cap.end::before{
+  content:'';position:absolute;top:0;left:1.2rem;width:1.5rem;height:.3rem;
+  background:var(--panel2);border-radius:0 0 .35rem .35rem}
+.rbadge{font-size:.6rem;font-weight:800;color:#fff;opacity:.8;
+  border:1px solid rgba(255,255,255,.5);border-radius:.35rem;
+  padding:.05rem .3rem;letter-spacing:.05em}
+/* 슬롯 = 블록 속 진한 알약 (흰 글씨) */
+.slot{
+  background:rgba(0,0,0,.32);border:0;border-radius:999px;
+  padding:.16rem .7rem;font-size:.74rem;font-weight:700;color:#fff;
+  max-width:11rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.slot.hot{background:#fff;color:#111}
+/* 사물 조각 = 스크래치 리포터(타원) 느낌의 단색 알약 */
+.argChip{
+  cursor:grab;user-select:none;font-size:.72rem;font-weight:700;
+  color:#fff;border:0;border-radius:999px;padding:.26rem .7rem;
+  transition:.12s;box-shadow:0 1.5px 0 rgba(0,0,0,.3);
+}
+.argChip:hover{filter:brightness(1.12);transform:translateY(-1px)}
+.argChip:active{cursor:grabbing}
+.argChip.pose{background:var(--sc-move)}
+.argChip.brick{background:var(--sc-grasp)}
+.argChip.brick.rel{background:var(--sc-rel)}
+/* 팔레트의 동작 블록도 같은 색 체계 */
+.blkChip{border:0;color:#fff;box-shadow:0 2px 0 rgba(0,0,0,.3)}
+.blkChip.pose{background:var(--sc-move)}
+.blkChip.grip{background:var(--sc-grip)}
+.blkChip.brick{background:var(--sc-grasp)}
+.blkChip.brick.rel{background:var(--sc-rel)}
+/* 쓰레기통 */
+#blkTrash{
+  margin-top:.5rem;padding:.55rem;text-align:center;color:var(--dim);
+  border:1.5px dashed var(--line);border-radius:.6rem;font-size:.78rem;
+  transition:.12s;
+}
+#blkTrash.hot{color:#fff;border-color:var(--danger);
+  background:rgba(239,83,80,.2);transform:scale(1.02)}
+
+/* 스크롤바 */
+::-webkit-scrollbar{width:.5rem;height:.5rem}
+::-webkit-scrollbar-thumb{background:#2c3442;border-radius:99px}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ===== 타임바 (재생 슬라이더) ===== */
+#timebar{margin:.4rem 0 .6rem}
+#timebar input[type=range]{width:100%;margin:.25rem 0}
+#tbTicks{display:flex;gap:2px;height:6px}
+#tbTicks span{flex:1;border-radius:2px;background:#2c3444;transition:background .15s}
+#tbTicks span.done{background:#3b82f6}
+#tbTicks span.cur{background:#f59e0b}
+#tbNow{color:var(--accent);font-weight:600}
+/* 실행 중 블록 하이라이트 (스크래치식) */
+.blk.running{outline:3px solid #f59e0b;outline-offset:2px;
+  box-shadow:0 0 12px rgba(245,158,11,.55)}
+.blk .subSteps{display:flex;flex-wrap:wrap;gap:3px;margin:.3rem 0 .1rem .6rem}
+.blk .subStep{font-size:.72rem;padding:.1rem .4rem;border-radius:6px;
+  background:rgba(0,0,0,.28);color:#e8ecf5;opacity:.75}
+.blk .subStep.on{background:#f59e0b;color:#1b1f27;opacity:1;font-weight:700}
+
+/* ===== 블록 우클릭 메뉴 ===== */
+.blkMenu{position:fixed;z-index:9999;min-width:230px;padding:.3rem;
+  background:#1b2130;border:1px solid #38415a;border-radius:10px;
+  box-shadow:0 10px 30px rgba(0,0,0,.55)}
+.blkMenu .mhead{padding:.35rem .5rem;font-size:.78rem;color:#9fb0cc;
+  border-bottom:1px solid #2b3245;margin-bottom:.25rem}
+.blkMenu button{display:block;width:100%;text-align:left;border:0;
+  background:transparent;color:#e8ecf5;padding:.45rem .55rem;border-radius:7px;
+  font-size:.86rem;cursor:pointer;line-height:1.25}
+.blkMenu button:hover{background:#2a3550}
+.blkMenu button small{display:block;color:#8ea0bd;font-size:.72rem;
+  margin-top:.1rem}
+
+/* 타임바로 고른 블록 = 파랑 강조 (실행 중 주황과 구분) */
+.blk.seeked{outline:3px solid #38bdf8;outline-offset:2px;
+  box-shadow:0 0 12px rgba(56,189,248,.5)}
+
+/* 자세 목록의 × 삭제 버튼 */
+#poseList button{position:relative;padding-right:1.35rem}
+.poseDel{position:absolute;right:.3rem;top:50%;transform:translateY(-50%);
+  opacity:.45;font-size:.95rem;line-height:1;padding:0 .15rem;border-radius:4px}
+.poseDel:hover{opacity:1;background:#e0245e;color:#fff}
+
+/* 드래그 중에만 켜지는 투명 덮개 (크롬 iframe 드롭 차단 우회).
+   평소에는 꺼져 있어야 3D 회전/클릭이 그대로 된다. */
+#viewerCard{position:relative}
+#viewerDrop{position:absolute;inset:0;display:none;z-index:5}
+#viewerDrop.on{display:block}

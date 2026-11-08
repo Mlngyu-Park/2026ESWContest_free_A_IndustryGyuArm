@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Auto Mirror Displays
+Comment=모니터를 꽂으면 자동으로 복제(미러) — ~/dusk_tpu/auto_mirror.py
+Exec=/usr/bin/python3 /home/drboom/dusk_tpu/auto_mirror.py
+X-GNOME-Autostart-enabled=true
+NoDisplay=true

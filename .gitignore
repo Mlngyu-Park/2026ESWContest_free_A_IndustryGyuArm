@@ -57,3 +57,14 @@ __pycache__/
 # 손으로 만든 백업 (예: arm_studio_web.py.bak_pause_1106, calib.json.bak2_174406)
 *.bak_*
 *.bak[0-9]*
+
+# ------------------------------------------------------------
+# 11-08: ④ Spot 제어 (책꽂이 공정 · ARM STUDIO 다중 로봇) — 소스만
+#   로봇 모델 파일(assets) · 외부 라이브러리(vendor) · 걷기 AI 가중치(policies) 는 올리지 않는다
+# ------------------------------------------------------------
+!/arm_studio_multi/
+!/duo_studio/
+!/world_rachel/
+/duo_studio/web/assets/
+/duo_studio/web/vendor/
+/world_rachel/policies/

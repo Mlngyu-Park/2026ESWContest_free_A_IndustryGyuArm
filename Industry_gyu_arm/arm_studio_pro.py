@@ -819,6 +819,7 @@ def api_state(sel: str = '', pose: str = ''):
         'running': core.RUNNING.is_set(),
         'paused': core.PAUSE.is_set(), 'pause_wait': core.PAUSE_STATE['on'],   # 11-06 일시 정지
         'run_active': core.RUN_ACTIVE[0],
+        'estop_held': core.ESTOP['held'], 'estop_port': bool(core.ESTOP['port']),   # 11-06 아두이노 비상정지
         'prog': core.PROG_STATE['text'],
         'busy': JOB['busy'], 'job_fn': JOB['fn'] if JOB['busy'] else None,
         'peg': dict(PEG),

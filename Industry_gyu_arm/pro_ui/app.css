@@ -470,3 +470,14 @@ pre#robotStat,pre#plateInfo{background:#12151c;border:1px solid var(--line);
   100%{opacity:1;transform:none}
 }
 .blk.blkIn{animation:blkIn .38s cubic-bezier(.2,.8,.3,1.15) both}
+
+/* 11-06: ④ Spot 제어 — 본문(왼쪽 3D + 오른쪽 탭)을 숨기고 Spot 화면을 꽉 차게 */
+#spotView{display:none;flex-direction:column;min-height:0;grid-column:1 / -1}
+main.spot #left,main.spot #right{display:none}
+main.spot #spotView{display:flex}
+#spotView .spotBar{display:flex;align-items:center;gap:.7rem;padding:.45rem .6rem;flex-wrap:wrap}
+#spotView .spotBar #spotReload{margin-left:auto}
+#spotFrame{flex:1;width:100%;min-height:0;border:0;border-radius:.5rem;background:#1b1d22}
+
+/* 11-06: 아두이노 비상정지 버튼이 눌린 동안 */
+.chip.estop{color:var(--danger);border-color:var(--danger);font-weight:700}

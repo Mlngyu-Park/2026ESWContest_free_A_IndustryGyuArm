@@ -9,6 +9,7 @@ for i in $(seq 1 10); do
     sleep 0.5
 done
 bash spark_link.sh || true
+bash "$HERE/start_spot.sh" || true      # 11-06: ④ Spot 제어 서버 (:7910) 같이 켜기
 LOG=/tmp/arm_studio.log
 : > "$LOG"
 ln -sf "$LOG" ./arm_studio.log 2>/dev/null || true

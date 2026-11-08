@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DUO STUDIO</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three/three.module.js", "three/addons/": "./vendor/three/addons/" } }
+</script>
+</head>
+<body>
+<div id="app">
+  <div id="view">
+    <div id="hud">
+      <div id="status">불러오는 중…</div>
+      <div id="pose"></div>
+    </div>
+    <div id="viewbar">
+      <label><input type="checkbox" id="follow" checked> 따라가기</label>
+      <label>속도 <select id="speed"><option value="1">1배</option><option value="2">2배</option><option value="4">4배</option></select></label>
+      <span class="hint">직접 몰기: W·S 앞뒤 · A·D 돌기 · Q·E 옆걸음 (프로그램이 안 돌 때)</span>
+    </div>
+  </div>
+  <aside id="side">
+    <h1>DUO STUDIO <small>같은 블록으로 G1 · Spot — 계산으로 걷고 잡고 옮기기</small></h1>
+    <section>
+      <h2>로봇</h2>
+      <select id="robot" class="robot"></select>
+    </section>
+    <section>
+      <h2>블록</h2>
+      <div id="palette"></div>
+    </section>
+    <section class="grow">
+      <h2>프로그램 <button id="example" class="ghost">예제</button> <button id="clear" class="ghost">다 지우기</button></h2>
+      <ol id="program"></ol>
+    </section>
+    <section id="runbar">
+      <button id="run">▶ 실행</button>
+      <button id="stop">■ 멈춤</button>
+      <button id="reset">↺ 처음 자리</button>
+    </section>
+    <section>
+      <h2>기록</h2>
+      <div id="log"></div>
+    </section>
+  </aside>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ARM STUDIO</title>
-<link rel="stylesheet" href="/ui/app.css?v=20261020">
+<link rel="stylesheet" href="/ui/app.css?v=20261106e">
 </head>
 <body>
 
@@ -23,6 +23,17 @@
 
 <main>
   <!-- ======== 왼쪽: 디지털 트윈 (정사각형) ======== -->
+  <!-- 11-06 (사용자): ④ Spot 제어 = 책꽂이 공정(ARM STUDIO 다중 로봇, :7910) 을 본문 자리에 꽉 차게 -->
+  <section id="spotView" class="card">
+    <div class="spotBar">
+      <button id="spotBack" class="btn sm">← ARM STUDIO 로</button>
+      <b>④ Spot 제어</b><span class="hint">책꽂이 공정 — Spot · UR15 · G1 을 같은 블록으로 (로봇은 화면 안 '로봇' 칸에서 바꿈)</span>
+      <span id="spotMsg" class="hint"></span>
+      <button id="spotReload" class="btn sm" title="Spot 화면 다시 불러오기">새로고침</button>
+    </div>
+    <iframe id="spotFrame" title="Spot 제어"></iframe>
+  </section>
+
   <section id="left">
     <div id="viewerCard" class="card">
       <iframe id="viewer" title="3D viewer"></iframe>
@@ -39,6 +50,7 @@
       <button data-tab="sim">② 시뮬레이션</button>
       <button data-tab="link">③ 연동</button>
       <button data-tab="joy" style="display:none">④ 조이콘</button><!-- 11-05 (사용자): 조이콘 탭 숨김 (기능은 그대로) -->
+      <button data-tab="spot" title="책꽂이 공정 — Spot · UR15 · G1 을 같은 블록으로 (뮤의 :7910 서버)">④ Spot 제어</button><!-- 11-06 (사용자): spot 도서관 코드를 ④ 에 -->
     </nav>
 
     <!-- ================= ① 공장 꾸미기 =================
@@ -489,6 +501,7 @@
            SO-ARM(6축) = 물컵 규칙 (j5 를 안 돌린다)
            UR15(8축)   = 변형 물컵 규칙 (axis_end 를 바닥과 평행하게)
          둘 다 서버의 IK 가 보장한다. -->
+    <div id="tab-spot" class="pane"></div><!-- 11-06: ④ Spot 제어 (내용은 본문 #spotView) -->
     <div id="tab-joy" class="pane">
       <div class="group">
         <div class="groupHead">조이콘</div>
@@ -579,6 +592,6 @@
 </div>
 
 <div id="mapxy" hidden><input></div>
-<script src="/ui/app.js?v=20261020"></script>
+<script src="/ui/app.js?v=20261106e"></script>
 </body>
 </html>

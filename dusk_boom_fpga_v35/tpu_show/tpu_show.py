@@ -517,13 +517,14 @@ class Screen:
         else:
             self.s.blit(self.bg, (0, 0))
         s = self.s
-        chip = {"idle": ("대기", FAINT), "run": ("연산 중", WARN), "done": ("계산 완료", OKC)}[mode]
-        cr = pygame.Rect(W - 170, 16, 150, 34)
-        col = mix(WARN, _c("ffd27a"), 0.5 + 0.5 * math.sin(now * 6)) if mode == "run" else chip[1]
-        pygame.draw.rect(s, mix(PANEL, col, 0.22), cr, border_radius=17)
-        pygame.draw.rect(s, col, cr, 2, border_radius=17)
-        pygame.draw.circle(s, col, (cr.x + 20, cr.centery), 6)
-        self.text(chip[0], (cr.x + 86, cr.centery), 17, col, bold=True, anchor="c")
+        if mode != "idle":
+            chip = {"run": ("연산 중", WARN), "done": ("계산 완료", OKC)}[mode]
+            cr = pygame.Rect(W - 170, 16, 150, 34)
+            col = mix(WARN, _c("ffd27a"), 0.5 + 0.5 * math.sin(now * 6)) if mode == "run" else chip[1]
+            pygame.draw.rect(s, mix(PANEL, col, 0.22), cr, border_radius=17)
+            pygame.draw.rect(s, col, cr, 2, border_radius=17)
+            pygame.draw.circle(s, col, (cr.x + 20, cr.centery), 6)
+            self.text(chip[0], (cr.x + 86, cr.centery), 17, col, bold=True, anchor="c")
         self.arch_dyn(mode, cur, util, now)
         self.stats_dyn(mode, temp, power, util, bw, gmacs, macs, calls, el)
         self.layers_dyn(mode, layers, ops, cur, done_set, phase)
@@ -549,15 +550,11 @@ class Screen:
         s.fill(BG)
         pygame.draw.rect(s, PANEL, (0, 0, W, 64))
         pygame.draw.line(s, LINE, (0, 64), (W, 64))
-        self.text("DUSK TPU", (22, 14), 26, TXT, bold=True)
-        self.text("XC7Z010 · 곱셈기 64개 · 148 MHz", (24, 44), 12, DIM)
-        if mode == "idle":
-            self.text("대기 중", (W // 2, 32), 24, DIM, bold=True, anchor="c")
-        else:
-            self.text(title or "추론", (W // 2, 20), 24, TXT, bold=True, anchor="c")
-            self.text(model, (W // 2, 46), 15, CYAN, anchor="c")
+        self.text("DUSK TPU", (22, 20), 26, TXT, bold=True)
+        if mode != "idle":
+            self.text(title or "추론", (W // 2, 32), 24, TXT, bold=True, anchor="c")
         # 구조
-        self.panel(self.ARCH, "TPU 구조 · 지금 곱하는 곳")
+        self.panel(self.ARCH)
         x, y, ddr, wb, xb, engs = self._geo()
         pygame.draw.rect(s, PANEL2, ddr, border_radius=8)
         pygame.draw.rect(s, LINE, ddr, 1, border_radius=8)
@@ -571,11 +568,9 @@ class Screen:
         for e, eng in enumerate(engs):
             py = eng.y + 71
             pygame.draw.line(s, LINE, (ddr.right, py), (eng.x, py), 3)
-            self.text(f"HP{e + 1} · 64비트", (x + 241, eng.y + 48), 12, DIM, anchor="c")
             pygame.draw.rect(s, PANEL2, eng, border_radius=8)
             pygame.draw.rect(s, LINE, eng, 1, border_radius=8)
             self.text(f"엔진 {e}", (eng.x + 12, eng.y + 8), 15, TXT, bold=True)
-            self.text("8칸 × 4벡터 = 곱셈기 32", (eng.right - 12, eng.y + 10), 12, DIM, anchor="tr")
             gx, gy, cw, ch = eng.x + 16, eng.y + 36, 28, 26
             off = mix(PANEL2, LINE, 0.9)
             for v in range(4):
@@ -587,25 +582,22 @@ class Screen:
                 pygame.draw.line(s, LINE, (ax, cy), (ax + 18, cy), 2)
                 acc = pygame.Rect(ax + 18, cy - 10, 26, 20)
                 pygame.draw.rect(s, BG, acc, border_radius=3)
-                self.text("Σ", acc.center, 13, FAINT, bold=True, anchor="c")
-            self.text("곱셈기 → 덧셈 나무 → 누산(32비트) → 결과", (eng.x + 16, eng.bottom - 22), 12, DIM, bold=True)
-        self.text("지금 곱하는 행렬", (x + 636, y + 52), 14, DIM, bold=True)
         # 상태
-        self.panel(self.STATS, "상태")
+        self.panel(self.STATS)
         sx, sy, sw, sh = self.STATS
-        self.text("온도", (sx + 18, sy + 44), 14, DIM)
+        self.text("온도", (sx + 18, sy + 44), 14, TXT)
         pygame.draw.rect(s, BG, (sx + 220, sy + 50, sw - 240, 50), border_radius=4)
         yy = sy + 124
         for name in ("가동률", "전력", "메모리 대역폭", "곱셈 속도"):
-            self.text(name, (sx + 18, yy), 14, DIM)
+            self.text(name, (sx + 18, yy), 14, TXT)
             pygame.draw.rect(s, BG, (sx + 18, yy + 22, sw - 36, 8), border_radius=4)
             yy += 50
-        self.text("곱셈 횟수", (sx + 18, yy + 4), 14, DIM)
-        self.text("걸린 시간", (sx + 18, yy + 32), 14, DIM)
+        self.text("곱셈 횟수", (sx + 18, yy + 4), 14, TXT)
+        self.text("걸린 시간", (sx + 18, yy + 32), 14, TXT)
         # 층 띠
         self.panel(self.LAYERS)
         lx, ly, lw, lh = self.LAYERS
-        self.text("층 진행", (lx + 14, ly + 10), 15, DIM, bold=True)
+        self.text("층 진행", (lx + 14, ly + 10), 15, TXT, bold=True)
         n = len(layers)
         cw = (lw - 28 - (n - 1) * 3) / n
         for i, nm in enumerate(layers):
@@ -616,9 +608,7 @@ class Screen:
         # 출력
         self.panel(self.OUTPUT)
         ox, oy = self.OUTPUT[0], self.OUTPUT[1]
-        self.text("출력", (ox + 14, oy + 10), 15, DIM, bold=True)
-        if mode == "idle":
-            self.text("말하거나 입력하면 여기서 계산이 시작됩니다", (ox + 14, oy + 44), 16, FAINT)
+        self.text("출력", (ox + 14, oy + 10), 15, TXT, bold=True)
 
     def _cell(self, i, n, cw):
         lx, ly = self.LAYERS[0], self.LAYERS[1]
@@ -675,9 +665,6 @@ class Screen:
                 sweep = int((now * 3.0 % 1.0) * mr.h)
                 s.fill(VIOLET, (mr.x, mr.y + sweep, mr.w, max(2, mr.h // 12)))
             pygame.draw.rect(s, LINE, mr, 1)
-            self.text("가중치 행을 두 엔진이 나눠 읽음", (mx, mr.bottom + 8), 11, DIM)
-        else:
-            self.text("—", (mx, y + 80), 22, FAINT)
 
     def stats_dyn(self, mode, temp, power, util, bw, gmacs, macs, calls, el):
         s = self.s
@@ -702,7 +689,6 @@ class Screen:
         self.text(f"{macs / 1e9:6.3f} G  ({calls:,}번)" if mode != "idle" else "—", (x + w - 18, yy + 2), 16, TXT,
                   mono=True, anchor="tr")
         self.text(f"{el:5.2f} 초" if mode != "idle" else "—", (x + w - 18, yy + 30), 16, TXT, mono=True, anchor="tr")
-        self.text(f"VCCINT {self.vcc:.3f} V", (x + 18, y + h - 26), 12, FAINT, mono=True)
 
     def layers_dyn(self, mode, layers, ops, cur, done_set, phase):
         if mode == "idle":

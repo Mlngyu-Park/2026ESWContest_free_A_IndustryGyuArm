@@ -1747,11 +1747,13 @@ class Robot:
         return self._sync_goal_timed0(raws,vel)
     def _sync_goal_timed0(self,raws,vel):
         """위치+시간+속도(6바이트)를 한 패킷으로 — 예전 Gradio 방식.
+        11-06: 비상정지 버튼이 눌려 있으면 보내지 않는다.
 
         STS3215 는 0x2A 부터 [위치2 · 시간2 · 속도2] 를 연속으로 받는다.
         속도를 지정해 보내면 모터 내부 프로파일이 부드럽게 가속/감속한다.
         축마다 속도를 달리 주면 '같이 출발해 같이 도착' 한다(물컵 유지).
         """
+        if ESTOP['held']: return False
         try:
             gw=getattr(self,'_gsw6',None)
             if gw is None:
@@ -1773,6 +1775,7 @@ class Robot:
         """여러 모터의 목표를 한 패킷으로 동시에 보낸다.
         실패하면 예전처럼 하나씩 보낸다(안전)."""
         if 'ACTIVE_ARM' in globals() and _arm_block_real(): return False
+        if ESTOP['held']: return False           # 11-06: 비상정지 버튼이 눌려 있는 동안 움직이지 않는다
         try:
             gw=getattr(self,'_gsw',None)
             if gw is None:
@@ -1904,6 +1907,7 @@ class Robot:
             time.sleep(END_SETTLE)
         return False,(best if best is not None else 9999)
     def gripper(self,open_,tq=None):
+        if ESTOP['held']: return                 # 11-06: 비상정지 버튼이 눌려 있는 동안 그리퍼도 안 움직인다
         i=GRIP_ID
         self._w1(i,ADDR_MODE,0)
         if open_:
@@ -1916,6 +1920,7 @@ class Robot:
         self._w1(i,ADDR_TORQUE,1)
         self._w2(i,ADDR_GOAL,GRIPPER_OPEN if open_ else GRIPPER_CLOSE)
     def estop(self):
+        if ESTOP['hold']: return               # 11-06: 비상정지 버튼 '1' = 토크 유지 정지 (끄지 않는다)
         try: self.torque(False)
         except Exception: pass
 ROBOT_STS=Robot()
@@ -2110,6 +2115,104 @@ class RobotMux:
 ROBOT=RobotMux()
 STOP=threading.Event()
 RUNNING=threading.Event()
+# ===== 아두이노 비상정지 버튼 (11-06 사용자) =====
+#   아두이노가 9600bps 로 평소 '0', 누르면 '1' 을 줄마다 보낸다 (Arduino Due, /dev/serial/by-id/*Arduino*).
+#   '1' 이 들어오는 순간 = 지금 동작을 멈추고 두 팔 모터를 지금 자리에 세운다 (토크 유지).
+#     눌려 있는 동안은 모터 목표·그리퍼 명령을 보내지 않는다 (실행도 거절).
+#   '1' 다음 '0' 이 들어오는 순간 = 토크를 끈다 (화면 [■ 정지] 와 같은 동작).
+#   평소의 '0' 은 아무것도 안 한다. 포트는 ARM_ESTOP_PORT 로 바꿀 수 있다. 1200bps 로는 절대 열지 않는다 (Due 지워짐).
+ESTOP={'held':False,'hold':False,'port':None}
+ESTOP_BAUD=int(os.environ.get('ARM_ESTOP_BAUD','9600'))
+
+def _estop_port():
+    p=os.environ.get('ARM_ESTOP_PORT')
+    if p: return p
+    try:
+        for n in sorted(os.listdir('/dev/serial/by-id')):
+            if 'arduino' in n.lower(): return os.path.join('/dev/serial/by-id',n)
+    except Exception: pass
+    return None
+
+def _estop_press():
+    """'1': 멈추고 토크 유지."""
+    ESTOP['held']=True; ESTOP['hold']=True
+    STOP.set()
+    try: PAUSE.clear()
+    except Exception: pass
+    held=0
+    try:
+        if ROBOT_STS.port is not None:
+            for i in sorted(ZERO_RAW):
+                if i in STS_DEAD_IDS: continue
+                p=ROBOT_STS._r2fast(i,ADDR_PRESENT)
+                if p is None: continue
+                with IO_LOCK:
+                    ROBOT_STS.packet.write2ByteTxRx(ROBOT_STS.port,i,ADDR_GOAL,int(p))
+                held+=1
+    except Exception as e:
+        print('[비상정지] 자리 잡기 실패:',e)
+    LOG(f"⛔ [비상정지] 버튼 — 토크 유지한 채 그 자리에 멈춤 (모터 {held}개)")
+
+def _estop_release(reason=None):
+    """'1' 다음 '0': 토크 끄기 (화면 [■ 정지] 와 같음). reason = 버튼을 뗀 게 아닐 때 (연결 끊김 등)."""
+    ESTOP['held']=False; ESTOP['hold']=False
+    STOP.set()
+    try: PAUSE.clear()
+    except Exception: pass
+    off=0
+    try:
+        if ROBOT_STS.port is not None:
+            ROBOT.estop()                        # 지금 팔 (예전과 같음)
+            # 11-06 (사용자: A팔은 토크가 안 풀림) — 지금 팔만 끄면 쉬는 팔(기본 자세)이 그대로 켜져 있었다 → 두 팔 전부
+            for i in sorted(ZERO_RAW):
+                if i in STS_DEAD_IDS: continue
+                if ROBOT_STS._w1(i,ADDR_TORQUE,0): off+=1
+    except Exception as e:
+        print('[비상정지] 토크 끄기 실패:',e)
+    LOG(f"[비상정지] {reason or '버튼 풀림'} — 두 팔 토크 끔 (모터 {off}개)")
+
+def _estop_loop():
+    try:
+        import serial
+    except Exception:
+        return
+    last=None
+    while True:
+        p=_estop_port()
+        if not p:
+            time.sleep(2); continue
+        try:
+            s=serial.Serial(p,ESTOP_BAUD,timeout=0.5)
+        except Exception:
+            time.sleep(2); continue
+        ESTOP['port']=p
+        print(f"비상정지 버튼: {p} ({ESTOP_BAUD}bps)",flush=True)
+        buf=b''
+        try:
+            while True:
+                buf+=s.read(64)
+                while b'\n' in buf:
+                    ln,buf=buf.split(b'\n',1)
+                    v=ln.strip()
+                    if v==b'1' and last!='1':
+                        last='1'; _estop_press()
+                    elif v==b'0':
+                        if last=='1': _estop_release()
+                        last='0'
+                if len(buf)>256: buf=buf[-64:]
+        except Exception as e:
+            print('[비상정지] 버튼 연결 끊김:',e,flush=True)
+            ESTOP['port']=None
+            try: s.close()
+            except Exception: pass
+            # 11-06 (사용자: 버튼 빼도 비상정지 눌렸다고 함) — '1'(눌림) 뒤 '0' 없이 아두이노가 빠지면 눌린 채로 남아
+            #   모든 동작이 막혔다 → 연결이 끊기면 버튼을 뗀 것과 같게 (비상정지 풀고 두 팔 토크 끔)
+            if last=='1' or ESTOP['held']:
+                last='0'
+                _estop_release('버튼(아두이노) 연결이 끊겨 비상정지를 풂')
+            time.sleep(2)
+
+threading.Thread(target=_estop_loop,daemon=True,name='estop').start()
 # ===== 일시 정지 (11-06 사용자: 실행 도중 멈추고, 3D 에서 도킹을 옮긴 뒤 [계속] 하면 옮긴 자리로) =====
 #   멈추는 곳 = 다음 모터 목표를 보내기 직전 (_send_real · 블록 사이 · 구간 이동). 팔은 토크를 켠 채 그 자리에 선다.
 #   [계속] 때 지금 가던 목표(이동 대상 · 잡기 펜 · 놓기 도킹)가 옮겨졌으면 _TargetLost 로 그 자리에서 다시 계산한다.
@@ -3437,6 +3540,9 @@ def h_run(kind,mode,axorder,speed,loop,coll=False):
         yield gr.update(),cwarn+"\n(충돌 경고 있음 - 계속 진행합니다. 멈추려면 정지)"
     if not ROBOT.connect():
         yield gr.update(),f"로봇 연결 실패 ({PORT})"; return
+    if ESTOP['held']:                          # 11-06: 비상정지 버튼이 눌려 있으면 시작하지 않는다
+        yield gr.update(),"비상정지 버튼이 눌려 있습니다 — 버튼을 풀고 다시 실행하세요"; return
+    ESTOP['hold']=False
     sp=float(speed.replace('x','')); STOP.clear(); RUNNING.set()
     PAUSE.clear(); RUN_ACTIVE[0]=True           # 11-06 일시 정지 가능
     try:
@@ -3534,7 +3640,7 @@ def h_run(kind,mode,axorder,speed,loop,coll=False):
                               and not is_meta_item(x)),None)
             items=[(i,x) for i,x in enumerate(S['seq']) if i!=first_pose_i]
             for _bi,item in items:
-                if STOP.is_set(): raise KeyboardInterrupt
+                if STOP.is_set() or ESTOP['held']: raise KeyboardInterrupt
                 if _pause_point()=='stop': raise KeyboardInterrupt     # 11-06 블록 사이 일시 정지
                 _run_at(_bi)                    # 타임바/하이라이트용 위치
                 if is_brick_item(item):
@@ -5655,6 +5761,7 @@ def h_stop():
     BTN('정지','토크 해제')
     STOP.set()
     PAUSE.clear()                # 일시 정지 중이어도 바로 정지 (11-06)
+    ESTOP['hold']=False          # 화면 [■ 정지] 는 비상정지 버튼으로 멈춘 뒤에도 토크를 끈다
     REC['on']=False              # 녹화 중이면 함께 정지
     if ROBOT.port: ROBOT.estop()
     return "정지 - 토크 해제됨"
@@ -9319,6 +9426,7 @@ def _send_real(q,log=False,tag=''):
         _p=goto_point(g['oid'])
         if _p is not None and g['xy'] and math.hypot(_p[0]-g['xy'][0],_p[1]-g['xy'][1])>0.015:
             raise _TargetLost('옮겨짐')
+    if ESTOP['held']: STOP.set(); return       # 11-06 비상정지 버튼이 눌려 있으면 멈춤 (잡기·놓기가 STOP 을 지워도)
     if _pause_point()=='stop': return          # 11-06 일시 정지 (정지로 끝나면 보내지 않는다)
     ros_publish(q)
     # 실물 전송 차단은 ROBOT.send(RobotMux) 안에서 최종 판단한다

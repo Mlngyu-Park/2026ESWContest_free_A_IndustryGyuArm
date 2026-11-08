@@ -203,6 +203,8 @@ function render(s){
   const execLab=Object.keys(META.exec_map).find(k=>META.exec_map[k]===s.exec)||s.exec;
   $('#robotChip').textContent=(s.running?'▶ 동작 중 · ':'')+execLab;
   $('#robotChip').classList.toggle('on',s.running||s.busy);
+  if(s.estop_held){$('#robotChip').textContent='⛔ 비상정지 · '+$('#robotChip').textContent;}   // 11-06 아두이노 비상정지 버튼
+  $('#robotChip').classList.toggle('estop',!!s.estop_held);
   {const pb=$('#btnPause');                      // 11-06 일시 정지 버튼: 실행 중에만, 멈춘 동안엔 [▶ 계속]
    if(pb){pb.disabled=!s.run_active;pb.classList.toggle('on',!!s.paused);
      pb.textContent=s.paused?(s.pause_wait?'▶ 계속 (일시 정지 중 — 3D 에서 도킹을 옮겨도 됩니다)':'▶ 계속 (멈추는 중…)'):'‖ 일시 정지';}}
@@ -951,12 +953,48 @@ async function boot(){
     if(e.target.id==='logOverlay')$('#logOverlay').classList.add('hidden');};
 
   /* 탭 */
+  let lastTab='factory';
   $$('#tabs button').forEach(b=>b.onclick=()=>{
+    if(b.dataset.tab==='spot'){openSpot();return;}   // 11-06: ④ Spot 제어 = 본문을 Spot 화면으로
     $$('#tabs button').forEach(x=>x.classList.remove('on'));
     $$('.pane').forEach(x=>x.classList.remove('on'));
     b.classList.add('on');$('#tab-'+b.dataset.tab).classList.add('on');
+    lastTab=b.dataset.tab;
     if(b.dataset.tab==='sim')fetchMap();   // 맵은 ② 시뮬레이션 탭에 있음
   });
+  /* ④ Spot 제어 (11-06) — 뮤의 책꽂이 공정 서버(:7910)를 본문 자리에 꽉 차게. 돌아가기는 위쪽 버튼 */
+  const SPOT_URL=`${location.protocol}//${location.hostname}:7910/`;
+  async function spotAlive(){
+    try{await fetch(SPOT_URL+'api/meta',{mode:'no-cors',cache:'no-store'});return true;}catch(e){return false;}
+  }
+  async function openSpot(){
+    document.querySelector('main').classList.add('spot');
+    const fr=$('#spotFrame');
+    $('#spotMsg').textContent='';
+    if(!(await spotAlive())){
+      $('#spotMsg').textContent='Spot 서버(:7910)가 꺼져 있습니다 — 뮤에서 bash ~/dusk_tpu/start_spot.sh';
+      return;
+    }
+    if(!fr.getAttribute('src'))fr.setAttribute('src',SPOT_URL);
+  }
+  $('#spotBack').onclick=()=>{
+    document.querySelector('main').classList.remove('spot');
+    $('#tabs button[data-tab="'+lastTab+'"]')?.click();
+  };
+  if(location.hash==='#spot')setTimeout(openSpot,300);   // 주소 끝 #spot = 바로 ④ Spot 제어
+  // 11-06 (사용자: spot 에서 원위치 누르면 스팟 공간이 원위치) — Spot 화면일 때 위쪽 [⌂ 원위치] 는 Spot 공간(책꽂이·책·로봇)을
+  //   처음 상태로 (Spot 화면 안의 ⌂ 원위치와 같은 'home'). 실물 SO-ARM 은 움직이지 않는다.
+  window.spotHome=async()=>{
+    try{await fetch(SPOT_URL+'api/call',{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain'},
+                                         body:JSON.stringify({fn:'home',args:[]})});
+        log('Spot 공간 원위치 (책꽂이 · 책 · 로봇 처음 상태)');}
+    catch(e){log('Spot 서버(:7910)에 닿지 않습니다',true);}
+  };
+  $('#spotReload').onclick=async()=>{
+    const fr=$('#spotFrame');
+    if(await spotAlive()){fr.setAttribute('src',SPOT_URL+'?t='+Date.now());$('#spotMsg').textContent='';}
+    else $('#spotMsg').textContent='Spot 서버(:7910)가 꺼져 있습니다 — 뮤에서 bash ~/dusk_tpu/start_spot.sh';
+  };
 
   /* 슬라이더 생성 — 로봇을 바꾸면 축 수가 달라지므로 다시 만든다 */
   function buildSliders(){
@@ -1426,7 +1464,7 @@ async function boot(){
   $('#btnToff').onclick=()=>call('torque_off');
   // 원위치 = 로봇 기본 자세 + 물체는 [불러오기] 하면 나오는 그 배치 위치로 (2026-10-20)
   const goHome=()=>{HASH.bricks=null;return call('home_zero',($('#fpSel')&&$('#fpSel').value)||'');};
-  $('#btnHomeZero').onclick=goHome;
+  $('#btnHomeZero').onclick=()=>document.querySelector('main').classList.contains('spot')&&window.spotHome?window.spotHome():goHome();   // 11-06: Spot 화면이면 Spot 공간 원위치
   if($('#joyHome'))$('#joyHome').onclick=goHome;
   $('#btnEstop').onclick=()=>call('stop');
   $('#btnMRec').onclick=()=>call('macro_rec',$('#macroSlot').value);

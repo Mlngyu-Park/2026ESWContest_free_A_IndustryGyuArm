@@ -1,0 +1,47 @@
+/* ARM STUDIO 다중 로봇 — 원본 app.css 에 없는 것만 (물건 목록 · 빈 칸 알약) */
+.objList{display:flex;flex-direction:column;gap:.2rem}
+.objRow{display:flex;align-items:center;gap:.45rem;font-size:.76rem;padding:.18rem .2rem;border-bottom:1px solid var(--line)}
+.objRow:last-child{border-bottom:0}
+.objDot{width:.7rem;height:.7rem;border-radius:.2rem;flex:none}
+.objWhere{margin-left:auto;color:var(--dim);font-family:'JetBrains Mono','D2Coding',ui-monospace,Consolas,monospace;font-size:.72rem}
+.argChip.empty{opacity:.45}
+#envList button{cursor:default}
+.careTag{font-size:.62rem;font-weight:700;padding:.02rem .32rem;border-radius:.5rem;background:rgba(80,200,120,.18);color:#6fdc94;margin-left:.15rem}
+.careTag.dont{background:rgba(150,160,175,.18);color:#aab3c0}
+.objWhere .goal{color:#ffd166;font-weight:700}
+.objWhere .goal.live{color:#ff9f5a}
+.objWhere .ok{color:#6fdc94}
+/* 건드린 책 고치기 순서 (파이프라인 맨 위) */
+#fixBox{margin-bottom:.45rem}
+#fixBox .hint{margin:.2rem 0 0}
+/* 블록 나무 (11-02): 블록 ▸ 책 ▸ 단계 [칸 칸 칸] — 원본 잡기 블록의 세부 단계 칸과 같은 모양. 지난 것 파랑 · 지금 주황 */
+.blk .fold,.tnode .fold,.tend .fold{color:var(--dim);font-size:.75rem;width:.8rem;cursor:pointer;flex:none;text-align:center}
+.blk>.subSteps{display:flex;flex-wrap:wrap;gap:3px;margin:0 0 0 auto;justify-content:flex-end}
+.blk .subStep.done,.tree .subStep.done{background:rgba(59,130,246,.45);color:#e8ecf5;opacity:.95}
+.blk .subStep.wait{outline:1px dashed #ff9f5a;color:#ffb37a}
+.tree{margin:-.2rem 0 .45rem 1.1rem;border-left:2px solid var(--line);padding-left:.45rem}
+.tnode{display:flex;align-items:center;gap:.4rem;font-size:.76rem;padding:.22rem .4rem;border-radius:.4rem;cursor:pointer;margin:.12rem 0;border:1px solid transparent}
+.tnode:hover{background:rgba(255,255,255,.04)}
+.tnode .tname{font-weight:700}
+.tnode .tsub{color:var(--dim);font-family:'JetBrains Mono','D2Coding',ui-monospace,Consolas,monospace;font-size:.7rem}
+.tnode .tstate{margin-left:auto;font-size:.68rem;color:var(--dim);white-space:nowrap}
+.tnode.done{opacity:.62}
+.tnode.done .tstate{color:#6fdc94}
+.tnode.cur{border-color:#f59e0b;background:rgba(245,158,11,.08)}
+.tnode.cur .tstate{color:#f59e0b;font-weight:700}
+.tnode.fix .tname{color:#ff9f5a}
+.tnode.wait{border:1px dashed #ff9f5a}
+.tnode.wait .tstate{color:#ff9f5a;font-weight:700}
+.tleaf{display:flex;align-items:center;gap:.45rem;font-size:.72rem;padding:.1rem .4rem .1rem 1.55rem}
+.tleaf .lname{min-width:6.8rem;color:#cfd6e4;flex:none}
+.tleaf.done .lname{color:var(--dim)}
+.tleaf.cur .lname{color:#f59e0b;font-weight:700}
+.tree .subSteps{display:flex;flex-wrap:wrap;gap:3px}
+.tree .subStep{font-size:.68rem;padding:.05rem .38rem;border-radius:6px;background:rgba(0,0,0,.28);color:#e8ecf5;opacity:.75}
+.tree .subStep.on{background:#f59e0b;color:#1b1f27;opacity:1;font-weight:700}
+.tend{display:flex;align-items:center;gap:.4rem;font-size:.8rem;font-weight:700;padding:.35rem .6rem;margin:.1rem 0 .3rem;border:1px dashed #ff9f5a;border-radius:.5rem;color:#ffb37a;cursor:pointer}
+.tend.cur{border-style:solid;border-color:#f59e0b;box-shadow:0 0 10px rgba(245,158,11,.4)}
+/* 3D 미리 보기 켜고 끄기 */
+#planBox{margin:.35rem 0 .2rem}
+.planChk{display:flex;align-items:center;gap:.4rem;font-size:.8rem;cursor:pointer}
+#planBox .hint{margin:.15rem 0 0}

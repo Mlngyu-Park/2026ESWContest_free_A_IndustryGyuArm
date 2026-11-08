@@ -1,0 +1,257 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<!-- ARM STUDIO 3D 뷰어 (arm_studio_web.py 의 VIEWER_HTML 을 복사해 다중 로봇·책꽂이에 맞춤, 11-02)
+     장면·조명·격자·좌표축·STL 로드·보간은 원본 그대로. 도색·목심·플레이트·카메라 동기화·VR 은 뺐다.
+     한글 이름표는 안 붙인다 (칸 번호만). 책꽂이·책은 마우스로 끌어 옮긴다 — 잡는 동안 서버가 로봇을 멈춘다. -->
+<style>body{margin:0;overflow:hidden;background:#303030}</style>
+<script type="importmap">{"imports":{
+ "three":"/vendor/three/three.module.js",
+ "three/addons/":"/vendor/three/addons/"}}</script>
+</head><body>
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import {STLLoader} from 'three/addons/loaders/STLLoader.js';
+const scene=new THREE.Scene(); scene.background=new THREE.Color(0x303030);
+const cam=new THREE.PerspectiveCamera(50,innerWidth/innerHeight,0.01,30);
+cam.position.set(-2.3,2.0,0.7);
+const ren=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});
+ren.setSize(innerWidth,innerHeight); document.body.appendChild(ren.domElement);
+const ctl=new OrbitControls(cam,ren.domElement); ctl.target.set(0.1,0.35,0);
+scene.add(new THREE.HemisphereLight(0xffffff,0x445566,1.0));
+const dl=new THREE.DirectionalLight(0xffffff,1.2); dl.position.set(1,2,1); scene.add(dl);
+// z-up(로봇) -> y-up(three.js)
+const world=new THREE.Group(); world.rotation.x=-Math.PI/2; scene.add(world);
+const grid=new THREE.GridHelper(6,60,0x666666,0x444444); scene.add(grid);   // 원본 2m/20칸 → 장면이 넓어 6m/60칸 (칸 10cm 그대로)
+
+// ---- 좌표축 (월드 원점) : x=빨강 y=초록 z=파랑 ----
+function axisLabel(txt,color,pos,s=0.05){
+  const c=document.createElement('canvas'); c.width=c.height=64;
+  const g=c.getContext('2d');
+  g.fillStyle=color; g.font='bold 44px sans-serif';
+  g.textAlign='center'; g.textBaseline='middle'; g.fillText(txt,32,32);
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({
+    map:new THREE.CanvasTexture(c),depthTest:false,transparent:true}));
+  sp.position.copy(pos); sp.scale.set(s,s,s);
+  return sp;
+}
+function makeAxes(len,lw){
+  const g=new THREE.Group();
+  const defs=[[new THREE.Vector3(len,0,0),0xff3333,'X'],
+              [new THREE.Vector3(0,len,0),0x33cc33,'Y'],
+              [new THREE.Vector3(0,0,len),0x3399ff,'Z']];
+  for(const [v,col,name] of defs){
+    const geo=new THREE.BufferGeometry().setFromPoints(
+      [new THREE.Vector3(0,0,0),v]);
+    g.add(new THREE.Line(geo,new THREE.LineBasicMaterial(
+      {color:col,linewidth:lw,depthTest:false})));
+    g.add(axisLabel(name,'#'+col.toString(16).padStart(6,'0'),
+                    v.clone().multiplyScalar(1.12),0.08));
+  }
+  return g;
+}
+world.add(makeAxes(0.40,3));
+
+// ---- 글자 (칸 이름 · 책꽂이 이름) ----
+function textSprite(txt,small,w0){
+  const c=document.createElement('canvas'); c.width=256; c.height=64;
+  const g=c.getContext('2d'); g.font=(small?'bold 30px':'bold 36px')+' sans-serif';
+  g.textAlign='center'; g.textBaseline='middle';
+  g.fillStyle='rgba(0,0,0,.55)'; g.fillRect(0,8,256,48);
+  g.fillStyle=small?'#ffe9a8':'#ffffff'; g.fillText(txt,128,33);
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),depthTest:small,transparent:true}));
+  const w=w0||(small?0.12:0.26); sp.scale.set(w,w/4,1); return sp;
+}
+
+const loader=new STLLoader(); const objs={}; window._objsDbg=objs;
+let ROBGEN=null;                 // 로봇 교체 세대. 바뀌면 STL 을 새로 받는다
+function dropMeshes(pred){
+  for(const id of Object.keys(objs)){
+    const d=objs[id]; if(!pred(id,d))continue;
+    if(d.mesh){ world.remove(d.mesh);
+      if(d.mesh.geometry)d.mesh.geometry.dispose();
+      if(d.mesh.material)d.mesh.material.dispose(); }
+    delete objs[id];
+  }
+}
+function ensure(id,color,scale){                 // 로봇 링크 겉모양 (STL)
+  if(objs[id])return;
+  objs[id]={mesh:null,tp:new THREE.Vector3(),tq:new THREE.Quaternion(),
+            cp:new THREE.Vector3(),cq:new THREE.Quaternion(),s:scale,init:false,robot:true};
+  loader.load('/mesh/'+encodeURIComponent(id)+'?g='+ROBGEN,g=>{
+    g.computeVertexNormals();
+    const m=new THREE.Mesh(g,new THREE.MeshPhongMaterial({color:color,shininess:60,specular:0x333333}));
+    m.matrixAutoUpdate=false;
+    world.add(m); objs[id].mesh=m;
+  });
+}
+function ensureBody(b){                          // 움직이는 물건 (책 · 큐브 · 펜) — 물리/계산이 준 자리 그대로
+  if(objs[b.id])return;
+  const geo=b.type==='cyl'?new THREE.CylinderGeometry(b.r,b.r,b.h,24).rotateX(Math.PI/2)
+                          :new THREE.BoxGeometry(b.size[0],b.size[1],b.size[2]);
+  const m=new THREE.Mesh(geo,new THREE.MeshPhongMaterial({color:b.color,shininess:40,specular:0x222222}));
+  m.matrixAutoUpdate=false;
+  if(b.spine){                                   // 책등 (앞면) 표시
+    const sp=new THREE.Mesh(new THREE.BoxGeometry(0.002,b.size[1]*0.7,b.size[2]*0.25),new THREE.MeshBasicMaterial({color:0xf5f0e1}));
+    sp.position.set(-b.size[0]/2-0.001,0,b.size[2]*0.2); m.add(sp);
+  }
+  m.userData={kind:'book',id:b.id};
+  world.add(m);
+  objs[b.id]={mesh:m,tp:new THREE.Vector3(),tq:new THREE.Quaternion(),cp:new THREE.Vector3(),cq:new THREE.Quaternion(),s:1,init:false,body:true};
+}
+const _m4=new THREE.Matrix4();
+function setTarget(id,a,dict=objs){ // a: row-major 16 -> 목표 pos/quat 저장 (보간용)
+  const o=dict[id]; if(!o)return;
+  _m4.set(a[0],a[1],a[2],a[3], a[4],a[5],a[6],a[7],
+          a[8],a[9],a[10],a[11], 0,0,0,1);
+  const sc=new THREE.Vector3();
+  _m4.decompose(o.tp,o.tq,sc);
+  if(!o.init){o.cp.copy(o.tp);o.cq.copy(o.tq);o.init=true;}
+}
+
+// ---- 고정물 (정렬대 · 받침대 · 도킹) : 장면이 바뀔 때만 다시 받는다 / 책꽂이 = 판 묶음, 자리는 매번 ----
+const fixGrp=new THREE.Group(); world.add(fixGrp); let FIXGEN=null;
+const shelfObjs={};                              // 책꽂이 id → {mesh:Group, tp,tq,cp,cq,init}
+function boxMesh(lo,hi,color,flat){
+  const m=new THREE.Mesh(new THREE.BoxGeometry(hi[0]-lo[0],hi[1]-lo[1],hi[2]-lo[2]),
+    flat?new THREE.MeshBasicMaterial({color,transparent:true,opacity:.55})
+        :new THREE.MeshPhongMaterial({color,shininess:20}));
+  m.position.set((lo[0]+hi[0])/2,(lo[1]+hi[1])/2,(lo[2]+hi[2])/2); return m;
+}
+async function loadFixed(){
+  const f=await (await fetch('/viewer/fixed')).json();
+  fixGrp.clear(); FIXGEN=f.gen; for(const k in shelfObjs)delete shelfObjs[k];
+  for(const b of f.boxes) fixGrp.add(boxMesh(b.lo,b.hi,b.color,b.flat));
+  for(const l of f.labels){const s=textSprite(l.text,l.small,l.w); s.position.set(l.p[0],l.p[1],l.p[2]); fixGrp.add(s);}
+  for(const sh of f.shelves||[]){
+    const g=new THREE.Group(); g.matrixAutoUpdate=false; g.userData={kind:'shelf',id:sh.id};
+    for(const p of sh.panels) g.add(boxMesh(p.lo,p.hi,sh.color));
+    for(const l of sh.labels){const s=textSprite(l.text,true); s.position.set(l.p[0],l.p[1],l.p[2]); g.add(s);}
+    fixGrp.add(g);
+    shelfObjs[sh.id]={mesh:g,tp:new THREE.Vector3(),tq:new THREE.Quaternion(),cp:new THREE.Vector3(),cq:new THREE.Quaternion(),s:1,init:false};
+  }
+  if(f.view){                                    // 장면이 바뀌면 그 장면의 처음 시점으로 (z-up → y-up)
+    const [cx,cy,cz]=f.view.cam,[tx,ty,tz]=f.view.target;
+    cam.position.set(cx,cz,-cy); ctl.target.set(tx,tz,-ty); ctl.update();
+  }
+}
+// 끌 수 없는 자리면 붉게
+function tint(obj,on){ obj.traverse(o=>{ if(o.material&&o.material.emissive) o.material.emissive.setHex(on?0x882222:0); }); }
+
+let DRAGST=null;
+// Spot 이 갈 길 (바닥 위 선) + 설 자리 (몸 직사각형 테두리) — 길 찾기가 고른 것을 그대로 보여 준다
+const routeGrp=new THREE.Group(); world.add(routeGrp); let ROUTEKEY='';
+function drawRoute(r){
+  const key=r?JSON.stringify(r):''; if(key===ROUTEKEY)return; ROUTEKEY=key;
+  routeGrp.traverse(o=>{o.geometry?.dispose();o.material?.dispose();}); routeGrp.clear(); if(!r)return;
+  const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints(r.pts.map(p=>new THREE.Vector3(p[0],p[1],0.006))),
+    new THREE.LineDashedMaterial({color:0x4fd1ff,dashSize:0.05,gapSize:0.03,depthTest:false}));
+  line.computeLineDistances(); routeGrp.add(line);
+  for(const p of r.pts.slice(1,-1)){ const d=new THREE.Mesh(new THREE.CircleGeometry(0.018,12),new THREE.MeshBasicMaterial({color:0x4fd1ff,depthTest:false})); d.position.set(p[0],p[1],0.007); routeGrp.add(d); }
+  const g=r.goal,c=Math.cos(g.yaw),s=Math.sin(g.yaw),cs=[[-1,-1],[1,-1],[1,1],[-1,1],[-1,-1]].map(([a,b])=>new THREE.Vector3(g.cx+a*g.hx*c-b*g.hy*s,g.cy+a*g.hx*s+b*g.hy*c,0.008));
+  routeGrp.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(cs),new THREE.LineBasicMaterial({color:0x7cf0a0,depthTest:false})));
+  const tip=new THREE.Vector3(g.cx+g.hx*c,g.cy+g.hx*s,0.008);         // 설 자리의 앞쪽 (바라보는 쪽)
+  routeGrp.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(g.cx,g.cy,0.008),tip]),new THREE.LineBasicMaterial({color:0x7cf0a0,depthTest:false})));
+}
+// ▶ 전 미리 보기 (11-02): 블록을 다 하면 책이 설 자리 = 반투명 책 · Spot 이 블록대로 걸을 길 전체 = 흐린 점선 + 설 자리 테두리
+//   서버가 블록 차례대로 미리 계산한 것을 그대로 그린다. 반투명 책은 집을 수 없다 (pick 대상 아님)
+const ghostGrp=new THREE.Group(); world.add(ghostGrp); let GHOSTKEY=''; const ghosts={};
+function drawGhosts(list){
+  list=list||[];
+  const key=list.map(g=>g.id+g.color).join(',');
+  if(key!==GHOSTKEY){ GHOSTKEY=key;
+    ghostGrp.traverse(o=>{o.geometry?.dispose();o.material?.dispose();}); ghostGrp.clear(); for(const k in ghosts)delete ghosts[k];
+    for(const g of list){
+      const geo=new THREE.BoxGeometry(g.size[0],g.size[1],g.size[2]);
+      const m=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({color:g.color,transparent:true,opacity:.28,depthWrite:false}));
+      m.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo),new THREE.LineBasicMaterial({color:g.color,transparent:true,opacity:.95})));
+      m.matrixAutoUpdate=false; ghostGrp.add(m); ghosts[g.id]=m;
+    }
+  }
+  for(const g of list){ const a=g.m; ghosts[g.id]?.matrix.set(a[0],a[1],a[2],a[3],a[4],a[5],a[6],a[7],a[8],a[9],a[10],a[11],0,0,0,1); }
+}
+const planGrp=new THREE.Group(); world.add(planGrp); let PLANKEY='';
+function drawPlan(legs){
+  const key=legs&&legs.length?JSON.stringify(legs):''; if(key===PLANKEY)return; PLANKEY=key;
+  planGrp.traverse(o=>{o.geometry?.dispose();o.material?.dispose();}); planGrp.clear(); if(!key)return;
+  const faint=(color,op)=>new THREE.LineBasicMaterial({color,transparent:true,opacity:op,depthTest:false});
+  for(const L of legs){
+    const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints(L.pts.map(p=>new THREE.Vector3(p[0],p[1],0.004))),
+      new THREE.LineDashedMaterial({color:0xa9c7e8,dashSize:0.03,gapSize:0.04,transparent:true,opacity:.6,depthTest:false}));
+    line.computeLineDistances(); planGrp.add(line);
+    const g=L.goal,c=Math.cos(g.yaw),s=Math.sin(g.yaw),cs=[[-1,-1],[1,-1],[1,1],[-1,1],[-1,-1]].map(([a,b])=>new THREE.Vector3(g.cx+a*g.hx*c-b*g.hy*s,g.cy+a*g.hx*s+b*g.hy*c,0.005));
+    planGrp.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(cs),faint(0x7cf0a0,.35)));
+    planGrp.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(g.cx,g.cy,0.005),new THREE.Vector3(g.cx+g.hx*c,g.cy+g.hx*s,0.005)]),faint(0x7cf0a0,.35)));
+  }
+}
+async function poll(){
+  try{
+    const st=await (await fetch('/viewer/state')).json();
+    if(ROBGEN!==null && st.gen!==ROBGEN) dropMeshes((id,d)=>d.robot||d.body);
+    ROBGEN=st.gen;
+    if(st.fixgen!==FIXGEN) await loadFixed();
+    for(const l of st.links){ ensure(l.id,l.color,l.s); setTarget(l.id,l.m); }
+    for(const b of st.bodies){ ensureBody(b); setTarget(b.id,b.m); }
+    for(const s of st.shelves||[]) setTarget(s.id,s.m,shelfObjs);
+    // 끄는 것: 놓을 수 없는 자리면 붉게
+    const key=d=>d?d.kind+':'+d.id:null, was=DRAGST;
+    if(key(was)!==key(st.drag)||was?.ok!==st.drag?.ok){
+      if(was){ const o=was.kind==='shelf'?shelfObjs[was.id]:objs[was.id]; if(o?.mesh)tint(o.mesh,false); }
+      if(st.drag&&!st.drag.ok){ const o=st.drag.kind==='shelf'?shelfObjs[st.drag.id]:objs[st.drag.id]; if(o?.mesh)tint(o.mesh,true); }
+    }
+    DRAGST=st.drag;
+    drawRoute(st.route);
+    drawGhosts(st.ghosts); drawPlan(st.plan);
+  }catch(err){}
+  /* 화면 그리는 박자에 맞춰 다음 폴링 (원본과 같음) */
+  if(document.hidden)setTimeout(poll,200);
+  else requestAnimationFrame(()=>poll());
+}
+poll();
+addEventListener('resize',()=>{cam.aspect=innerWidth/innerHeight;
+  cam.updateProjectionMatrix();ren.setSize(innerWidth,innerHeight);});
+let last=performance.now();
+const _ss=new THREE.Vector3(1,1,1);
+(function anim(now){
+  requestAnimationFrame(anim);
+  const dt=Math.min((now-last)/1000||0.016,0.1); last=now;
+  const a=1-Math.exp(-dt*40);          // 약 25ms 시정수 (원본과 같음)
+  for(const o of [...Object.values(objs),...Object.values(shelfObjs)]){
+    if(!o.mesh||!o.init)continue;
+    o.cp.lerp(o.tp,a); o.cq.slerp(o.tq,a);
+    _ss.set(o.s,o.s,o.s);
+    o.mesh.matrix.compose(o.cp,o.cq,_ss);
+  }
+  ctl.update();
+  ren.render(scene,cam);
+})(performance.now());
+// ---- 끌어 옮기기: 책꽂이 · 책을 잡고 끈다 (왼쪽 버튼). 끄는 동안 Q/E 또는 휠 = 15° 돌리기 ----
+//   서버에 마우스 광선(로봇 좌표)만 보낸다 — 어디에 놓일지(칸에 세우기 · 바닥에 눕히기 · 겹침)는 서버가 정한다
+const rc=new THREE.Raycaster(), ndc=new THREE.Vector2(), el=ren.domElement;
+let dragging=null, chain=Promise.resolve(), moveRay=null, moveQ=false;
+const api=(fn,...args)=>(chain=chain.then(()=>fetch('/api/call',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({fn,args})}).then(r=>r.json()).catch(()=>null)));
+function aim(e){ const r=el.getBoundingClientRect(); ndc.set((e.clientX-r.left)/r.width*2-1,-((e.clientY-r.top)/r.height)*2+1); rc.setFromCamera(ndc,cam); }
+function rayR(){ const o=rc.ray.origin,d=rc.ray.direction; return {o:[o.x,-o.z,o.y],d:[d.x,-d.z,d.y]}; }   // y-up → 로봇 z-up
+function pick(){
+  const targets=[...Object.values(objs).filter(o=>o.body&&o.mesh).map(o=>o.mesh),...Object.values(shelfObjs).map(o=>o.mesh)];
+  for(const h of rc.intersectObjects(targets,true)){ let o=h.object; while(o&&!o.userData.kind)o=o.parent; if(o)return {...o.userData,p:[h.point.x,-h.point.z,h.point.y]}; }
+  return null;
+}
+el.addEventListener('pointerdown',e=>{
+  if(e.button!==0)return; aim(e); const t=pick(); if(!t)return;
+  e.stopImmediatePropagation(); ctl.enabled=false; el.setPointerCapture(e.pointerId);
+  dragging=t; el.style.cursor='grabbing'; api('drag_start',t.kind,t.id,rayR(),t.p);   // 잡은 점 = 끄는 높이
+},{capture:true});
+el.addEventListener('pointermove',e=>{
+  aim(e);
+  if(!dragging){ el.style.cursor=pick()?'grab':''; return; }
+  moveRay=rayR(); if(moveQ)return; moveQ=true;          // 밀린 움직임은 마지막 것만 보낸다
+  chain=chain.then(()=>{ moveQ=false; return fetch('/api/call',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({fn:'drag_move',args:[moveRay]})}).catch(()=>null); });
+});
+function endDrag(e){ if(!dragging)return; dragging=null; ctl.enabled=true; el.style.cursor=''; try{el.releasePointerCapture(e.pointerId);}catch(_){} api('drag_end'); }
+el.addEventListener('pointerup',endDrag); el.addEventListener('pointercancel',endDrag);
+addEventListener('keydown',e=>{ if(!dragging)return; const k=e.key.toLowerCase(); if(k==='q'||k==='e'){ e.preventDefault(); api('drag_rot',(k==='q'?1:-1)*Math.PI/12); } });
+el.addEventListener('wheel',e=>{ if(!dragging)return; e.preventDefault(); e.stopImmediatePropagation(); api('drag_rot',(e.deltaY<0?1:-1)*Math.PI/12); },{capture:true,passive:false});
+window.VIEW={cam,ctl,pickAt:(x,y)=>{aim({clientX:x,clientY:y});return pick();}};   // pickAt: 화면 검사용 (그 점에 무엇이 잡히나)
+</script></body></html>

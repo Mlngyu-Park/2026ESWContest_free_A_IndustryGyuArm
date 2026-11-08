@@ -1,0 +1,54 @@
+:root {
+  --bg: #15171c; --panel: #1d2027; --line: #2c313b; --text: #e6e8ec; --dim: #9aa1ad;
+  --accent: #f2c12e; --ok: #4cc38a; --bad: #e5604d; --block: #283041; --block-run: #4a3f12;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 14px/1.45 "Pretendard", "Noto Sans KR", "Malgun Gothic", system-ui, sans-serif; }
+#app { display: flex; height: 100vh; }
+#view { position: relative; flex: 1; min-width: 0; }
+#view canvas { display: block; width: 100%; height: 100%; }
+#hud { position: absolute; left: 12px; top: 10px; pointer-events: none; text-shadow: 0 1px 2px #000; }
+#status { font-weight: 600; font-size: 15px; }
+#pose { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+#viewbar { position: absolute; left: 12px; bottom: 10px; display: flex; gap: 14px; align-items: center;
+  background: #0009; padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+#viewbar .hint { color: var(--dim); }
+#side { width: 360px; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--line); }
+#side h1 { margin: 0; padding: 12px 14px; font-size: 17px; border-bottom: 1px solid var(--line); }
+#side h1 small { display: block; font-weight: 400; color: var(--dim); font-size: 12px; }
+#side section { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+#side section.grow { flex: 1; overflow: auto; min-height: 120px; }
+#side h2 { margin: 0 0 8px; font-size: 13px; color: var(--dim); font-weight: 600; display: flex; gap: 6px; align-items: center; }
+#palette { display: flex; flex-wrap: wrap; gap: 6px; }
+#palette button { background: var(--block); }
+button { background: #333a48; color: var(--text); border: 1px solid #3d4556; border-radius: 6px; padding: 5px 10px;
+  font: inherit; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.ghost { background: none; padding: 1px 8px; font-size: 12px; }
+#runbar { display: flex; gap: 8px; }
+#run { background: #2f5d45; } #stop { background: #5d2f2f; }
+#program { list-style: none; margin: 0; padding: 0; counter-reset: n; }
+#program li { counter-increment: n; display: flex; align-items: center; gap: 6px; padding: 6px 8px; margin-bottom: 5px;
+  background: var(--block); border-radius: 6px; border-left: 4px solid var(--accent); }
+#program li::before { content: counter(n); color: var(--dim); width: 16px; font-size: 12px; }
+#program li.run { background: var(--block-run); }
+#program li.done { opacity: .55; }
+#program li.fail { border-left-color: var(--bad); }
+#program li .name { font-weight: 600; white-space: nowrap; }
+#program li select { flex: 1; min-width: 0; background: #1a1e26; color: var(--text); border: 1px solid #3d4556; border-radius: 4px; padding: 2px; }
+#program li .mini { padding: 0 6px; font-size: 12px; }
+#log { height: 130px; overflow: auto; font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; }
+#log .ok { color: var(--ok); } #log .bad { color: var(--bad); }
+@media (max-width: 800px) {
+  #app { flex-direction: column; }
+  #view { height: 55vh; flex: none; }
+  #side { width: 100%; flex: 1; }
+}
+
+#side select.robot { width: 100%; background: #1a1e26; color: var(--text); border: 1px solid #3d4556; border-radius: 6px; padding: 6px; font-size: 14px; }
+
+/* 책꽂이 공정: 블록 한 줄에 칸 고르기 여러 개 */
+#program li.multi { flex-wrap: wrap; }
+#program li.multi select { flex: 1 1 64px; }
+#program li .arrow { color: var(--dim); }
