@@ -13,8 +13,8 @@
 #
 # Part   : xc7z010clg400-1 (ALINX AC7010C)
 # PS7    : ps7_ac7010c.tcl (values from the AC7010C user manual)
-# Written for Vivado 2019.2 .. 2024.x (write_hw_platform). NOT run by the author — no x86 Vivado
-# host was available; the PL RTL was simulated with Icarus and synthesized with Yosys instead.
+# Written for Vivado 2019.2 .. 2024.x (write_hw_platform). Built on Vivado 2020.2 (Windows, run_build.bat):
+# TPU build 4 (2026-11-05) WNS +0.339 ns, DSP 66/80, LUT 23.65 %, BRAM 20 — see ../../TPU.md section 4.
 
 set script_dir [file dirname [file normalize [info script]]]
 set root       [file normalize [file join $script_dir ..]]

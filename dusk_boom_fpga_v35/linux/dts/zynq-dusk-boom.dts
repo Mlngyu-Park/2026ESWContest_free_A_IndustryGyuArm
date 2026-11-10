@@ -1,0 +1,130 @@
+// SPDX-License-Identifier: GPL-2.0+
+/*
+ * DUSK_BOOM robot board v3.5 with the ALINX AC7010C core module (XC7Z010-1CLG400) — Linux
+ * Values from the AC7010C user manual (see ../../vivado/ps7_ac7010c.tcl).
+ *
+ *   ttyPS0 = UART1 (MIO48/49, CP2102 on the module, 115200) — console
+ *   ttyPS1 = UART0 (EMIO -> PL -> ESP_IO0/1 -> ESP32-S3)    — robot bridge, 1 Mbps (dusk_robotd)
+ *   USB0   = host on the module USB-A (USB3320C ULPI, jumpers J5+J6 on) — servo adapter
+ *   gpio0  = MIO 0..53 + EMIO 54..69 (EMIO map: ../../rtl/dusk_boom_v35_top.v)
+ *   screen = 1280x720 XRGB8888 at 0x1FC00000 (top 4 MB, reserved), read by the PL (fb_scanout.v)
+ *            over S_AXI_HP0 and sent to HDMI once EMIO 8 = 1 (rcS) -> simpledrm /dev/dri/card0 + fb0
+ */
+/dts-v1/;
+#include "zynq-7000.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+
+/ {
+	model = "DUSK_BOOM robot v3.5 (ALINX AC7010C)";
+	compatible = "dusk,boom-robot-v35", "xlnx,zynq-7000";
+
+	aliases {
+		ethernet0 = &gem0;
+		serial0 = &uart1;
+		serial1 = &uart0;
+		spi0 = &qspi;
+		mmc0 = &sdhci0;
+	};
+
+	memory@0 {
+		device_type = "memory";
+		reg = <0x0 0x20000000>;		/* 2 x H5TQ2G63FFR = 512 MB */
+	};
+
+	chosen {
+		bootargs = "console=tty0 console=ttyPS0,115200 earlycon";
+		stdout-path = "serial0:115200n8";
+	};
+
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		/* TPU (rtl/tpu_top.v): double-Rachel weights + activations + results, used through /dev/mem
+		 * by rachel_tpu (tpu/sw/tpu_hw.h). 32 MB: weights 25.6 MB, buffers at +30 MB */
+		tpu_mem: tpu@1c000000 {
+			reg = <0x1c000000 0x2000000>;
+			no-map;
+		};
+
+		screen_mem: screen@1fc00000 {
+			reg = <0x1fc00000 0x400000>;	/* 4 MB: 1280 x 720 x 4 B = 3.5 MB */
+			no-map;
+		};
+	};
+
+	/* HDMI screen: the PL scans this memory out (EMIO 8 = 1) — simpledrm drives it */
+	framebuffer@1fc00000 {
+		compatible = "simple-framebuffer";
+		reg = <0x1fc00000 (1280 * 720 * 4)>;
+		width = <1280>;
+		height = <720>;
+		stride = <(1280 * 4)>;
+		format = "x8r8g8b8";
+		status = "okay";
+	};
+
+	/* USB3320C: VBUS of the host port through the PHY (CPEN), like the ZedBoard */
+	usb_phy0: phy0@e0002000 {
+		compatible = "ulpi-phy";
+		#phy-cells = <0>;
+		reg = <0xe0002000 0x1000>;
+		view-port = <0x0170>;
+		drv-vbus;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		ps-led {
+			label = "ps_led";			/* MIO0, 0 = on */
+			gpios = <&gpio0 0 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "heartbeat";	/* blinking = Linux is alive */
+		};
+	};
+};
+
+&clkc {
+	ps-clk-frequency = <33333333>;
+};
+
+&gem0 {
+	status = "okay";
+	phy-mode = "rgmii-id";			/* JL2121 adds both 2 ns delays (strap) */
+	phy-handle = <&ethernet_phy>;
+
+	ethernet_phy: ethernet-phy@1 {
+		reg = <1>;				/* PHY address 001 (manual table 6-2) */
+	};
+};
+
+&qspi {
+	status = "okay";
+	num-cs = <1>;
+	flash@0 {
+		compatible = "jedec,spi-nor";		/* W25Q256 */
+		reg = <0>;
+		spi-tx-bus-width = <1>;
+		spi-rx-bus-width = <4>;
+		spi-max-frequency = <25000000>;	/* no feedback clock on MIO8 */
+	};
+};
+
+&sdhci0 {
+	status = "okay";
+	disable-wp;				/* no write-protect pin on the module */
+};
+
+&uart0 {
+	status = "okay";			/* EMIO: robot bridge to the ESP32-S3 */
+};
+
+&uart1 {
+	status = "okay";			/* console */
+};
+
+&usb0 {
+	status = "okay";
+	dr_mode = "host";
+	usb-phy = <&usb_phy0>;
+};

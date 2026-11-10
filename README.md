@@ -62,6 +62,7 @@
 - Zynq XC7Z010 FPGA 에 Verilog 로 설계한 TPU. 곱셈기 64개(8×8), int8 × int16.
 - 최대 2.5W (N305 CPU 최대 21W). 더블 레이첼 한 문장 2.66초, 노트북 CPU 와 60/60 같은 답.
 - 보드 리눅스 부팅, HDMI 출력 회로, TPU 시연 화면까지 직접.
+- TPU 작동 원리와 비바도로 만드는 법: **[TPU.md](TPU.md)**
 
 ### 3. [ARM STUDIO — 블록 코딩 · 디지털 트윈 · 실물 제어](ARM_STUDIO.md)
 
@@ -108,7 +109,8 @@ LattePanda Mu — 메인 컴퓨터 (N305 16GB + 자체 설계 캐리어보드)
 ```
 ├── README.md            ← 지금 이 문서
 ├── RACHEL.md            ← 자작 AI (메인)
-├── DUSK_BOOM.md         ← FPGA TPU
+├── DUSK_BOOM.md         ← FPGA TPU (보드 전체)
+├── TPU.md               ← TPU 작동 원리 · 비바도로 만드는 법
 ├── ARM_STUDIO.md        ← 블록 코딩 · 디지털 트윈 · 실물 제어
 ├── Industry_gyu_arm/
 │   ├── nano_double/     # 더블 레이첼: 데이터 생성 · 학습 · 검사 · 채점
